@@ -1,0 +1,15 @@
+{
+  "max_position_pct": 0.08,
+  "max_portfolio_risk": 0.25,
+  "max_correlated_positions": 3,
+  "tail_dependence_threshold": 0.30,
+  "max_drawdown_hard_stop": -0.20,
+  "min_cash_reserve_pct": 0.10,
+  "max_daily_trades": 20,
+  "max_single_trade_loss_pct": 0.02,
+  "require_stop_loss": true,
+  "require_fundamental_filter": true,
+  "paper_trade_min_days": 14,
+  "promotion_min_sharpe": 0.8,
+  "promotion_min_win_rate": 0.45
+}
