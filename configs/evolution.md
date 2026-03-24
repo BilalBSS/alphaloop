@@ -25,12 +25,14 @@ Every night at midnight ET, you run this loop:
 
 ## Constraints (NEVER violate these)
 
-- Every strategy MUST have fundamental_filters. This is non-negotiable.
-- max_position_pct must never exceed 0.10 (10%)
+- Dual-track system: strategies set `requires_fundamentals: true` (fundamental-gated) or `false` (momentum-only)
+- Fundamental-gated strategies: max 8% position, MUST have fundamental_filters
+- Momentum-only strategies: max 4% position, tighter stops (0.75x multiplier), NO fundamental_filters required
+- max_position_pct must never exceed 0.10 (10%) for any track
 - stop_loss must always exist. No strategy runs without a stop.
-- Minimum 3 entry conditions (at least 1 fundamental + 1 technical + 1 confirmation)
+- Fundamental-gated: minimum 3 entry conditions (at least 1 fundamental + 1 technical + 1 confirmation)
+- Momentum-only: minimum 2 entry conditions (technical + confirmation)
 - Maximum 8 entry conditions (more than this overfits)
-- Never create a strategy that only uses price action with no fundamentals
 
 ## Metrics to Optimize (in priority order)
 

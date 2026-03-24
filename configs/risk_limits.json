@@ -1,5 +1,4 @@
 {
-  "max_position_pct": 0.08,
   "max_portfolio_risk": 0.25,
   "max_correlated_positions": 3,
   "tail_dependence_threshold": 0.30,
@@ -8,8 +7,21 @@
   "max_daily_trades": 20,
   "max_single_trade_loss_pct": 0.02,
   "require_stop_loss": true,
-  "require_fundamental_filter": true,
   "paper_trade_min_days": 14,
   "promotion_min_sharpe": 0.8,
-  "promotion_min_win_rate": 0.45
+  "promotion_min_win_rate": 0.45,
+
+  "tracks": {
+    "fundamental_gated": {
+      "max_position_pct": 0.08,
+      "requires_fundamentals": true,
+      "description": "full conviction — fundamental + technical signals"
+    },
+    "momentum_only": {
+      "max_position_pct": 0.04,
+      "requires_fundamentals": false,
+      "stop_loss_multiplier": 0.75,
+      "description": "momentum signals only — tighter stops, smaller size"
+    }
+  }
 }
