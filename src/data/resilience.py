@@ -38,6 +38,7 @@ class _CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time: float = 0.0
         self._half_open_probe_in_flight = False
+        self._lock = asyncio.Lock()
 
     def record_success(self) -> None:
         self.failure_count = 0
@@ -52,6 +53,15 @@ class _CircuitBreaker:
             self.state = CircuitState.OPEN
 
     def can_execute(self) -> bool:
+        # / sync version for simple checks (non-concurrent use)
+        return self._check_execute()
+
+    async def can_execute_async(self) -> bool:
+        # / async-safe version — serializes half_open probe selection
+        async with self._lock:
+            return self._check_execute()
+
+    def _check_execute(self) -> bool:
         if self.state == CircuitState.CLOSED:
             return True
         if self.state == CircuitState.OPEN:
@@ -94,7 +104,7 @@ def with_retry(
                 _breakers[source] = _CircuitBreaker(failure_threshold, reset_timeout)
             breaker = _breakers[source]
 
-            if not breaker.can_execute():
+            if not await breaker.can_execute_async():
                 raise CircuitBreakerOpen(source, breaker.retry_after)
 
             last_exc: Exception | None = None
@@ -109,7 +119,7 @@ def with_retry(
                     last_exc = exc
                     breaker.record_failure()
 
-                    if not breaker.can_execute():
+                    if not await breaker.can_execute_async():
                         logger.warning(
                             "circuit_breaker_opened",
                             source=source,

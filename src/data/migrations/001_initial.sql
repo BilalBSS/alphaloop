@@ -70,9 +70,8 @@ CREATE TABLE IF NOT EXISTS news_sentiment (
     source VARCHAR(100),
     sentiment_score DECIMAL(4,3),     -- -1.000 to 1.000
     sentiment_label VARCHAR(20),      -- positive, negative, neutral
-    url TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    url TEXT NOT NULL DEFAULT ''
+    url TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_news_sentiment_dedup ON news_sentiment(symbol, date, url);
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_symbol_date ON news_sentiment(symbol, date);

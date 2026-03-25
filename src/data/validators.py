@@ -118,6 +118,10 @@ def validate_sentiment(row: dict) -> list[ValidationResult]:
     ]
 
 
+# / alias for market_data.py import compatibility
+validate_ohlcv = validate_market_data
+
+
 def filter_valid(rows: list[dict], validator_fn: Callable, source: str) -> list[dict]:
     # / filter rows through validator, log and drop invalid ones
     valid_rows = []
