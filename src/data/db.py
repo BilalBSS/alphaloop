@@ -13,8 +13,16 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 _pool: asyncpg.Pool | None = None
-_init_lock = asyncio.Lock()
+_init_lock: asyncio.Lock | None = None
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
+
+def _get_lock() -> asyncio.Lock:
+    # / lazy-init lock to avoid creating it outside a running event loop
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
 
 
 async def init_db(database_url: str | None = None) -> asyncpg.Pool:
@@ -24,7 +32,7 @@ async def init_db(database_url: str | None = None) -> asyncpg.Pool:
     if _pool is not None:
         return _pool
 
-    async with _init_lock:
+    async with _get_lock():
         if _pool is not None:
             return _pool
 
