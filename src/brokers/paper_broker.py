@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -23,6 +24,7 @@ class PaperBroker(BrokerInterface):
         self.orders: dict[str, Order] = {}
         self.prices: dict[str, float] = {}  # latest prices
         self._trade_log: list[dict[str, Any]] = []
+        self._order_lock = asyncio.Lock()
 
     def set_price(self, symbol: str, price: float) -> None:
         # / manually set price for a symbol (used in backtesting)
@@ -55,104 +57,106 @@ class PaperBroker(BrokerInterface):
         order_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
-        price = self.prices.get(symbol)
-        if price is None:
-            # / reject if no price available
-            order = Order(
-                order_id=order_id, symbol=symbol, side=side, qty=qty,
-                order_type=order_type, status="rejected",
-                created_at=now, details={"reason": "no_price_available"},
-            )
-            self.orders[order_id] = order
-            return order
-
-        # / for limit orders, check if fillable
-        if order_type == "limit" and limit_price is not None:
-            if side == "buy" and price > limit_price:
-                order = Order(
-                    order_id=order_id, symbol=symbol, side=side, qty=qty,
-                    order_type=order_type, status="pending",
-                    limit_price=limit_price, created_at=now,
-                )
-                self.orders[order_id] = order
-                return order
-            if side == "sell" and price < limit_price:
-                order = Order(
-                    order_id=order_id, symbol=symbol, side=side, qty=qty,
-                    order_type=order_type, status="pending",
-                    limit_price=limit_price, created_at=now,
-                )
-                self.orders[order_id] = order
-                return order
-
-        # / reject unsupported order types
-        if order_type not in ("market", "limit"):
-            raise ValueError(f"unsupported order type: {order_type} (stop/stop_limit not yet implemented)")
-
-        # / market orders and fillable limit orders: fill immediately
-        # / limit orders fill at the better price (market vs limit)
-        if order_type == "limit" and limit_price:
-            fill_price = min(limit_price, price) if side == "buy" else max(limit_price, price)
-        else:
-            fill_price = price
-        cost = fill_price * qty
-
-        if side == "buy":
-            if cost > self.cash:
+        # / lock prevents concurrent coroutines from double-spending cash
+        async with self._order_lock:
+            price = self.prices.get(symbol)
+            if price is None:
+                # / reject if no price available
                 order = Order(
                     order_id=order_id, symbol=symbol, side=side, qty=qty,
                     order_type=order_type, status="rejected",
-                    created_at=now, details={"reason": "insufficient_cash"},
+                    created_at=now, details={"reason": "no_price_available"},
                 )
                 self.orders[order_id] = order
                 return order
 
-            self.cash -= cost
-            pos = self.positions.get(symbol, {"qty": 0.0, "avg_price": 0.0})
-            total_qty = pos["qty"] + qty
-            if total_qty > 0:
-                pos["avg_price"] = (pos["avg_price"] * pos["qty"] + fill_price * qty) / total_qty
-            pos["qty"] = total_qty
-            self.positions[symbol] = pos
+            # / for limit orders, check if fillable
+            if order_type == "limit" and limit_price is not None:
+                if side == "buy" and price > limit_price:
+                    order = Order(
+                        order_id=order_id, symbol=symbol, side=side, qty=qty,
+                        order_type=order_type, status="pending",
+                        limit_price=limit_price, created_at=now,
+                    )
+                    self.orders[order_id] = order
+                    return order
+                if side == "sell" and price < limit_price:
+                    order = Order(
+                        order_id=order_id, symbol=symbol, side=side, qty=qty,
+                        order_type=order_type, status="pending",
+                        limit_price=limit_price, created_at=now,
+                    )
+                    self.orders[order_id] = order
+                    return order
 
-        elif side == "sell":
-            pos = self.positions.get(symbol, {"qty": 0.0, "avg_price": 0.0})
-            if pos["qty"] < qty:
-                order = Order(
-                    order_id=order_id, symbol=symbol, side=side, qty=qty,
-                    order_type=order_type, status="rejected",
-                    created_at=now, details={"reason": "insufficient_position"},
-                )
-                self.orders[order_id] = order
-                return order
+            # / reject unsupported order types
+            if order_type not in ("market", "limit"):
+                raise ValueError(f"unsupported order type: {order_type} (stop/stop_limit not yet implemented)")
 
-            self.cash += cost
-            pos["qty"] -= qty
-            if abs(pos["qty"]) < 1e-9:
-                del self.positions[symbol]
+            # / market orders and fillable limit orders: fill immediately
+            # / limit orders fill at the better price (market vs limit)
+            if order_type == "limit" and limit_price:
+                fill_price = min(limit_price, price) if side == "buy" else max(limit_price, price)
             else:
+                fill_price = price
+            cost = fill_price * qty
+
+            if side == "buy":
+                if cost > self.cash:
+                    order = Order(
+                        order_id=order_id, symbol=symbol, side=side, qty=qty,
+                        order_type=order_type, status="rejected",
+                        created_at=now, details={"reason": "insufficient_cash"},
+                    )
+                    self.orders[order_id] = order
+                    return order
+
+                self.cash -= cost
+                pos = self.positions.get(symbol, {"qty": 0.0, "avg_price": 0.0})
+                total_qty = pos["qty"] + qty
+                if total_qty > 0:
+                    pos["avg_price"] = (pos["avg_price"] * pos["qty"] + fill_price * qty) / total_qty
+                pos["qty"] = total_qty
                 self.positions[symbol] = pos
 
-        order = Order(
-            order_id=order_id, symbol=symbol, side=side, qty=qty,
-            order_type=order_type, status="filled",
-            filled_qty=qty, filled_price=fill_price,
-            limit_price=limit_price, stop_price=stop_price,
-            created_at=now, filled_at=now,
-        )
-        self.orders[order_id] = order
+            elif side == "sell":
+                pos = self.positions.get(symbol, {"qty": 0.0, "avg_price": 0.0})
+                if pos["qty"] < qty:
+                    order = Order(
+                        order_id=order_id, symbol=symbol, side=side, qty=qty,
+                        order_type=order_type, status="rejected",
+                        created_at=now, details={"reason": "insufficient_position"},
+                    )
+                    self.orders[order_id] = order
+                    return order
 
-        self._trade_log.append({
-            "order_id": order_id, "symbol": symbol, "side": side,
-            "qty": qty, "price": fill_price, "time": now,
-        })
+                self.cash += cost
+                pos["qty"] -= qty
+                if abs(pos["qty"]) < 1e-9:
+                    del self.positions[symbol]
+                else:
+                    self.positions[symbol] = pos
 
-        logger.info(
-            "paper_order_filled",
-            order_id=order_id, symbol=symbol, side=side,
-            qty=qty, price=fill_price,
-        )
-        return order
+            order = Order(
+                order_id=order_id, symbol=symbol, side=side, qty=qty,
+                order_type=order_type, status="filled",
+                filled_qty=qty, filled_price=fill_price,
+                limit_price=limit_price, stop_price=stop_price,
+                created_at=now, filled_at=now,
+            )
+            self.orders[order_id] = order
+
+            self._trade_log.append({
+                "order_id": order_id, "symbol": symbol, "side": side,
+                "qty": qty, "price": fill_price, "time": now,
+            })
+
+            logger.info(
+                "paper_order_filled",
+                order_id=order_id, symbol=symbol, side=side,
+                qty=qty, price=fill_price,
+            )
+            return order
 
     async def get_positions(self) -> list[Position]:
         result = []
