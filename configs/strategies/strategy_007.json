@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: classic trend following — price crosses above SMA50 with ADX confirming trend strength",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH", "XOM", "LLY"],
+  "universe": "all_stocks",
 
   "entry_conditions": {
     "operator": "AND",

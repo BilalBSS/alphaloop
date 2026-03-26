@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Buy fundamentally strong stocks when RSI shows oversold conditions with volume confirmation",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "JPM", "V", "UNH", "JNJ", "PG", "KO"],
+  "universe": "all_stocks",
 
   "fundamental_filters": {
     "pe_ratio_max": 30,

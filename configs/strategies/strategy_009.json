@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: ride strong trends — high ADX with RSI momentum and MACD confirmation, wide trailing stop",
   "asset_class": "stocks",
-  "universe": ["NVDA", "TSLA", "AMD", "NFLX", "META", "AMZN", "GOOG", "AVGO", "CRM", "ORCL"],
+  "universe": "all",
 
   "entry_conditions": {
     "operator": "AND",

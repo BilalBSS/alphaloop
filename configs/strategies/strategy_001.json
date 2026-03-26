@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Buy when Bollinger bands show oversold AND P/E is below sector average with volume confirmation",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH"],
+  "universe": "all_stocks",
 
   "fundamental_filters": {
     "pe_ratio_max": 40,

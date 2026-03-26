@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Deep value: big DCF upside + low PE + strong balance sheet, enter on any technical weakness",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "META", "JPM", "V", "UNH", "JNJ", "PG", "KO", "PEP", "WMT", "COST"],
+  "universe": "all_stocks",
 
   "fundamental_filters": {
     "pe_ratio_max": 25,

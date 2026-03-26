@@ -123,18 +123,23 @@ class StrategyConfig(BaseModel):
     parent_id: str | None = None
     description: str = ""
     asset_class: str = "stocks"
-    universe: list[str]
+    universe: str  # / universe reference: "all", "all_stocks", "all_crypto", or comma-separated symbols
     fundamental_filters: FundamentalFiltersConfig | None = None
     entry_conditions: EntryConditionsConfig
     exit_conditions: ExitConditionsConfig
     position_sizing: PositionSizingConfig = PositionSizingConfig()
     metadata: StrategyMetadata = StrategyMetadata()
 
-    @field_validator("universe")
+    @field_validator("universe", mode="before")
     @classmethod
-    def validate_universe(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("universe must have at least one symbol")
+    def validate_universe(cls, v: str | list[str]) -> str:
+        # / accept both string refs ("all", "all_stocks") and legacy list format
+        if isinstance(v, list):
+            if not v:
+                raise ValueError("universe must not be empty")
+            return ",".join(v)
+        if not v or not v.strip():
+            raise ValueError("universe must not be empty")
         return v
 
     @field_validator("asset_class")

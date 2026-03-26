@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Mean reversion: oversold stochastic on high free-cash-flow companies with low debt",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "META", "V", "MA", "UNH", "JNJ", "PG", "COST", "HD"],
+  "universe": "all_stocks",
 
   "fundamental_filters": {
     "fcf_margin_min": 0.20,

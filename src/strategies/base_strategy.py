@@ -117,7 +117,12 @@ class ConfigDrivenStrategy(StrategyInterface):
         self._config = config
         self._id = config["id"]
         self._name = config["name"]
-        self._universe = set(config.get("universe", []))
+        # / normalize universe: accept list (legacy) or string ref
+        raw_universe = config.get("universe", "all")
+        if isinstance(raw_universe, list):
+            self._universe_ref = ",".join(raw_universe) if raw_universe else "all"
+        else:
+            self._universe_ref = raw_universe or "all"
         self._fundamental_filters = config.get("fundamental_filters", {})
         self._entry_conditions = config.get("entry_conditions", {})
         self._exit_conditions = config.get("exit_conditions", {})
@@ -137,8 +142,14 @@ class ConfigDrivenStrategy(StrategyInterface):
         return self._config
 
     @property
-    def universe(self) -> set[str]:
-        return self._universe
+    def universe_ref(self) -> str:
+        # / the raw universe reference from config ("all", "all_stocks", or comma-separated)
+        return self._universe_ref
+
+    def resolve_universe(self, available_symbols: list[str] | None = None) -> list[str]:
+        # / resolve the universe reference to actual symbols
+        from src.data.symbols import resolve_universe
+        return resolve_universe(self._universe_ref, available_symbols)
 
     @property
     def requires_fundamentals(self) -> bool:

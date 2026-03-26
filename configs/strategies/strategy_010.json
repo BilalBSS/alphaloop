@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: low volatility squeeze followed by upside breakout with volume confirmation",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "AVGO"],
+  "universe": "all",
 
   "entry_conditions": {
     "operator": "AND",

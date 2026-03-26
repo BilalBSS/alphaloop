@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: buy on Keltner channel upper breakout with strong ADX trend and MACD confirmation",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM"],
+  "universe": "all_stocks",
 
   "entry_conditions": {
     "operator": "AND",

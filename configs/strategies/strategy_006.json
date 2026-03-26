@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: massive volume spike with price above SMA confirming trend direction",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "AVGO"],
+  "universe": "all",
 
   "entry_conditions": {
     "operator": "AND",

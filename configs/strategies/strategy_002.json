@@ -6,7 +6,7 @@
   "parent_id": null,
   "description": "Momentum-only: MACD bullish crossover with volume confirmation and ADX trend filter",
   "asset_class": "stocks",
-  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH"],
+  "universe": "all_stocks",
 
   "entry_conditions": {
     "operator": "AND",
