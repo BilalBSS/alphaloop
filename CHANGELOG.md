@@ -17,6 +17,11 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - CLAUDE.md: synchronized phases, build order, architecture tree, and test counts across all sections
+- dcf_model.py: clamp growth rates to [-0.5, 1.0] to prevent negative revenue in MC simulation
+- dcf_model.py: json.dumps assumptions dict for asyncpg jsonb compatibility
+- ai_summary.py: sanitize groq exception logs to prevent api key leak, add dcf to fallback confidence
+- earnings_signals.py: sort quarters most-recent-first (yfinance order not guaranteed), clamp surprise_pct to [-5, 5]
+- ratio_analysis.py: removed wrong d/e > 10 normalization heuristic (yfinance returns ratio not percentage)
 
 ## [0.2.0.0] - 2026-03-24
 
