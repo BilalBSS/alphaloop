@@ -216,7 +216,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         stop_loss = self._exit_conditions.get("stop_loss")
         if stop_loss:
             exit_signal = self._check_stop_loss(
-                stop_loss, market_data, entry_price, current_bar_idx,
+                stop_loss, market_data, entry_price, current_bar_idx, entry_date,
             )
             if exit_signal.should_exit:
                 return exit_signal
@@ -265,50 +265,71 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_fundamentals(self, analysis: AnalysisData) -> tuple[bool, list[str]]:
         # / evaluate fundamental filters from config against analysis data
+        # / if a filter is configured but the data is unavailable, reject (not silently pass)
         filters = self._fundamental_filters
         reasons: list[str] = []
 
         # / pe ratio max
         pe_max = filters.get("pe_ratio_max")
-        if pe_max is not None and analysis.pe_ratio is not None:
+        if pe_max is not None:
+            if analysis.pe_ratio is None:
+                return False, ["pe_ratio data unavailable"]
             if analysis.pe_ratio > pe_max:
                 reasons.append(f"pe {analysis.pe_ratio:.1f} > max {pe_max}")
                 return False, reasons
 
         # / pe vs sector
         pe_vs = filters.get("pe_vs_sector")
-        if pe_vs == "below_average" and analysis.pe_ratio is not None and analysis.sector_pe_avg is not None:
+        if pe_vs == "below_average":
+            if analysis.pe_ratio is None or analysis.sector_pe_avg is None:
+                return False, ["pe or sector_pe data unavailable"]
             if analysis.pe_ratio > analysis.sector_pe_avg:
                 reasons.append(f"pe {analysis.pe_ratio:.1f} above sector avg {analysis.sector_pe_avg:.1f}")
                 return False, reasons
 
         # / revenue growth min
         rev_min = filters.get("revenue_growth_min")
-        if rev_min is not None and analysis.revenue_growth is not None:
+        if rev_min is not None:
+            if analysis.revenue_growth is None:
+                return False, ["revenue_growth data unavailable"]
             if analysis.revenue_growth < rev_min:
                 reasons.append(f"revenue growth {analysis.revenue_growth:.2%} < min {rev_min:.2%}")
                 return False, reasons
 
         # / fcf margin min
         fcf_min = filters.get("fcf_margin_min")
-        if fcf_min is not None and analysis.fcf_margin is not None:
+        if fcf_min is not None:
+            if analysis.fcf_margin is None:
+                return False, ["fcf_margin data unavailable"]
             if analysis.fcf_margin < fcf_min:
                 reasons.append(f"fcf margin {analysis.fcf_margin:.2%} < min {fcf_min:.2%}")
                 return False, reasons
 
         # / debt to equity max
         de_max = filters.get("debt_to_equity_max")
-        if de_max is not None and analysis.debt_to_equity is not None:
+        if de_max is not None:
+            if analysis.debt_to_equity is None:
+                return False, ["debt_to_equity data unavailable"]
             if analysis.debt_to_equity > de_max:
                 reasons.append(f"d/e {analysis.debt_to_equity:.2f} > max {de_max}")
                 return False, reasons
 
         # / dcf upside min
         dcf_min = filters.get("dcf_upside_min")
-        if dcf_min is not None and analysis.dcf_upside is not None:
+        if dcf_min is not None:
+            if analysis.dcf_upside is None:
+                return False, ["dcf_upside data unavailable"]
             if analysis.dcf_upside < dcf_min:
                 reasons.append(f"dcf upside {analysis.dcf_upside:.2%} < min {dcf_min:.2%}")
                 return False, reasons
+
+        # / insider buying recent
+        insider_req = filters.get("insider_buying_recent")
+        if insider_req is True:
+            if analysis.insider_net_buy_ratio is None:
+                return False, ["insider_activity data unavailable"]
+            if analysis.insider_net_buy_ratio <= 0:
+                return False, [f"no recent insider buying (ratio={analysis.insider_net_buy_ratio:.2f})"]
 
         return True, ["fundamentals passed"]
 
@@ -446,11 +467,18 @@ class ConfigDrivenStrategy(StrategyInterface):
             elif indicator == "atr":
                 from src.indicators.volatility import atr as atr_fn
                 period = sig.get("period", 14)
+                threshold = sig.get("threshold", 0)
                 atr_val = atr_fn(high, low, close, period=period)
                 last_atr = float(atr_val.dropna().iloc[-1]) if not atr_val.dropna().empty else 0.0
                 last_close = float(close.iloc[-1])
-                # / atr as % of price for comparison
                 atr_pct = last_atr / last_close if last_close > 0 else 0
+                if condition == "above":
+                    passed = atr_pct > threshold
+                    return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'>' if passed else '<='} {threshold}"
+                elif condition == "below":
+                    passed = atr_pct < threshold
+                    return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'<' if passed else '>='} {threshold}"
+                # / no condition specified: informational only, always passes
                 return True, 0.5, f"atr={last_atr:.2f} ({atr_pct:.2%} of price)"
 
             elif indicator == "stochastic":
@@ -479,6 +507,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         market_data: pd.DataFrame,
         entry_price: float,
         current_bar_idx: int,
+        entry_date: pd.Timestamp | None = None,
     ) -> ExitSignal:
         current_price = float(market_data.iloc[current_bar_idx]["close"])
         stop_type = stop_config.get("type", "fixed_pct")
@@ -499,8 +528,10 @@ class ConfigDrivenStrategy(StrategyInterface):
             atr_val = atr_fn(high, low, close, period=period)
 
             # / trailing stop: highest close since entry minus atr * multiplier
-            # / only use data up to current bar (no lookahead)
+            # / scope to data from entry date onward (not pre-entry peaks)
             data_slice = market_data.iloc[:current_bar_idx + 1]
+            if entry_date is not None:
+                data_slice = data_slice[data_slice.index >= entry_date]
             highest_since_entry = float(data_slice["close"].max())
             current_atr = float(atr_val.iloc[current_bar_idx]) if not pd.isna(atr_val.iloc[current_bar_idx]) else 0
             stop_price = highest_since_entry - multiplier * current_atr
@@ -536,10 +567,5 @@ class ConfigDrivenStrategy(StrategyInterface):
                 upper = float(bb.upper.iloc[current_bar_idx])
                 if not pd.isna(upper) and current_price > upper:
                     return ExitSignal(should_exit=True, reason=f"take profit: price {current_price:.2f} > bb upper {upper:.2f}")
-
-        elif indicator == "fixed_pct":
-            pct = tp_config.get("pct", 0.10)
-            # / need entry_price for fixed pct — not available here, handled by caller
-            pass
 
         return ExitSignal(should_exit=False)

@@ -348,12 +348,17 @@ def _compute_metrics(
     # / sortino ratio (downside deviation only)
     downside = returns_arr[returns_arr < 0]
     downside_std = float(np.std(downside, ddof=1)) if len(downside) > 1 else 0.0
-    sortino = (avg_return / downside_std * math.sqrt(252)) if downside_std > 0 else 0.0
+    if downside_std > 0:
+        sortino = avg_return / downside_std * math.sqrt(252)
+    elif avg_return > 0:
+        sortino = float("inf")  # / no downside, positive returns
+    else:
+        sortino = 0.0
 
-    # / calmar ratio (annualized return / max drawdown)
+    # / calmar ratio (compound annualized return / max drawdown)
     trading_days = len(daily_returns)
     if trading_days > 0 and max_dd_pct > 0:
-        annualized_return = total_return_pct * (252 / trading_days)
+        annualized_return = (1 + total_return_pct) ** (252 / trading_days) - 1
         calmar = annualized_return / max_dd_pct
     else:
         calmar = 0.0

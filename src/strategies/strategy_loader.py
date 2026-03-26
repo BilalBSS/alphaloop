@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -151,8 +152,15 @@ class StrategyConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_track_constraints(self) -> "StrategyConfig":
-        # / fundamental-gated strategies need at least 3 entry signals
-        has_fundamentals = self.fundamental_filters is not None
+        # / fundamental-gated = at least one filter field is actually set
+        # / empty {} or all-None fields = momentum-only (no free 8% bypass)
+        has_fundamentals = (
+            self.fundamental_filters is not None
+            and any(
+                v is not None
+                for v in self.fundamental_filters.model_dump().values()
+            )
+        )
         num_signals = len(self.entry_conditions.signals)
 
         if has_fundamentals and num_signals < 2:
@@ -186,7 +194,8 @@ def load_config_file(path: Path) -> ConfigDrivenStrategy:
 
     config = validate_config(raw)
     logger.info("strategy_loaded", id=config.id, name=config.name, path=str(path))
-    return ConfigDrivenStrategy(raw)
+    # / use validated/normalized dict (e.g. universe list -> string coercion)
+    return ConfigDrivenStrategy(config.model_dump())
 
 
 def load_all_configs(
@@ -209,20 +218,28 @@ def load_all_configs(
                 if status not in status_filter:
                     continue
             strategies.append(strategy)
-        except (json.JSONDecodeError, ValueError, Exception) as e:
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError, OSError) as e:
             logger.error("strategy_config_load_error", path=str(path), error=str(e))
 
     logger.info("strategies_loaded", count=len(strategies), directory=str(config_dir))
     return strategies
 
 
+_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def save_config(config: dict[str, Any], directory: Path | None = None) -> Path:
     # / save a strategy config to a json file
     # / used by evolution engine to persist mutations
+    # / validates before writing to prevent persisting invalid configs
+    validate_config(config)
+
     config_dir = directory or CONFIGS_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
 
     strategy_id = config.get("id", "unknown")
+    if not _SAFE_ID_PATTERN.match(strategy_id):
+        raise ValueError(f"strategy id must be alphanumeric/underscore/hyphen only, got: {strategy_id}")
     path = config_dir / f"{strategy_id}.json"
     with open(path, "w") as f:
         json.dump(config, f, indent=2)

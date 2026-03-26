@@ -41,17 +41,23 @@ def resolve_universe(universe_ref: str, available_symbols: list[str] | None = No
         if available_symbols:
             return [s for s in available_symbols if is_crypto(s)]
         return CRYPTO_UNIVERSE
+    elif ref in ("sp500", "nasdaq100"):
+        # / these require real constituent lists — not yet maintained
+        raise NotImplementedError(
+            f"universe '{ref}' requires a constituent list that isn't maintained yet. "
+            "Use 'all_stocks' or 'all' instead."
+        )
     elif ref in NAMED_UNIVERSES:
         cached = NAMED_UNIVERSES[ref]
         if cached:
             return cached
         # / empty list means resolve from available_symbols
         if available_symbols:
-            if ref in ("sp500", "nasdaq100", "default_equity"):
+            if ref in ("default_equity",):
                 return [s for s in available_symbols if not is_crypto(s)]
             elif ref in ("crypto", "default_crypto"):
                 return [s for s in available_symbols if is_crypto(s)]
-        return FULL_UNIVERSE
+        return EQUITY_UNIVERSE if ref == "default_equity" else FULL_UNIVERSE
     else:
         # / treat as a comma-separated list of specific symbols
         return [s.strip().upper() for s in universe_ref.split(",") if s.strip()]
