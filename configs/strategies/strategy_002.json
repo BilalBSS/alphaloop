@@ -1,0 +1,35 @@
+{
+  "id": "strategy_002",
+  "name": "MACD_Momentum_Breakout",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Momentum-only: MACD bullish crossover with volume confirmation and ADX trend filter",
+  "asset_class": "stocks",
+  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "UNH"],
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "macd", "condition": "crossover_bullish"},
+      {"indicator": "volume", "condition": "above_average", "multiplier": 1.2, "period": 20},
+      {"indicator": "adx", "condition": "above", "threshold": 25, "period": 14}
+    ]
+  },
+
+  "exit_conditions": {
+    "stop_loss": {"type": "atr_trailing", "multiplier": 1.5, "period": 14},
+    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_upper", "period": 20, "std_dev": 2.0},
+    "time_exit": {"max_holding_days": 20}
+  },
+
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}

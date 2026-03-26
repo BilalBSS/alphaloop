@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0.0] - 2026-03-25
+
+### Added
+- Strategy framework (Phase 5): 4 modules in src/strategies/
+- base_strategy.py: abstract StrategyInterface + ConfigDrivenStrategy that evaluates JSON configs against 8 indicator types (bollinger, rsi, macd, volume, sma, adx, atr, stochastic) + 6 fundamental filters (pe, pe_vs_sector, revenue_growth, fcf_margin, debt_to_equity, dcf_upside)
+- strategy_loader.py: Pydantic-validated JSON config loader with dual-track constraints (fundamental-gated: max 8% position, ≥2 signals; momentum-only: max 4% position, ≥1 signal), config save/load for evolution engine
+- strategy_pool.py: manages N concurrent strategies with composite scoring (sharpe * 0.4 + win_rate * 0.3 - |max_drawdown| * 0.2 + (0.25 - brier) * 0.1), ranked views, bottom quartile detection, lifecycle tracking (backtest_pending → paper_trading → live → killed)
+- backtest.py: backtesting engine with anti-lookahead (signal evaluated at previous bar close, filled at next bar open), computes Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, avg holding days; simulates through PaperBroker for realistic fills
+- strategy_002.json: seed momentum-only strategy (MACD crossover + volume + ADX trend filter)
+- 279 new tests (645 total) across 4 test files covering all Phase 5 modules
+
 ## [0.4.0.0] - 2026-03-25
 
 ### Added
