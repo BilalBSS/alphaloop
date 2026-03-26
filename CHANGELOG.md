@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0.0] - 2026-03-25
+
+### Added
+- Technical indicators (Phase 4): 4 modules in src/indicators/
+- trend.py: SMA, EMA, MACD (with histogram), ADX (Wilder smoothing), true_range, Supertrend (with direction tracking)
+- momentum.py: RSI (Wilder smoothing), Stochastic (%K/%D), CCI, Williams %R, ROC
+- volatility.py: Bollinger Bands (with bandwidth + %B), ATR (Wilder smoothing), Keltner Channel
+- volume.py: OBV, VWAP, Volume Profile (POC + value area), MFI
+- Broker layer (Phase 4): 4 modules in src/brokers/
+- base.py: abstract BrokerInterface ABC with Order/Position/AccountBalance dataclasses
+- paper_broker.py: simulated broker with instant fills, limit orders, position tracking, avg price recalc
+- alpaca_broker.py: REST API broker for stocks + crypto with retry decorator
+- broker_factory.py: routes all symbols to paper or live broker by mode
+- 97 new tests (366 total) across 7 test files covering all Phase 4 modules
+
+### Fixed
+- paper_broker.py: replaced deprecated datetime.utcnow() with datetime.now(timezone.utc)
+
 ## [0.3.0.0] - 2026-03-25
 
 ### Added
