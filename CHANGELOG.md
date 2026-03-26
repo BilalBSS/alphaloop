@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0.0] - 2026-03-25
+
+### Added
+- Analysis engine (Phase 3): 6 modules in src/analysis/
+- ratio_analysis.py: P/E, P/S, PEG, FCF margin, D/E scoring (0-100) with sector comparison and weighted composite
+- dcf_model.py: Monte Carlo DCF (10k simulations) with randomized growth, margins, terminal multiples; outputs p10/median/p90 fair value distribution
+- sensitivity.py: growth rate x terminal multiple sensitivity grid with driver detection (which assumption matters most)
+- earnings_signals.py: yfinance earnings surprise detection, consecutive beat/miss streaks, bullish/bearish signal scoring
+- insider_activity.py: insider trade aggregation from DB, title-weighted net buy ratio (CEO 3x, CFO 2.5x, Director 1x), cluster detection (3+ insiders buying within 30 days)
+- ai_summary.py: Groq free tier LLM summary with structured fallback when API unavailable
+- 96 new tests (269 total) across 6 test files covering all Phase 3 modules
+- Quant engine mathematical foundations documented in CLAUDE.md (variance reduction, importance sampling, particle filter, copulas)
+
+### Fixed
+- CLAUDE.md: synchronized phases, build order, architecture tree, and test counts across all sections
+- dcf_model.py: clamp growth rates to [-0.5, 1.0] to prevent negative revenue in MC simulation
+- dcf_model.py: json.dumps assumptions dict for asyncpg jsonb compatibility
+- ai_summary.py: sanitize groq exception logs to prevent api key leak, add dcf to fallback confidence
+- earnings_signals.py: sort quarters most-recent-first (yfinance order not guaranteed), clamp surprise_pct to [-5, 5]
+- ratio_analysis.py: removed wrong d/e > 10 normalization heuristic (yfinance returns ratio not percentage)
+
 ## [0.2.0.0] - 2026-03-24
 
 ### Added
