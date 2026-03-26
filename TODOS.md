@@ -31,4 +31,33 @@
 **Context:** From quant article reference. Can be done as a quick upgrade to existing Phase 3 code, or deferred to Phase 6 when monte_carlo.py is built as a shared utility.
 **Depends on:** dcf_model.py (Phase 3, complete)
 
+## Broker Layer
+
+### Reusable httpx.AsyncClient for AlpacaBroker
+**Priority:** P2
+**What:** Create the httpx.AsyncClient once in AlpacaBroker.__init__ (or lazily) and reuse across requests instead of creating/destroying per call.
+**Why:** Current code creates a new TCP connection + TLS handshake for every API call. Under load (price polling, position checks) this wastes latency and risks file descriptor exhaustion.
+**Pros:** Connection reuse, lower latency, fewer resources.
+**Cons:** Need a cleanup/close method to avoid resource leaks on shutdown.
+**Context:** Identified during Phase 4 adversarial review.
+**Depends on:** alpaca_broker.py (Phase 4, complete)
+
+### AsyncIO Lock for PaperBroker
+**Priority:** P3
+**What:** Add asyncio.Lock around the critical section in PaperBroker.place_order to prevent concurrent coroutines from double-spending cash or corrupting positions.
+**Why:** If two coroutines call place_order concurrently, both can read the same cash balance, pass the check, and both deduct — resulting in negative cash.
+**Pros:** Correctness under concurrent access.
+**Cons:** Minor overhead. Single-writer backtesting doesn't need it today.
+**Context:** Identified during Phase 4 adversarial review. Safe for now since backtesting is sequential, but needed before strategy_agent runs concurrent signals in Phase 7.
+**Depends on:** paper_broker.py (Phase 4, complete)
+
+### VWAP Session Reset for Intraday Data
+**Priority:** P3
+**What:** Add optional session boundary detection to vwap() so it resets the cumulative sum at each day boundary when fed intraday bars.
+**Why:** VWAP is defined as a per-session indicator. The current implementation uses a running cumsum with no reset, which is correct for daily bars but produces meaningless values for multi-day intraday data.
+**Pros:** Correct VWAP for intraday strategies.
+**Cons:** Adds complexity. Not needed until intraday data is fed to the system.
+**Context:** Identified during Phase 4 adversarial review. Current usage is daily bars only.
+**Depends on:** volume.py (Phase 4, complete)
+
 ## Completed

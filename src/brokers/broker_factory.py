@@ -16,8 +16,12 @@ logger = structlog.get_logger(__name__)
 
 
 class BrokerFactory:
+    VALID_MODES = ("paper", "live")
+
     def __init__(self, mode: str = "paper", initial_cash: float = 100_000.0):
         # / mode: "paper" for simulated, "live" for real orders
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"invalid broker mode: {mode!r}, must be one of {self.VALID_MODES}")
         self._mode = mode
         self._paper = PaperBroker(initial_cash=initial_cash) if mode == "paper" else None
         self._alpaca = AlpacaBroker() if mode == "live" else None

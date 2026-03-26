@@ -79,11 +79,14 @@ class AlpacaBroker(BrokerInterface):
         if crypto:
             trades = data.get("trades", {})
             trade = trades.get(alpaca_sym, {})
-            return float(trade.get("p", 0))
+            price = trade.get("p")
         else:
-            return float(data.get("trade", {}).get("p", 0))
+            price = data.get("trade", {}).get("p")
 
-    @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)
+        if price is None or float(price) <= 0:
+            raise ValueError(f"no valid price returned for {symbol}")
+        return float(price)
+
     async def place_order(
         self,
         symbol: str,

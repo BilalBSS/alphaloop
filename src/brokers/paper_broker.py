@@ -52,7 +52,7 @@ class PaperBroker(BrokerInterface):
         if side not in ("buy", "sell"):
             raise ValueError(f"side must be buy or sell, got {side}")
 
-        order_id = str(uuid.uuid4())[:8]
+        order_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
         price = self.prices.get(symbol)
@@ -85,8 +85,16 @@ class PaperBroker(BrokerInterface):
                 self.orders[order_id] = order
                 return order
 
+        # / reject unsupported order types
+        if order_type not in ("market", "limit"):
+            raise ValueError(f"unsupported order type: {order_type} (stop/stop_limit not yet implemented)")
+
         # / market orders and fillable limit orders: fill immediately
-        fill_price = limit_price if (order_type == "limit" and limit_price) else price
+        # / limit orders fill at the better price (market vs limit)
+        if order_type == "limit" and limit_price:
+            fill_price = min(limit_price, price) if side == "buy" else max(limit_price, price)
+        else:
+            fill_price = price
         cost = fill_price * qty
 
         if side == "buy":
@@ -120,7 +128,7 @@ class PaperBroker(BrokerInterface):
 
             self.cash += cost
             pos["qty"] -= qty
-            if pos["qty"] == 0:
+            if abs(pos["qty"]) < 1e-9:
                 del self.positions[symbol]
             else:
                 self.positions[symbol] = pos
