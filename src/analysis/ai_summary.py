@@ -121,6 +121,9 @@ def _build_fallback_summary(
             bearish_count += 1
         else:
             signals.append(f"DCF: fairly valued at ${dcf.fair_value_median:.2f}")
+        # / dcf contributes to confidence via upside magnitude
+        total_strength += min(100.0, abs(dcf.upside_pct) * 200)
+        signal_count += 1
 
     if earnings:
         if earnings.signal == "bullish":
@@ -228,5 +231,5 @@ async def generate_summary(
             )
 
     except Exception as exc:
-        logger.warning("groq_api_failed_using_fallback", symbol=symbol, error=str(exc))
+        logger.warning("groq_api_failed_using_fallback", symbol=symbol, error=type(exc).__name__)
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)

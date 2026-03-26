@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Any
+import json
 
 import numpy as np
 import structlog
@@ -73,6 +74,8 @@ def run_dcf_simulation(
         assumptions.growth_std,
         size=(n, years),
     )
+    # / clamp growth to reasonable range — unclamped can flip revenue negative
+    growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
     # / randomize fcf margins
     margins = rng.normal(
@@ -207,10 +210,6 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
     revenue_growth = float(fund_row["revenue_growth_1y"]) if fund_row["revenue_growth_1y"] else 0.05
     de = float(fund_row["debt_to_equity"]) if fund_row["debt_to_equity"] else 0.0
 
-    # / normalize d/e from yfinance percentage format
-    if de > 10:
-        de = de / 100.0
-
     price = float(price_row["close"]) if price_row else 0.0
     ps = float(fund_row["ps_ratio"]) if fund_row["ps_ratio"] else None
 
@@ -293,7 +292,7 @@ async def store_dcf_result(pool, result: DCFResult, regime: str | None = None) -
                 Decimal(str(result.upside_pct)),
                 result.num_simulations,
                 result.confidence,
-                result.assumptions,
+                json.dumps(result.assumptions),
                 regime,
             )
         return True

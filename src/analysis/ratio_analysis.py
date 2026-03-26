@@ -106,12 +106,8 @@ def score_debt_equity(de: Decimal | None) -> float | None:
         return None
     de_f = float(de)
 
-    # / yfinance returns d/e as percentage (50 = 0.5x)
-    # / normalize: divide by 100 if > 10 (likely percentage format)
-    if de_f > 10:
-        de_f = de_f / 100.0
-
     # / d/e 0 = 100, d/e >= 3.0 = 0
+    # / yfinance returns d/e as a ratio (not percentage) — no normalization needed
     score = max(0.0, min(100.0, (3.0 - de_f) / 3.0 * 100))
     return round(score, 1)
 

@@ -70,13 +70,17 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
                         q["estimate"] = float(row[est_col]) if row[est_col] is not None else None
                         break
 
-                # / compute surprise
-                if q.get("actual") is not None and q.get("estimate") is not None and q["estimate"] != 0:
-                    q["surprise_pct"] = (q["actual"] - q["estimate"]) / abs(q["estimate"])
+                # / compute surprise — skip near-zero estimates to avoid extreme percentages
+                if q.get("actual") is not None and q.get("estimate") is not None and abs(q["estimate"]) > 0.01:
+                    surprise = (q["actual"] - q["estimate"]) / abs(q["estimate"])
+                    q["surprise_pct"] = max(-5.0, min(5.0, surprise))
                 else:
                     q["surprise_pct"] = None
 
                 result["quarters"].append(q)
+
+        # / sort quarters most-recent-first — yfinance order is not guaranteed
+        result["quarters"].sort(key=lambda q: q.get("period", ""), reverse=True)
 
         # / parse earnings dates for next report
         if earnings_dates is not None and hasattr(earnings_dates, "index") and len(earnings_dates) > 0:
