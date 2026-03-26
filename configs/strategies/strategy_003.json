@@ -1,0 +1,44 @@
+{
+  "id": "strategy_003",
+  "name": "RSI_Deep_Value",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Buy fundamentally strong stocks when RSI shows oversold conditions with volume confirmation",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+
+  "fundamental_filters": {
+    "pe_ratio_max": 30,
+    "pe_vs_sector": "below_average",
+    "revenue_growth_min": 0.05,
+    "fcf_margin_min": 0.15,
+    "debt_to_equity_max": 1.0,
+    "dcf_upside_min": 0.15
+  },
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "rsi", "condition": "below", "threshold": 30, "period": 14},
+      {"indicator": "volume", "condition": "above_average", "multiplier": 1.5, "period": 20}
+    ]
+  },
+
+  "exit_conditions": {
+    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_upper", "period": 20, "std_dev": 2.0},
+    "stop_loss": {"type": "fixed_pct", "pct": 0.06},
+    "time_exit": {"max_holding_days": 45}
+  },
+
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.08,
+    "kelly_fraction": 0.30
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}

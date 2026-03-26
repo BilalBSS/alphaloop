@@ -1,0 +1,35 @@
+{
+  "id": "strategy_009",
+  "name": "ADX_Trend_Rider",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Momentum-only: ride strong trends — high ADX with RSI momentum and MACD confirmation, wide trailing stop",
+  "asset_class": "stocks",
+  "universe": "all",
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "adx", "condition": "above", "threshold": 35, "period": 14},
+      {"indicator": "rsi", "condition": "above", "threshold": 55, "period": 14},
+      {"indicator": "macd", "condition": "positive"},
+      {"indicator": "sma", "condition": "price_above", "period": 20}
+    ]
+  },
+
+  "exit_conditions": {
+    "stop_loss": {"type": "atr_trailing", "multiplier": 3.5, "period": 14},
+    "time_exit": {"max_holding_days": 40}
+  },
+
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}

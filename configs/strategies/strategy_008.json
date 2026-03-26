@@ -1,0 +1,44 @@
+{
+  "id": "strategy_008",
+  "name": "DCF_Undervalued_Accumulator",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Deep value: big DCF upside + low PE + strong balance sheet, enter on any technical weakness",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+
+  "fundamental_filters": {
+    "pe_ratio_max": 25,
+    "pe_vs_sector": "below_average",
+    "revenue_growth_min": 0.02,
+    "fcf_margin_min": 0.12,
+    "debt_to_equity_max": 1.5,
+    "dcf_upside_min": 0.25
+  },
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "rsi", "condition": "below", "threshold": 45, "period": 14},
+      {"indicator": "bollinger_bands", "condition": "price_below_lower", "lookback": 20, "std_dev": 1.5}
+    ]
+  },
+
+  "exit_conditions": {
+    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_upper", "period": 20, "std_dev": 2.0},
+    "stop_loss": {"type": "fixed_pct", "pct": 0.08},
+    "time_exit": {"max_holding_days": 90}
+  },
+
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.08,
+    "kelly_fraction": 0.35
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}

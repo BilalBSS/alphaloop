@@ -1,0 +1,33 @@
+{
+  "id": "strategy_010",
+  "name": "Bollinger_Squeeze_Breakout",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Momentum-only: low volatility squeeze followed by upside breakout with volume confirmation",
+  "asset_class": "stocks",
+  "universe": "all",
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "bollinger_bands", "condition": "price_above_upper", "lookback": 20, "std_dev": 2.0},
+      {"indicator": "volume", "condition": "above_average", "multiplier": 1.8, "period": 20}
+    ]
+  },
+
+  "exit_conditions": {
+    "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 10},
+    "time_exit": {"max_holding_days": 12}
+  },
+
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.03
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}
