@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0.0] - 2026-03-25
+
+### Added
+- Technical indicators (Phase 4): 4 modules in src/indicators/
+- trend.py: SMA, EMA, MACD (with histogram), ADX (Wilder smoothing), true_range, Supertrend (with direction tracking)
+- momentum.py: RSI (Wilder smoothing), Stochastic (%K/%D), CCI, Williams %R, ROC
+- volatility.py: Bollinger Bands (with bandwidth + %B), ATR (Wilder smoothing), Keltner Channel
+- volume.py: OBV, VWAP, Volume Profile (POC + value area), MFI
+- Broker layer (Phase 4): 4 modules in src/brokers/
+- base.py: abstract BrokerInterface ABC with Order/Position/AccountBalance dataclasses
+- paper_broker.py: simulated broker with instant fills, limit orders, position tracking, avg price recalc
+- alpaca_broker.py: REST API broker for stocks + crypto with retry decorator
+- broker_factory.py: routes all symbols to paper or live broker by mode
+- 97 new tests (366 total) across 7 test files covering all Phase 4 modules
+
+### Fixed
+- paper_broker.py: replaced deprecated datetime.utcnow() with datetime.now(timezone.utc)
+- paper_broker.py: use full uuid for order ids (truncated 8-char had birthday-paradox collision risk in backtesting)
+- paper_broker.py: limit orders now fill at better price (min of market/limit for buys, max for sells)
+- paper_broker.py: float tolerance for position cleanup (abs < 1e-9 instead of == 0)
+- paper_broker.py: reject unsupported order types (stop/stop_limit) with clear error instead of silently treating as market
+- alpaca_broker.py: get_price raises ValueError on missing/zero price instead of silently returning 0.0
+- alpaca_broker.py: removed @with_retry from place_order to prevent duplicate real-money orders on transient failures
+- broker_factory.py: validate mode in __init__, raise ValueError for unknown modes
+
 ## [0.3.0.0] - 2026-03-25
 
 ### Added
