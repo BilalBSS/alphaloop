@@ -6,12 +6,27 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - Strategy framework (Phase 5): 4 modules in src/strategies/
-- base_strategy.py: abstract StrategyInterface + ConfigDrivenStrategy that evaluates JSON configs against 8 indicator types (bollinger, rsi, macd, volume, sma, adx, atr, stochastic) + 6 fundamental filters (pe, pe_vs_sector, revenue_growth, fcf_margin, debt_to_equity, dcf_upside)
-- strategy_loader.py: Pydantic-validated JSON config loader with dual-track constraints (fundamental-gated: max 8% position, ≥2 signals; momentum-only: max 4% position, ≥1 signal), config save/load for evolution engine
+- base_strategy.py: abstract StrategyInterface + ConfigDrivenStrategy that evaluates JSON configs against 8 indicator types (bollinger, rsi, macd, volume, sma, adx, atr, stochastic) + 7 fundamental filters (pe, pe_vs_sector, revenue_growth, fcf_margin, debt_to_equity, dcf_upside, insider_buying_recent)
+- strategy_loader.py: Pydantic-validated JSON config loader with dual-track constraints (fundamental-gated: max 8% position, ≥2 signals; momentum-only: max 4% position, ≥1 signal), config save/load for evolution engine with path sanitization
 - strategy_pool.py: manages N concurrent strategies with composite scoring (sharpe * 0.4 + win_rate * 0.3 - |max_drawdown| * 0.2 + (0.25 - brier) * 0.1), ranked views, bottom quartile detection, lifecycle tracking (backtest_pending → paper_trading → live → killed)
 - backtest.py: backtesting engine with anti-lookahead (signal evaluated at previous bar close, filled at next bar open), computes Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, avg holding days; simulates through PaperBroker for realistic fills
-- strategy_002.json: seed momentum-only strategy (MACD crossover + volume + ADX trend filter)
-- 279 new tests (645 total) across 4 test files covering all Phase 5 modules
+- 10 seed strategy configs: 4 fundamental-gated (bollinger PE oversold, RSI deep value, stochastic FCF mean reversion, DCF undervalued accumulator) + 6 momentum-only (MACD breakout, keltner breakout, volume surge, SMA golden cross, ADX trend rider, bollinger squeeze breakout)
+- universe resolution system: strategies reference "all", "all_stocks", "all_crypto" instead of hardcoded tickers, resolved at runtime from database
+- 282 new tests (648 total) across 4 test files covering all Phase 5 modules
+
+### Fixed
+- backtest.py: sortino ratio now returns inf for all-positive returns (was incorrectly 0)
+- backtest.py: calmar ratio uses compound annualization instead of linear extrapolation
+- base_strategy.py: ATR trailing stop now scopes highest-since-entry from entry date, not all history
+- base_strategy.py: ATR entry signal now supports above/below conditions with threshold (was always-true)
+- base_strategy.py: fundamental filters reject when data is None instead of silently passing
+- base_strategy.py: insider_buying_recent filter now implemented (was declared but never checked)
+- base_strategy.py: removed dead fixed_pct take profit code path
+- strategy_loader.py: load_config_file passes pydantic-normalized dict to ConfigDrivenStrategy (was passing raw dict, bypassing coercions)
+- strategy_loader.py: save_config validates before writing and sanitizes strategy_id (prevents path traversal)
+- strategy_loader.py: empty fundamental_filters {} no longer bypasses momentum-only position cap
+- strategy_loader.py: narrowed exception handling from catch-all to specific types
+- symbols.py: sp500/nasdaq100 raise NotImplementedError instead of silently resolving to wrong universe
 
 ## [0.4.0.0] - 2026-03-25
 
