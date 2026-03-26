@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0.0] - 2026-03-26
+
+### Added
+- Quant engine (Phase 6): 6 modules in src/quant/
+- monte_carlo.py: production MC with variance reduction — antithetic variates (Z and -Z pairs for ~50-75% free variance reduction), stratified sampling (quantile partitioning with Neyman allocation), control variates (OLS-optimal coefficient c against known baseline); all three stack for 100-500x reduction over crude MC
+- importance_sampling.py: exponential tilting for tail risk estimation — shifts sampling distribution toward rare events, corrects via likelihood ratio with log-space clamping at [-50, 50]; 100 IS samples beat 1M crude samples on P(crash > 20%)
+- risk_metrics.py: VaR (parametric normal, historical empirical quantile, Monte Carlo simulated), CVaR/Expected Shortfall (average loss beyond VaR), max drawdown (peak-to-trough), EVT-based tail estimation via Generalized Pareto Distribution, risk_summary with Sharpe and Sortino
+- brier_score.py: strategy calibration tracking — Brier score, calibration curve (binned predicted vs observed frequencies), Murphy decomposition (reliability - resolution + uncertainty = BS), rolling window Brier for drift detection
+- particle_filter.py: Sequential Monte Carlo bootstrap filter — N particles as probability hypotheses in logit space with [-10, 10] clamping, Gaussian likelihood weighting, systematic resampling when ESS < N/2, predict/update/estimate API for real-time signal smoothing
+- copula_models.py: Gaussian copula (Kendall's tau inversion, tail dependence lambda = 0), Student-t copula (profile likelihood over nu with Kendall's tau correlation, symmetric tail dependence lambda > 0), Clayton copula (bivariate lower tail, method of moments via tau), copula simulation (Gaussian/t/Clayton), portfolio tail risk assessment, nearest positive-definite matrix correction (Higham 2002)
+- 116 new tests (764 total) across 6 test files covering all Phase 6 modules
+
 ## [0.5.0.0] - 2026-03-25
 
 ### Added
