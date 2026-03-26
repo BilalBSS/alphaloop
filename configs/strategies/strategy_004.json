@@ -1,0 +1,35 @@
+{
+  "id": "strategy_004",
+  "name": "Keltner_Breakout_Momentum",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Momentum-only: buy on Keltner channel upper breakout with strong ADX trend and MACD confirmation",
+  "asset_class": "stocks",
+  "universe": ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM"],
+
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {"indicator": "bollinger_bands", "condition": "price_above_upper", "lookback": 20, "std_dev": 2.0},
+      {"indicator": "adx", "condition": "above", "threshold": 30, "period": 14},
+      {"indicator": "macd", "condition": "positive"}
+    ]
+  },
+
+  "exit_conditions": {
+    "stop_loss": {"type": "atr_trailing", "multiplier": 2.5, "period": 14},
+    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_middle", "period": 50, "std_dev": 2.0},
+    "time_exit": {"max_holding_days": 15}
+  },
+
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+
+  "metadata": {
+    "generation": 1,
+    "status": "backtest_pending"
+  }
+}
