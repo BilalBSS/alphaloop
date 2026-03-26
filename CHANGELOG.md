@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0.0] - 2026-03-26
+
+### Added
+- Agent orchestrator (Phase 7): 6 modules in src/agents/ + 4 modules in src/evolution/
+- orchestrator.py: main loop coordinating 5 concurrent agent tasks — analyst (1h/4h), strategy (15min/1h), risk (5s poll), executor (5s poll), evolution (midnight ET). NYSE market hours via exchange_calendars with fallback. Graceful shutdown via asyncio.Event
+- analyst_agent.py: runs full fundamental analysis pipeline per symbol (ratio scoring, DCF, earnings surprise, insider activity, AI summary), computes weighted composite score, stores to analysis_scores with full JSONB details for strategy agent reconstruction
+- strategy_agent.py: evaluates all active strategies (paper_trading + live) against their symbol universes, uses per-symbol ParticleFilter for signal smoothing (predict → update → estimate), generates buy signals when smoothed strength exceeds 0.3 threshold, checks exit conditions for open positions
+- risk_agent.py: evaluates trade signals for portfolio risk — position sizing (equity * max_pct * strength / price), portfolio exposure limits (max_portfolio_risk), copula-based tail dependence check on portfolios with 5+ positions (student-t copula, reject/size-down when λ > 0.30), skips copula on small portfolios
+- executor_agent.py: places orders via broker layer with double-execution guard (rejects non-pending trades), logs to trade_log with regime and strategy_id, handles filled/rejected/pending/cancelled order states
+- tools.py: 13 shared async DB helper functions (store/fetch for analysis_scores, trade_signals, approved_trades, trade_log, strategy_scores, evolution_log) + AnalysisData serialization roundtrip
+- evolution_engine.py: Karpathy autoresearch loop — READ scores → RANK by composite → KILL bottom quartile → MUTATE via Claude Haiku → BACKTEST in parallel (asyncio.gather) → SCORE vs median → PROMOTE paper_trading with 14+ days and sharpe >= 0.8 → DOCUMENT
+- strategy_mutator.py: Claude Haiku strategy mutation with 3-retry loop (error feedback in prompt), JSON parsing from fenced/unfenced LLM output, pydantic validation, random parameter tweak fallback when LLM unavailable
+- report_generator.py: markdown evolution reports per generation (killed/mutated/promoted/pool summary)
+- documentation.py: auto-updates CHANGELOG.md with evolution cycle entries
+- 002_agent_columns.sql: adds status column to trade_signals for agent polling, strategy_id to approved_trades and trade_log for traceability
+- 206 new tests (1273 total) across 10 new test files covering all Phase 7 modules
+
+### Fixed
+- paper_broker.py: added asyncio.Lock around place_order to prevent concurrent double-spending (TODOS P3 — required for Phase 7 concurrent agent loops)
+
 ## [0.6.1.0] - 2026-03-26
 
 ### Changed

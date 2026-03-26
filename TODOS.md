@@ -42,15 +42,6 @@
 **Context:** Identified during Phase 4 adversarial review.
 **Depends on:** alpaca_broker.py (Phase 4, complete)
 
-### AsyncIO Lock for PaperBroker
-**Priority:** P3
-**What:** Add asyncio.Lock around the critical section in PaperBroker.place_order to prevent concurrent coroutines from double-spending cash or corrupting positions.
-**Why:** If two coroutines call place_order concurrently, both can read the same cash balance, pass the check, and both deduct — resulting in negative cash.
-**Pros:** Correctness under concurrent access.
-**Cons:** Minor overhead. Single-writer backtesting doesn't need it today.
-**Context:** Identified during Phase 4 adversarial review. Safe for now since backtesting is sequential, but needed before strategy_agent runs concurrent signals in Phase 7.
-**Depends on:** paper_broker.py (Phase 4, complete)
-
 ### VWAP Session Reset for Intraday Data
 **Priority:** P3
 **What:** Add optional session boundary detection to vwap() so it resets the cumulative sum at each day boundary when fed intraday bars.
@@ -61,3 +52,7 @@
 **Depends on:** volume.py (Phase 4, complete)
 
 ## Completed
+
+### AsyncIO Lock for PaperBroker
+**Completed:** v0.7.0.0 (2026-03-26)
+Added asyncio.Lock around PaperBroker.place_order to prevent concurrent double-spending. Required by Phase 7 orchestrator running concurrent agent loops.
