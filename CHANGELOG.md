@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1.0] - 2026-03-26
+
+### Changed
+- test hardening across all 32 test files — 303 new tests (764 → 1067 total)
+- tests now verify hand-computed reference values instead of just types and ranges
+- added exact formula verification: PE/PEG/FCF/D-E scoring, Brier decomposition identity, VaR parametric formula, composite score weights, Kelly fraction, Sharpe annualization
+- added mathematical invariant tests: CVaR >= VaR, particles bounded [0,1], weights sum to 1, correlation matrix positive definite, ADX in [0,100], RSI in [0,100], Williams %R in [-100,0]
+- added boundary precision tests: exact boundary values for all validators, position sizing limits, holding day limits, filter thresholds
+- added algebraic verification for indicators: SMA exact values, EMA convergence, MACD = fast-slow, histogram = macd-signal, Bollinger upper/lower/pct_b formulas, ATR convergence, Keltner formula
+- added failure-mode tests: division by zero (constant prices, flat markets), NaN propagation, weight collapse recovery, empty data, circuit breaker state transitions
+- added financial correctness tests: anti-lookahead bar index verification, stop loss exact trigger price, weighted average cost basis, position close removes from dict, fill at better price
+- updated CLAUDE.md testing section with philosophy and patterns
+
 ## [0.6.0.0] - 2026-03-26
 
 ### Added
