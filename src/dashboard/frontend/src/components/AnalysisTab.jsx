@@ -309,7 +309,7 @@ function SentimentPanel({ sentiment, socialSentiment }) {
 
 // / ai analysis: dual-llm display
 function AiAnalysisPanel({ score }) {
-  const details = typeof score?.details === 'object' ? score.details : {}
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
   const consensus = details.ai_consensus || '--'
   const groqSignal = details.llm_signal_groq
   const deepseekSignal = details.llm_signal_deepseek
