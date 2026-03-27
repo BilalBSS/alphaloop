@@ -14,9 +14,10 @@ from src.analysis.ratio_analysis import RatioScore, analyze_ratios
 from src.analysis.dcf_model import DCFResult, analyze_dcf
 from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
-from src.analysis.ai_summary import generate_summary
+from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.agents import tools
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
+from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
 
 logger = structlog.get_logger(__name__)
@@ -29,6 +30,12 @@ class AnalystAgent:
         # / run full analysis pipeline for each symbol
         # / returns {symbol: composite_score} for logging
         results: dict[str, float | None] = {}
+
+        # / social sentiment: stocktwits + fear & greed for all symbols
+        try:
+            await run_social_sentiment(pool, symbols)
+        except Exception as exc:
+            logger.warning("social_sentiment_batch_failed", error=str(exc))
 
         for symbol in symbols:
             try:
@@ -129,8 +136,8 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("regime_fetch_failed", symbol=symbol, error=str(exc))
 
-        # / generate ai summary (uses groq or fallback)
-        summary = await generate_summary(
+        # / dual-llm analysis: groq (fast) + deepseek (second opinion)
+        dual = await generate_dual_analysis(
             symbol, ratio=ratio_score, dcf=dcf_result,
             earnings=earnings_signal, insider=insider_signal, regime=regime,
         )
@@ -142,8 +149,15 @@ class AnalystAgent:
 
         # / build details dict for JSONB storage
         details = self._build_details(
-            ratio_score, dcf_result, earnings_signal, insider_signal, summary,
+            ratio_score, dcf_result, earnings_signal, insider_signal, dual.groq,
         )
+        # / add dual-llm fields
+        details["ai_consensus"] = dual.consensus
+        details["llm_analysis_groq"] = dual.groq.summary
+        details["llm_signal_groq"] = dual.groq.signal
+        if dual.deepseek:
+            details["llm_analysis_deepseek"] = dual.deepseek.summary
+            details["llm_signal_deepseek"] = dual.deepseek.signal
 
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None

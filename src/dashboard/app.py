@@ -119,6 +119,7 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = Non
 
 @app.get("/api/analysis/{symbol}")
 async def get_analysis(symbol: str):
+    # / full deep-dive: fundamentals, DCF, dual-llm, indicators, trades, sentiment
     score = await _query_one(
         """SELECT * FROM analysis_scores
         WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
@@ -129,10 +130,59 @@ async def get_analysis(symbol: str):
         WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
         symbol,
     )
+    trades = await _query(
+        """SELECT * FROM trade_log
+        WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
+        symbol,
+    )
+    sentiment = await _query(
+        """SELECT date, sentiment_score, sentiment_label, source
+        FROM news_sentiment WHERE symbol = $1
+        ORDER BY date DESC LIMIT 30""",
+        symbol,
+    )
+    fundamentals = await _query_one(
+        """SELECT * FROM fundamentals
+        WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+        symbol,
+    )
+    dcf = await _query_one(
+        """SELECT * FROM dcf_valuations
+        WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+        symbol,
+    )
+    market = await _query(
+        """SELECT date, close, volume FROM market_data
+        WHERE symbol = $1 ORDER BY date DESC LIMIT 60""",
+        symbol,
+    )
+    social = await _query(
+        """SELECT date, source, bullish_pct, bearish_pct, volume, raw_score
+        FROM social_sentiment WHERE symbol = $1
+        ORDER BY date DESC LIMIT 30""",
+        symbol,
+    )
     return {
         "score": _serialize_one(score),
         "signals": _serialize(signals),
+        "trades": _serialize(trades),
+        "sentiment": _serialize(sentiment),
+        "social_sentiment": _serialize(social),
+        "fundamentals": _serialize_one(fundamentals),
+        "dcf": _serialize_one(dcf),
+        "price_history": _serialize(market),
     }
+
+
+@app.get("/api/symbols")
+async def get_symbols():
+    # / list all tracked symbols with latest score
+    rows = await _query(
+        """SELECT DISTINCT ON (symbol) symbol, date, composite_score, regime,
+            details->>'ai_consensus' as ai_consensus
+        FROM analysis_scores ORDER BY symbol, date DESC"""
+    )
+    return _serialize(rows)
 
 
 @app.get("/api/strategies")

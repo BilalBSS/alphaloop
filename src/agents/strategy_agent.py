@@ -12,7 +12,7 @@ import structlog
 
 from src.agents import tools
 from src.quant.particle_filter import ParticleFilter
-from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy
+from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy, EntrySignal
 from src.strategies.strategy_pool import StrategyPool
 
 logger = structlog.get_logger(__name__)
@@ -129,6 +129,18 @@ class StrategyAgent:
 
         if not entry_signal.should_enter:
             return None
+
+        # / ai consensus filter: dual-llm agreement gates signal strength
+        consensus = analysis_data.ai_consensus if analysis_data else None
+        if consensus == "bearish":
+            logger.debug("signal_blocked_ai_bearish", symbol=symbol)
+            return None
+        if consensus == "disagree":
+            entry_signal = EntrySignal(
+                should_enter=True,
+                strength=entry_signal.strength * 0.5,
+                reasons=entry_signal.reasons + ["ai_consensus: disagree, halved"],
+            )
 
         # / smooth with particle filter
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)

@@ -56,6 +56,7 @@ class AnalysisData:
     funding_rate: float | None = None
     exchange_flow_ratio: float | None = None
     news_sentiment_score: float | None = None
+    ai_consensus: str | None = None  # bullish, bearish, neutral, disagree
 
 
 class StrategyInterface(ABC):
