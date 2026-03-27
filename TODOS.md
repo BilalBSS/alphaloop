@@ -11,14 +11,6 @@
 **Context:** Identified during Phase 2 eng review (outside voice). yfinance is fine for development but should have a fallback before the system trades live in Phase 7+.
 **Depends on:** fundamentals.py (Phase 2, complete)
 
-### Data Retention Policy for Neon 512MB
-**Priority:** P3
-**What:** Implement age-based data cleanup for high-volume tables (news_sentiment, data_quality, trade_log).
-**Why:** Neon free tier is 512MB. Current data is small (~30MB/year) but news_sentiment (Phase 8) and DCF valuations (Phase 3, built) could exhaust storage before the full system is built.
-**Pros:** Prevents silent write failures when storage is full.
-**Cons:** Losing old data reduces backtesting depth. Need to balance retention vs storage.
-**Context:** Identified during Phase 2 eng review (outside voice). Not urgent now but should be addressed before news_sentiment module is built in Phase 8.
-**Depends on:** news_sentiment.py (Phase 8), dcf_model.py (Phase 3, complete)
 
 ## Analysis Engine
 
@@ -33,14 +25,6 @@
 
 ## Broker Layer
 
-### Reusable httpx.AsyncClient for AlpacaBroker
-**Priority:** P2
-**What:** Create the httpx.AsyncClient once in AlpacaBroker.__init__ (or lazily) and reuse across requests instead of creating/destroying per call.
-**Why:** Current code creates a new TCP connection + TLS handshake for every API call. Under load (price polling, position checks) this wastes latency and risks file descriptor exhaustion.
-**Pros:** Connection reuse, lower latency, fewer resources.
-**Cons:** Need a cleanup/close method to avoid resource leaks on shutdown.
-**Context:** Identified during Phase 4 adversarial review.
-**Depends on:** alpaca_broker.py (Phase 4, complete)
 
 ### VWAP Session Reset for Intraday Data
 **Priority:** P3
@@ -51,7 +35,46 @@
 **Context:** Identified during Phase 4 adversarial review. Current usage is daily bars only.
 **Depends on:** volume.py (Phase 4, complete)
 
+## Dashboard
+
+### Symbol Deep-Dive Analysis Tab
+**Priority:** P1
+**What:** Expand the Analysis tab with a symbol picker that shows the full deep-dive for any symbol — fundamentals (P/E, P/S, DCF, earnings, insider), quant results (Monte Carlo, copula, particle filter), latest AI analyst summary, all indicator values, which strategies traded it, trade history for that symbol, and news sentiment.
+**Why:** The dashboard currently shows portfolio-level data but no way to drill into individual symbols. The analyst scores 50 symbols but there's no UI to see what it found.
+**Pros:** Full visibility into why the system is (or isn't) trading a symbol. Makes the system debuggable and trustworthy.
+**Cons:** Requires expanding the `/api/analysis/{symbol}` endpoint to return all data from multiple tables, plus a new React component.
+**Context:** The API endpoint exists but only returns analysis_scores + recent signals. Needs to join against fundamentals, dcf_valuations, news_sentiment, trade_log, and indicator computations.
+**Depends on:** dashboard app.py (complete), React frontend (complete)
+
+## Crypto
+
+### Alternative Exchange for Non-Alpaca Tokens
+**Priority:** P2
+**What:** Add Coinbase or Bybit broker integration for crypto tokens not listed on Alpaca (HYPE, PUMP, ASTER, and future meme/small-cap tokens).
+**Why:** Alpaca only lists major crypto. User wants to trade newer tokens that aren't available on Alpaca.
+**Pros:** Full coverage of user's preferred crypto universe.
+**Cons:** New broker implementation, different API, separate account needed. Significant effort.
+**Context:** User's preferred crypto includes HYPE (Hyperliquid), PUMP (PumpFun), ASTER — none on Alpaca. The broker layer is modular (BrokerInterface), so adding a new exchange is architecturally clean but requires implementation + testing.
+**Depends on:** broker_factory.py (complete), base.py BrokerInterface (complete)
+
+### Finnhub Sentiment Endpoint Fix
+**Priority:** P3
+**What:** Switch from Finnhub `/news-sentiment` (paid only) to `/company-news` endpoint (free tier) for sentiment scoring. The keyword fallback already works but could be improved.
+**Why:** Finnhub `/news-sentiment` returns 403 on free tier for all symbols. The system falls back to keyword scoring on `/company-news` headlines, but this path has been failing silently due to the retry loop burning time.
+**Pros:** Faster analyst cycles (skip 3 retries on 403), better sentiment data.
+**Cons:** Keyword scoring is less accurate than Finnhub's built-in NLP.
+**Context:** Visible in VPS logs — every symbol gets 2 retries on 403 before falling back. Wastes ~5 seconds per symbol * 43 stock symbols = ~3.5 minutes per analyst cycle.
+**Depends on:** news_sentiment.py (complete)
+
 ## Completed
+
+### Data Retention Policy for Neon 512MB
+**Completed:** v0.8.0 (2026-03-27)
+Implemented cleanup_old_data() in db.py with configurable retention: news_sentiment 180d, crypto_onchain 180d, data_quality 180d, notification_log 30d. Called at start of backfill and end of evolution cycle.
+
+### Reusable httpx.AsyncClient
+**Completed:** v0.8.0 (2026-03-27)
+Added shared HTTP client (api_get/api_post) in resilience.py with per-source rate limiting. All data source modules use it instead of managing their own clients.
 
 ### AsyncIO Lock for PaperBroker
 **Completed:** v0.7.0.0 (2026-03-26)
