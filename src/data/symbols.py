@@ -16,7 +16,7 @@ EQUITY_UNIVERSE = [
     # / cybersecurity + cloud
     "CRM", "ADBE", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB", "PANW", "ZS",
     # / fintech
-    "SHOP", "SQ", "COIN", "HOOD", "SOFI", "AFRM",
+    "SHOP", "XYZ", "COIN", "HOOD", "SOFI", "AFRM",
     # / consumer tech
     "ABNB", "UBER", "DASH", "DUOL",
     # / health + clean energy

@@ -168,30 +168,30 @@ def _random_tweak(config: dict, rng: np.random.Generator) -> dict:
         idx = int(rng.integers(0, len(signals)))
         signal = signals[idx]
 
-        # / tweak period if present
-        if "period" in signal:
+        # / tweak period if present and not None
+        if signal.get("period") is not None:
             delta = int(rng.integers(-3, 4))
             signal["period"] = max(2, signal["period"] + delta)
 
-        # / tweak threshold if present
-        if "threshold" in signal:
+        # / tweak threshold if present and not None
+        if signal.get("threshold") is not None:
             delta = float(rng.uniform(-5, 5))
             signal["threshold"] = round(signal["threshold"] + delta, 1)
 
-        # / tweak multiplier if present
-        if "multiplier" in signal:
+        # / tweak multiplier if present and not None
+        if signal.get("multiplier") is not None:
             delta = float(rng.uniform(-0.3, 0.3))
             signal["multiplier"] = round(max(0.1, signal["multiplier"] + delta), 2)
 
     # / tweak stop loss
     stop_loss = new_config.get("exit_conditions", {}).get("stop_loss", {})
-    if stop_loss.get("pct"):
+    if stop_loss.get("pct") is not None:
         delta = float(rng.uniform(-0.01, 0.01))
         stop_loss["pct"] = round(max(0.01, stop_loss["pct"] + delta), 3)
 
     # / tweak max holding days
     time_exit = new_config.get("exit_conditions", {}).get("time_exit", {})
-    if time_exit.get("max_holding_days"):
+    if time_exit.get("max_holding_days") is not None:
         delta = int(rng.integers(-3, 4))
         time_exit["max_holding_days"] = max(1, time_exit["max_holding_days"] + delta)
 

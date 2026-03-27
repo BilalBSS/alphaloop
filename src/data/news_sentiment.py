@@ -1,8 +1,10 @@
-# / news sentiment: finnhub company news + keyword scoring fallback
+# / news sentiment: finnhub company news + groq llm scoring
+# / groq scores headlines for free, keyword scoring as fallback
 # / stores to existing news_sentiment table
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import date, timedelta
@@ -18,7 +20,7 @@ FINNHUB_BASE = "https://finnhub.io/api/v1"
 
 configure_rate_limit("finnhub", max_concurrent=5, delay=0.5)
 
-# / keyword scoring fallback when finnhub sentiment isn't available
+# / keyword scoring fallback when groq is unavailable
 _POSITIVE_KEYWORDS = {
     "beat", "exceed", "record", "growth", "upgrade", "buy",
     "outperform", "bullish", "strong", "surge", "rally", "profit",
@@ -40,6 +42,47 @@ def _keyword_score(text: str) -> float:
     if total == 0:
         return 0.0
     return (pos - neg) / total
+
+
+async def _groq_score_headlines(headlines: list[str]) -> float | None:
+    # / use groq llm to score a batch of headlines, returns -1.0 to 1.0
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key or not headlines:
+        return None
+
+    batch = "\n".join(f"- {h}" for h in headlines[:15])
+    prompt = (
+        f"Rate the overall sentiment of these news headlines on a scale from "
+        f"-1.0 (very bearish) to 1.0 (very bullish). Consider financial impact.\n\n"
+        f"{batch}\n\n"
+        f"Respond with ONLY a single number between -1.0 and 1.0, nothing else."
+    )
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 10,
+                    "temperature": 0.1,
+                },
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+            # / extract first number from response in case llm adds words
+            import re as _re
+            match = _re.search(r"-?\d+\.?\d*", text)
+            if not match:
+                return None
+            score = float(match.group())
+            return max(-1.0, min(1.0, score))
+    except Exception as exc:
+        logger.debug("groq_sentiment_failed", error=str(exc))
+        return None
 
 
 def _finnhub_headers() -> dict[str, str]:
@@ -68,52 +111,27 @@ async def fetch_company_news(
     return resp.json()
 
 
-@with_retry(source="finnhub", max_retries=2, base_delay=1.0)
-async def fetch_news_sentiment(symbol: str) -> dict[str, Any] | None:
-    # / fetch finnhub's built-in sentiment score for a symbol
-    if not os.environ.get("FINNHUB_API_KEY"):
-        return None
-
-    url = f"{FINNHUB_BASE}/news-sentiment"
-    params = {"symbol": symbol}
-    resp = await api_get(url, headers=_finnhub_headers(), params=params, source="finnhub")
-    data = resp.json()
-
-    sentiment = data.get("sentiment")
-    if not sentiment:
-        return None
-
-    return {
-        "symbol": symbol,
-        "bullish_percent": sentiment.get("bullishPercent", 0.5),
-        "bearish_percent": sentiment.get("bearishPercent", 0.5),
-        "articles_in_last_week": data.get("buzz", {}).get("articlesInLastWeek", 0),
-        "buzz": data.get("buzz", {}).get("buzz", 0),
-        "sector_avg_bullish": data.get("sectorAverageBullishPercent", 0.5),
-    }
-
-
 async def compute_sentiment_score(
     symbol: str, days: int = 7,
 ) -> float:
-    # / compute aggregate sentiment score for a symbol
-    # / tries finnhub built-in first, falls back to keyword scoring
-    try:
-        sentiment = await fetch_news_sentiment(symbol)
-        if sentiment:
-            bullish = sentiment["bullish_percent"]
-            bearish = sentiment["bearish_percent"]
-            # / scale to -1 to +1
-            return bullish - bearish
-    except Exception:
-        pass
-
-    # / fallback: keyword scoring on news headlines
+    # / fetch headlines from finnhub /company-news, score via groq llm
+    # / falls back to keyword scoring if groq unavailable
     try:
         articles = await fetch_company_news(symbol, days=days)
         if not articles:
             return 0.0
-        scores = [_keyword_score(a.get("headline", "")) for a in articles]
+
+        headlines = [a.get("headline", "") for a in articles if a.get("headline")]
+        if not headlines:
+            return 0.0
+
+        # / try groq llm scoring first
+        groq_score = await _groq_score_headlines(headlines)
+        if groq_score is not None:
+            return groq_score
+
+        # / fallback: keyword scoring
+        scores = [_keyword_score(h) for h in headlines]
         return sum(scores) / len(scores) if scores else 0.0
     except Exception:
         return 0.0
