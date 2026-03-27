@@ -130,6 +130,9 @@ class StrategyConfig(BaseModel):
     description: str = ""
     asset_class: str = "stocks"
     universe: str  # / universe reference: "all", "all_stocks", "all_crypto", or comma-separated symbols
+    sector: str | None = None   # / sector grouping for hierarchical evolution
+    symbol: str | None = None   # / single-symbol targeting (tier 2+)
+    tier: str = "sector"        # / "sector", "tweaked", "graduated"
     fundamental_filters: FundamentalFiltersConfig | None = None
     entry_conditions: EntryConditionsConfig
     exit_conditions: ExitConditionsConfig
@@ -154,6 +157,32 @@ class StrategyConfig(BaseModel):
         if v not in ("stocks", "crypto", "mixed"):
             raise ValueError(f"asset_class must be stocks/crypto/mixed, got {v}")
         return v
+
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v: str) -> str:
+        if v not in ("sector", "tweaked", "graduated"):
+            raise ValueError(f"tier must be sector/tweaked/graduated, got {v}")
+        return v
+
+    @field_validator("sector")
+    @classmethod
+    def validate_sector(cls, v: str | None) -> str | None:
+        if v is not None:
+            from src.data.symbols import SECTORS
+            if v not in SECTORS:
+                raise ValueError(f"sector must be one of {list(SECTORS.keys())}, got {v}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_tier_constraints(self) -> "StrategyConfig":
+        # / tier-2 and tier-3 require a symbol
+        if self.tier in ("tweaked", "graduated") and not self.symbol:
+            raise ValueError(f"tier '{self.tier}' requires a symbol to be set")
+        # / tier-1 (sector) cannot have a symbol
+        if self.tier == "sector" and self.symbol:
+            raise ValueError("sector-tier strategies cannot target a single symbol")
+        return self
 
     @model_validator(mode="after")
     def validate_track_constraints(self) -> "StrategyConfig":

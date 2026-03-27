@@ -14,13 +14,27 @@
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      {"indicator": "macd", "condition": "crossover_bullish"},
-      {"indicator": "rsi", "condition": "above", "threshold": 45, "period": 14}
+      {
+        "indicator": "macd",
+        "condition": "crossover_bullish"
+      },
+      {
+        "indicator": "rsi",
+        "condition": "above",
+        "threshold": 45,
+        "period": 14
+      }
     ]
   },
   "exit_conditions": {
-    "stop_loss": {"type": "atr_trailing", "multiplier": 3.0, "period": 14},
-    "time_exit": {"max_holding_days": 30}
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 3.0,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 30
+    }
   },
   "position_sizing": {
     "method": "fixed_pct",
@@ -29,5 +43,8 @@
   "metadata": {
     "generation": 1,
     "status": "paper_trading"
-  }
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
 }

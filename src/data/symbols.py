@@ -8,7 +8,7 @@ _CRYPTO_SUFFIXES = ("-USD", "-USDT", "-EUR", "-GBP")
 
 EQUITY_UNIVERSE = [
     # / etfs
-    "SPY", "QQQ",
+    "SPY", "QQQ", "SPUS",
     # / mega-cap tech
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     # / semiconductors
@@ -29,6 +29,37 @@ CRYPTO_UNIVERSE = [
 ]
 FULL_UNIVERSE = EQUITY_UNIVERSE + CRYPTO_UNIVERSE
 
+# / sector groupings for hierarchical evolution
+SECTORS: dict[str, list[str]] = {
+    "mega_tech":     ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA"],
+    "semis":         ["NVDA", "AMD", "AVGO", "QCOM", "MRVL", "ARM"],
+    "cloud_cyber":   ["CRM", "ADBE", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB", "PANW", "ZS"],
+    "fintech":       ["SHOP", "XYZ", "COIN", "HOOD", "SOFI", "AFRM"],
+    "consumer":      ["ABNB", "UBER", "DASH", "DUOL"],
+    "health_energy": ["HIMS", "LLY", "MRNA", "ENPH", "FSLR", "ON"],
+    "space":         ["ASTS", "RKLB", "LUNR"],
+    "large_crypto":  ["BTC-USD", "ETH-USD"],
+    "alt_crypto":    ["SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD"],
+    "etfs":          ["SPY", "QQQ", "SPUS"],
+}
+
+# / reverse lookup cache: symbol -> sector
+_SYMBOL_TO_SECTOR: dict[str, str] = {}
+for _sec, _syms in SECTORS.items():
+    for _sym in _syms:
+        _SYMBOL_TO_SECTOR[_sym] = _sec
+
+
+def get_sector(symbol: str) -> str | None:
+    # / returns the sector a symbol belongs to, or None
+    return _SYMBOL_TO_SECTOR.get(symbol.upper())
+
+
+def get_sector_symbols(sector: str) -> list[str]:
+    # / returns all symbols in a sector, or empty list
+    return SECTORS.get(sector, [])
+
+
 # / named universes — strategies reference these by name
 # / the resolver expands names to symbol lists at runtime
 # / "all" means scan everything in the database
@@ -42,7 +73,7 @@ NAMED_UNIVERSES: dict[str, list[str]] = {
 }
 
 # / valid universe reference names for strategy configs
-VALID_UNIVERSE_REFS = {"sp500", "nasdaq100", "crypto", "default_equity", "default_crypto", "all", "all_stocks", "all_crypto"}
+VALID_UNIVERSE_REFS = {"sp500", "nasdaq100", "crypto", "default_equity", "default_crypto", "all", "all_stocks", "all_crypto"} | set(SECTORS.keys())
 
 
 def resolve_universe(universe_ref: str, available_symbols: list[str] | None = None) -> list[str]:
@@ -66,6 +97,8 @@ def resolve_universe(universe_ref: str, available_symbols: list[str] | None = No
             f"universe '{ref}' requires a constituent list that isn't maintained yet. "
             "Use 'all_stocks' or 'all' instead."
         )
+    elif ref in SECTORS:
+        return SECTORS[ref]
     elif ref in NAMED_UNIVERSES:
         cached = NAMED_UNIVERSES[ref]
         if cached:

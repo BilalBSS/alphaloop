@@ -7,37 +7,59 @@
   "description": "Mean reversion: oversold stochastic on high free-cash-flow companies with low debt",
   "asset_class": "stocks",
   "universe": "all_stocks",
-
   "fundamental_filters": {
-    "fcf_margin_min": 0.20,
+    "fcf_margin_min": 0.2,
     "debt_to_equity_max": 0.8,
     "revenue_growth_min": 0.03,
-    "dcf_upside_min": 0.10
+    "dcf_upside_min": 0.1
   },
-
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      {"indicator": "stochastic", "condition": "below", "threshold": 20, "period": 14},
-      {"indicator": "rsi", "condition": "below", "threshold": 40, "period": 14},
-      {"indicator": "sma", "condition": "price_above", "period": 200}
+      {
+        "indicator": "stochastic",
+        "condition": "below",
+        "threshold": 20,
+        "period": 14
+      },
+      {
+        "indicator": "rsi",
+        "condition": "below",
+        "threshold": 40,
+        "period": 14
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 200
+      }
     ]
   },
-
   "exit_conditions": {
-    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_middle", "period": 20, "std_dev": 2.0},
-    "stop_loss": {"type": "fixed_pct", "pct": 0.05},
-    "time_exit": {"max_holding_days": 25}
+    "take_profit": {
+      "indicator": "bollinger_bands",
+      "condition": "price_above_middle",
+      "period": 20,
+      "std_dev": 2.0
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.05
+    },
+    "time_exit": {
+      "max_holding_days": 25
+    }
   },
-
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.07,
     "kelly_fraction": 0.25
   },
-
   "metadata": {
     "generation": 1,
     "status": "paper_trading"
-  }
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
 }

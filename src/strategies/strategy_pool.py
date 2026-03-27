@@ -114,6 +114,10 @@ class StrategyPool:
         entry = self._strategies.get(strategy_id)
         return entry.strategy if entry else None
 
+    def all_entries(self) -> list[StrategyEntry]:
+        # / get all strategy entries regardless of status
+        return list(self._strategies.values())
+
     def list_by_status(self, status: str) -> list[StrategyEntry]:
         # / get all strategies with a given status
         return [e for e in self._strategies.values() if e.status == status]

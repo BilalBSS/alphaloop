@@ -10,6 +10,8 @@ import numpy as np
 import structlog
 
 from src.agents.tools import (
+    count_all_symbol_trades,
+    count_symbol_trades,
     fetch_recent_trades,
     fetch_strategy_scores,
     store_evolution_log,
@@ -22,6 +24,7 @@ from src.strategies.backtest import BacktestResult, run_backtest
 from src.strategies.base_strategy import ConfigDrivenStrategy
 from src.strategies.strategy_loader import save_config
 from src.notifications.notifier import notify_evolution_summary, notify_strategy_promoted
+from src.data.symbols import get_sector_symbols
 from src.strategies.strategy_pool import (
     StrategyPool,
     StrategyScore,
@@ -32,8 +35,13 @@ logger = structlog.get_logger(__name__)
 
 
 class EvolutionEngine:
-    def __init__(self, rng: np.random.Generator | None = None):
+    def __init__(self, rng: np.random.Generator | None = None, risk_limits: dict | None = None):
         self._rng = rng or np.random.default_rng()
+        evo = (risk_limits or {}).get("evolution", {})
+        self._tier2_spawn_trades = evo.get("tier2_spawn_trades", 20)
+        self._tier2_kill_trades = evo.get("tier2_kill_trades", 20)
+        self._tier3_graduate_trades = evo.get("tier3_graduate_trades", 100)
+        self._tier3_sharpe_delta = evo.get("tier3_sharpe_delta", 0.2)
 
     async def run(
         self,
@@ -128,6 +136,25 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.error("evolution_log_kill_failed", strategy_id=sid, error=str(exc))
 
+        # / tier-2 kill condition: tweaked strategies that don't beat sector base
+        for entry in strategy_pool.list_by_status("live"):
+            config = entry.strategy.config
+            if config.get("tier") != "tweaked":
+                continue
+            if not entry.score or entry.score.total_trades < self._tier2_kill_trades:
+                continue
+            sector_sharpe = self._get_sector_base_sharpe(strategy_pool, config.get("sector"))
+            if entry.score.sharpe_ratio < sector_sharpe:
+                sid = entry.strategy.strategy_id
+                reason = f"tier2 underperforms sector base (sharpe {entry.score.sharpe_ratio:.2f} < {sector_sharpe:.2f})"
+                strategy_pool.update_status(sid, "killed")
+                killed_configs.append({"id": sid, "config": config, "reason": reason})
+                summary["killed"].append({"id": sid, "reason": reason})
+                try:
+                    await store_evolution_log(pool, generation, "kill", sid, config.get("parent_id"), reason)
+                except Exception as exc:
+                    logger.error("evolution_log_tier2_kill_failed", error=str(exc))
+
         logger.info("evolution_killed", count=len(killed_configs))
 
         # / 4. MUTATE: propose mutations for each killed strategy
@@ -153,6 +180,9 @@ class EvolutionEngine:
                 if isinstance(result, Exception):
                     logger.error("mutation_failed", error=str(result))
                     summary["errors"].append(f"mutation failed: {result}")
+                elif isinstance(result, list):
+                    # / dual-model: mutator returns list of configs (1 or 2)
+                    mutated_configs.extend(result)
                 else:
                     mutated_configs.append(result)
 
@@ -254,7 +284,23 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.error("evolution_log_promote_failed", error=str(exc))
 
-        # / 9. DOCUMENT: generate report and update docs
+        # / 9. SPAWN TIER-2: per-symbol tweaks from sector strategies
+        try:
+            spawned = await self._spawn_tier2(pool, strategy_pool, generation)
+            summary["spawned_tier2"] = spawned
+        except Exception as exc:
+            logger.error("spawn_tier2_failed", error=str(exc))
+            summary["errors"].append(f"spawn_tier2 failed: {exc}")
+
+        # / 10. GRADUATE TIER-3: per-symbol full freedom
+        try:
+            graduated = await self._graduate_tier3(pool, strategy_pool, generation)
+            summary["graduated_tier3"] = graduated
+        except Exception as exc:
+            logger.error("graduate_tier3_failed", error=str(exc))
+            summary["errors"].append(f"graduate_tier3 failed: {exc}")
+
+        # / 11. DOCUMENT: generate report and update docs
         pool_summary = strategy_pool.summary()
         try:
             report = await generate_report(
@@ -279,3 +325,134 @@ class EvolutionEngine:
             promoted=len(summary["promoted"]),
         )
         return summary
+
+    async def _spawn_tier2(
+        self, pool: Any, strategy_pool: StrategyPool, generation: int,
+    ) -> list[dict]:
+        # / for each live sector/general strategy, check if any symbol has enough
+        # / trades to warrant a per-symbol tweak (tier 2)
+        # / handles both sector-specific and universe-wide (all_stocks) strategies
+        from src.data.symbols import get_sector, FULL_UNIVERSE
+        spawned = []
+        for entry in strategy_pool.list_by_status("live"):
+            config = entry.strategy.config
+            if config.get("tier", "sector") != "sector":
+                continue
+
+            # / determine which symbols to check
+            sector = config.get("sector")
+            if sector:
+                symbols_to_check = get_sector_symbols(sector)
+            else:
+                # / general strategy (all_stocks, all, etc) — check all symbols
+                symbols_to_check = entry.strategy.resolve_universe() or FULL_UNIVERSE
+
+            for symbol in symbols_to_check:
+                try:
+                    trade_count = await count_symbol_trades(pool, config["id"], symbol)
+                except Exception:
+                    continue
+                if trade_count < self._tier2_spawn_trades:
+                    continue
+                # / infer sector from symbol if strategy doesn't have one
+                sym_sector = sector or get_sector(symbol)
+                if not sym_sector:
+                    continue
+                if self._has_tier2(strategy_pool, sym_sector, symbol):
+                    continue
+
+                new_config = self._clone_as_tier2(config, symbol, sym_sector)
+                strategy_pool.add(ConfigDrivenStrategy(new_config), status="paper_trading")
+                try:
+                    save_config(new_config)
+                    await store_evolution_log(
+                        pool, generation, "spawn_tier2", new_config["id"],
+                        config["id"], f"{symbol} has {trade_count} trades in sector {sym_sector}",
+                    )
+                except Exception as exc:
+                    logger.error("spawn_tier2_log_failed", error=str(exc))
+                spawned.append({"id": new_config["id"], "symbol": symbol, "sector": sym_sector})
+                logger.info("tier2_spawned", symbol=symbol, sector=sym_sector, parent=config["id"])
+
+        return spawned
+
+    async def _graduate_tier3(
+        self, pool: Any, strategy_pool: StrategyPool, generation: int,
+    ) -> list[dict]:
+        # / tier-2 strategies with enough trades + beating sector base -> tier 3
+        graduated = []
+        for entry in strategy_pool.list_by_status("live"):
+            config = entry.strategy.config
+            if config.get("tier") != "tweaked":
+                continue
+            symbol = config.get("symbol")
+            if not symbol:
+                continue
+
+            try:
+                total_trades = await count_all_symbol_trades(pool, symbol)
+            except Exception:
+                continue
+            if total_trades < self._tier3_graduate_trades:
+                continue
+
+            sector_sharpe = self._get_sector_base_sharpe(strategy_pool, config.get("sector"))
+            if entry.score and entry.score.sharpe_ratio > sector_sharpe + self._tier3_sharpe_delta:
+                config["tier"] = "graduated"
+                try:
+                    save_config(config)
+                    await store_evolution_log(
+                        pool, generation, "graduate_tier3", config["id"],
+                        config.get("parent_id"),
+                        f"{symbol}: {total_trades} trades, sharpe {entry.score.sharpe_ratio:.2f} > sector {sector_sharpe:.2f} + {self._tier3_sharpe_delta}",
+                    )
+                except Exception as exc:
+                    logger.error("graduate_tier3_log_failed", error=str(exc))
+                graduated.append({"id": config["id"], "symbol": symbol})
+                logger.info("tier3_graduated", symbol=symbol, strategy_id=config["id"])
+
+        return graduated
+
+    @staticmethod
+    def _has_tier2(strategy_pool: StrategyPool, sector: str, symbol: str) -> bool:
+        # / check if a tier-2 strategy already exists for this symbol in this sector
+        for entry in strategy_pool.all_entries():
+            c = entry.strategy.config
+            if c.get("tier") in ("tweaked", "graduated") and c.get("symbol") == symbol and c.get("sector") == sector:
+                if entry.status != "killed":
+                    return True
+        return False
+
+    @staticmethod
+    def _clone_as_tier2(sector_config: dict, symbol: str, sector: str | None = None) -> dict:
+        # / create a tier-2 clone from a sector/general strategy for a specific symbol
+        import copy
+        import uuid
+        new = copy.deepcopy(sector_config)
+        new["id"] = f"strategy_{uuid.uuid4().hex[:8]}"
+        new["parent_id"] = sector_config["id"]
+        new["symbol"] = symbol
+        new["sector"] = sector or sector_config.get("sector")
+        new["tier"] = "tweaked"
+        new["universe"] = symbol
+        new["name"] = f"{sector_config.get('name', 'unknown')}_{symbol}"
+        new["created_by"] = "evolution_tier2"
+        new["version"] = 1
+        if "metadata" not in new:
+            new["metadata"] = {}
+        new["metadata"]["status"] = "paper_trading"
+        new["metadata"]["generation"] = sector_config.get("metadata", {}).get("generation", 0) + 1
+        return new
+
+    @staticmethod
+    def _get_sector_base_sharpe(strategy_pool: StrategyPool, sector: str | None) -> float:
+        # / get the best sharpe of tier-1 (sector) strategies in this sector
+        if not sector:
+            return 0.0
+        best = 0.0
+        for entry in strategy_pool.all_entries():
+            c = entry.strategy.config
+            if c.get("sector") == sector and c.get("tier", "sector") == "sector":
+                if entry.score and entry.score.sharpe_ratio > best:
+                    best = entry.score.sharpe_ratio
+        return best

@@ -15,22 +15,45 @@
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      {"indicator": "structure_break", "condition": "bullish", "lookback": 5},
-      {"indicator": "rsi", "condition": "above", "threshold": 50, "period": 14},
-      {"indicator": "volume", "condition": "above_average", "multiplier": 1.2, "period": 20}
+      {
+        "indicator": "structure_break",
+        "condition": "bullish",
+        "lookback": 5
+      },
+      {
+        "indicator": "rsi",
+        "condition": "above",
+        "threshold": 50,
+        "period": 14
+      },
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 1.2,
+        "period": 20
+      }
     ]
   },
   "exit_conditions": {
-    "stop_loss": {"type": "atr_trailing", "multiplier": 2.5, "period": 14},
-    "time_exit": {"max_holding_days": 20}
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 2.5,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 20
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.08,
-    "kelly_fraction": 0.20
+    "kelly_fraction": 0.2
   },
   "metadata": {
     "generation": 1,
     "status": "paper_trading"
-  }
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
 }

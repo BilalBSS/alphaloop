@@ -153,7 +153,19 @@ class ConfigDrivenStrategy(StrategyInterface):
         return self._universe_ref
 
     def resolve_universe(self, available_symbols: list[str] | None = None) -> list[str]:
-        # / resolve the universe reference to actual symbols
+        # / precedence: symbol > sector > universe ref
+        # / tier-2/3 strategies target a single symbol
+        symbol = self._config.get("symbol")
+        if symbol:
+            return [symbol]
+        # / sector strategies target all symbols in the sector
+        sector = self._config.get("sector")
+        if sector:
+            from src.data.symbols import get_sector_symbols
+            syms = get_sector_symbols(sector)
+            if syms:
+                return syms
+        # / fallback to universe ref (existing behavior)
         from src.data.symbols import resolve_universe
         return resolve_universe(self._universe_ref, available_symbols)
 
