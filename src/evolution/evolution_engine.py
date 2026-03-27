@@ -98,7 +98,16 @@ class EvolutionEngine:
                 strategy_pool.update_score(sid, s)
 
         # / 2. RANK + 3. KILL: bottom quartile
-        bottom = strategy_pool.bottom_quartile()
+        # / skip killing if strategies haven't accumulated enough trade data
+        scored_count = sum(
+            1 for e in strategy_pool.ranked()
+            if e.score and e.score.total_trades >= 5
+        )
+        if scored_count < 4:
+            logger.info("evolution_skip_kill", reason="not enough strategies with trades", scored=scored_count)
+            bottom = []
+        else:
+            bottom = strategy_pool.bottom_quartile()
         killed_configs: list[dict] = []
         for entry in bottom:
             sid = entry.strategy.strategy_id
