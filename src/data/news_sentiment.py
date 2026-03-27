@@ -121,18 +121,20 @@ async def compute_sentiment_score(
 
 async def store_sentiment(pool, symbol: str, score: float, source: str = "finnhub") -> None:
     # / store to existing news_sentiment table
+    label = "positive" if score > 0.1 else "negative" if score < -0.1 else "neutral"
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO news_sentiment (symbol, date, sentiment_score, source, data)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (symbol, date, source) DO UPDATE SET
+            INSERT INTO news_sentiment (symbol, date, sentiment_score, sentiment_label, source, url)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (symbol, date, url) DO UPDATE SET
                 sentiment_score = EXCLUDED.sentiment_score,
-                data = EXCLUDED.data
+                sentiment_label = EXCLUDED.sentiment_label
             """,
             symbol,
             date.today(),
             score,
+            label,
             source,
-            {},
+            f"aggregate:{source}",
         )

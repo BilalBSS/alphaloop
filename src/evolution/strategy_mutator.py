@@ -89,7 +89,7 @@ async def _call_haiku(api_key: str, prompt: str) -> str:
 
     client = AsyncAnthropic(api_key=api_key)
     response = await client.messages.create(
-        model="claude-3-5-haiku-latest",
+        model="claude-haiku-4-5-20251001",
         max_tokens=2000,
         temperature=0.7,
         messages=[{"role": "user", "content": prompt}],
