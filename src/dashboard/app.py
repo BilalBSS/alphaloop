@@ -51,12 +51,16 @@ async def shutdown():
 
 
 async def _query(sql: str, *args) -> list[dict]:
+    if _pool is None:
+        return []
     async with _pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
         return [dict(r) for r in rows]
 
 
 async def _query_one(sql: str, *args) -> dict | None:
+    if _pool is None:
+        return None
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(sql, *args)
         return dict(row) if row else None
@@ -96,6 +100,8 @@ async def get_positions():
 
 @app.get("/api/trades")
 async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = None):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     if symbol:
         rows = await _query(
             """SELECT * FROM trade_log WHERE symbol = $1
@@ -184,6 +190,7 @@ async def get_health():
 
 @app.get("/api/signals")
 async def get_signals(limit: int = 50):
+    limit = max(1, min(limit, 500))
     rows = await _query(
         """SELECT * FROM trade_signals
         ORDER BY created_at DESC LIMIT $1""",
