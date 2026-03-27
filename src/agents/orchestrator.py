@@ -19,6 +19,7 @@ from src.brokers.broker_factory import BrokerFactory
 from src.data.db import close_db, init_db
 from src.data.symbols import FULL_UNIVERSE
 from src.evolution.evolution_engine import EvolutionEngine
+from src.notifications.notifier import notify_system_error
 from src.strategies.strategy_loader import load_all_configs
 from src.strategies.strategy_pool import StrategyPool
 
@@ -155,8 +156,9 @@ class AgentOrchestrator:
             try:
                 symbols = self._get_symbols()
                 await self._analyst.run(self._pool, symbols)
-            except Exception:
+            except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
+                notify_system_error(str(exc), "analyst_loop")
 
             if await self._wait_or_stop(interval):
                 break
@@ -170,8 +172,9 @@ class AgentOrchestrator:
                 await self._strategy.run(
                     self._pool, self._strategy_pool, broker,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.error("strategy_loop_error", exc_info=True)
+                notify_system_error(str(exc), "strategy_loop")
 
             if await self._wait_or_stop(interval):
                 break
@@ -225,5 +228,6 @@ class AgentOrchestrator:
 
             try:
                 await self._evolution.run(self._pool, self._strategy_pool)
-            except Exception:
+            except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
+                notify_system_error(str(exc), "evolution_loop")

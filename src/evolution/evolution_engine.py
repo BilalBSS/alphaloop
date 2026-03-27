@@ -21,6 +21,7 @@ from src.evolution.strategy_mutator import mutate_strategy
 from src.strategies.backtest import BacktestResult, run_backtest
 from src.strategies.base_strategy import ConfigDrivenStrategy
 from src.strategies.strategy_loader import save_config
+from src.notifications.notifier import notify_evolution_summary, notify_strategy_promoted
 from src.strategies.strategy_pool import (
     StrategyPool,
     StrategyScore,
@@ -232,6 +233,7 @@ class EvolutionEngine:
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "live")
                 summary["promoted"].append({"id": sid})
+                notify_strategy_promoted(sid, entry.score.sharpe_ratio, paper_days)
                 logger.info("strategy_promoted", strategy_id=sid, sharpe=entry.score.sharpe_ratio, days=paper_days)
 
                 try:
@@ -259,6 +261,7 @@ class EvolutionEngine:
             logger.error("report_generation_failed", error=str(exc))
             summary["errors"].append(f"report failed: {exc}")
 
+        notify_evolution_summary(summary)
         logger.info(
             "evolution_complete",
             generation=generation,

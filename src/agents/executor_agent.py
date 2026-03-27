@@ -10,6 +10,7 @@ import structlog
 
 from src.agents import tools
 from src.brokers.base import BrokerInterface
+from src.notifications.notifier import notify_trade_executed, notify_trade_error
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +61,7 @@ class ExecutorAgent:
                 trade_id=trade_id, symbol=symbol, error=str(exc),
             )
             await tools.update_trade_status(pool, "approved_trades", trade_id, "error")
+            notify_trade_error(symbol, side, str(exc))
             return {"status": "error", "reason": str(exc)}
 
         if order.status == "filled":
@@ -95,6 +97,7 @@ class ExecutorAgent:
             )
             await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
 
+            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id)
             logger.info(
                 "trade_executed",
                 trade_id=trade_id, log_id=log_id,

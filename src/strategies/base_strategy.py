@@ -51,6 +51,11 @@ class AnalysisData:
     earnings_surprise_pct: float | None = None
     consecutive_beats: int = 0
     fundamental_score: float | None = None  # 0-100 composite
+    # / crypto-specific fields (phase 8)
+    nvt_ratio: float | None = None
+    funding_rate: float | None = None
+    exchange_flow_ratio: float | None = None
+    news_sentiment_score: float | None = None
 
 
 class StrategyInterface(ABC):
@@ -331,6 +336,22 @@ class ConfigDrivenStrategy(StrategyInterface):
             if analysis.insider_net_buy_ratio <= 0:
                 return False, [f"no recent insider buying (ratio={analysis.insider_net_buy_ratio:.2f})"]
 
+        # / crypto filters (phase 8)
+        nvt_max = filters.get("nvt_max")
+        if nvt_max is not None and analysis.nvt_ratio is not None:
+            if analysis.nvt_ratio > nvt_max:
+                return False, [f"nvt {analysis.nvt_ratio:.1f} > max {nvt_max}"]
+
+        funding_max = filters.get("funding_rate_max")
+        if funding_max is not None and analysis.funding_rate is not None:
+            if abs(analysis.funding_rate) > funding_max:
+                return False, [f"funding rate {analysis.funding_rate:.4f} exceeds max {funding_max}"]
+
+        sentiment_min = filters.get("news_sentiment_min")
+        if sentiment_min is not None and analysis.news_sentiment_score is not None:
+            if analysis.news_sentiment_score < sentiment_min:
+                return False, [f"sentiment {analysis.news_sentiment_score:.2f} < min {sentiment_min}"]
+
         return True, ["fundamentals passed"]
 
     def _check_entry_technicals(
@@ -493,6 +514,87 @@ class ConfigDrivenStrategy(StrategyInterface):
                 elif condition == "above":
                     passed = last_k > threshold
                     return passed, max(0, min(1, (last_k - threshold) / (100 - threshold))) if passed else 0.0, f"stoch %k={last_k:.1f} {'>' if passed else '<='} {threshold}"
+
+            elif indicator == "fair_value_gap":
+                from src.indicators.structure import fair_value_gaps
+                result = fair_value_gaps(high, low, close)
+                last_sig = int(result.signal.iloc[-1])
+                if condition == "bullish":
+                    passed = last_sig == 1
+                    return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
+                elif condition == "bearish":
+                    passed = last_sig == -1
+                    return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
+                passed = last_sig != 0
+                return passed, 0.6 if passed else 0.0, f"fvg signal={last_sig}"
+
+            elif indicator == "order_block":
+                from src.indicators.structure import order_blocks
+                open_ = market_data["open"]
+                result = order_blocks(high, low, close, open_)
+                last_sig = int(result.signal.iloc[-1])
+                if condition == "bullish":
+                    passed = last_sig == 1
+                elif condition == "bearish":
+                    passed = last_sig == -1
+                else:
+                    passed = last_sig != 0
+                return passed, 0.7 if passed else 0.0, f"ob signal={last_sig}"
+
+            elif indicator == "structure_break":
+                from src.indicators.structure import structure_breaks
+                lookback = sig.get("lookback", 5)
+                result = structure_breaks(high, low, close, swing_lookback=lookback)
+                last_sig = int(result.signal.iloc[-1])
+                if condition == "bullish":
+                    passed = last_sig == 1
+                elif condition == "bearish":
+                    passed = last_sig == -1
+                else:
+                    passed = last_sig != 0
+                return passed, 0.8 if passed else 0.0, f"structure break={last_sig}"
+
+            elif indicator == "pivot_points":
+                from src.indicators.support_resistance import pivot_points
+                pp = pivot_points(float(high.iloc[-2]), float(low.iloc[-2]), float(close.iloc[-2]))
+                last_close = float(close.iloc[-1])
+                if condition == "above_r1":
+                    passed = last_close > pp.r1
+                    return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs r1={pp.r1:.2f}"
+                elif condition == "below_s1":
+                    passed = last_close < pp.s1
+                    return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs s1={pp.s1:.2f}"
+                passed = last_close < pp.pivot
+                return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs pivot={pp.pivot:.2f}"
+
+            elif indicator == "fibonacci":
+                from src.indicators.support_resistance import fibonacci_retracement
+                lookback = sig.get("lookback", 50)
+                fib = fibonacci_retracement(high, low, lookback=lookback)
+                last_close = float(close.iloc[-1])
+                level = sig.get("level", 0.618)
+                fib_map = {0.236: fib.level_236, 0.382: fib.level_382, 0.5: fib.level_500, 0.618: fib.level_618, 0.786: fib.level_786}
+                target = fib_map.get(level, fib.level_618)
+                tolerance = abs(target - fib.swing_low) * 0.02
+                if condition == "near_level":
+                    passed = abs(last_close - target) <= tolerance
+                    return passed, 0.7 if passed else 0.0, f"close={last_close:.2f} near fib {level}={target:.2f}"
+                passed = last_close <= target
+                return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs fib {level}={target:.2f}"
+
+            elif indicator == "sr_zone":
+                from src.indicators.support_resistance import sr_zones_series
+                sr = sr_zones_series(close, high, low)
+                last_sr = float(sr.iloc[-1])
+                threshold_val = sig.get("threshold", 0.02)
+                if condition == "near_support":
+                    passed = last_sr < 0 and abs(last_sr) < threshold_val
+                    return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
+                elif condition == "near_resistance":
+                    passed = last_sr > 0 and abs(last_sr) < threshold_val
+                    return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
+                passed = abs(last_sr) < threshold_val
+                return passed, 0.5 if passed else 0.0, f"sr distance={last_sr:.4f}"
 
             # / unknown indicator — skip gracefully
             return False, 0.0, f"unknown indicator: {indicator}"

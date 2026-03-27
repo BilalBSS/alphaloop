@@ -223,6 +223,20 @@ async def fetch_recent_trades(pool, strategy_id: str | None = None, limit: int =
     return [dict(r) for r in rows]
 
 
+async def store_crypto_onchain(
+    pool, symbol: str, data_type: str, data: dict,
+    chain: str = "ethereum", source: str = "dune",
+) -> None:
+    # / store on-chain data row
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO crypto_onchain (symbol, date, data_type, chain, data, source)
+            VALUES ($1, CURRENT_DATE, $2, $3, $4::jsonb, $5)
+            ON CONFLICT DO NOTHING""",
+            symbol, data_type, chain, json.dumps(data), source,
+        )
+
+
 def analysis_data_to_dict(data: AnalysisData) -> dict:
     # / serialize AnalysisData to dict for JSONB storage
     return {
@@ -240,6 +254,10 @@ def analysis_data_to_dict(data: AnalysisData) -> dict:
         "earnings_surprise_pct": data.earnings_surprise_pct,
         "consecutive_beats": data.consecutive_beats,
         "fundamental_score": data.fundamental_score,
+        "nvt_ratio": data.nvt_ratio,
+        "funding_rate": data.funding_rate,
+        "exchange_flow_ratio": data.exchange_flow_ratio,
+        "news_sentiment_score": data.news_sentiment_score,
     }
 
 
@@ -260,4 +278,8 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         earnings_surprise_pct=d.get("earnings_surprise_pct"),
         consecutive_beats=d.get("consecutive_beats", 0),
         fundamental_score=d.get("fundamental_score"),
+        nvt_ratio=d.get("nvt_ratio"),
+        funding_rate=d.get("funding_rate"),
+        exchange_flow_ratio=d.get("exchange_flow_ratio"),
+        news_sentiment_score=d.get("news_sentiment_score"),
     )

@@ -27,6 +27,7 @@ class SignalConfig(BaseModel):
     threshold: float | None = None
     std_dev: float | None = None
     multiplier: float | None = None
+    level: float | None = None  # / fibonacci level (0.236, 0.382, etc)
 
 
 class EntryConditionsConfig(BaseModel):
@@ -95,6 +96,10 @@ class FundamentalFiltersConfig(BaseModel):
     debt_to_equity_max: float | None = None
     dcf_upside_min: float | None = None
     insider_buying_recent: bool | None = None
+    # / crypto-specific filters (phase 8)
+    nvt_max: float | None = None
+    funding_rate_max: float | None = None
+    news_sentiment_min: float | None = None
 
 
 class StrategyMetadata(BaseModel):

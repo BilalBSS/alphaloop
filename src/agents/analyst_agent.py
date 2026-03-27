@@ -16,6 +16,7 @@ from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
 from src.analysis.ai_summary import generate_summary
 from src.agents import tools
+from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 
 logger = structlog.get_logger(__name__)
 
@@ -68,6 +69,15 @@ class AnalystAgent:
             insider_signal = await analyze_insider_activity(pool, symbol)
         except Exception as exc:
             logger.warning("analyst_insider_failed", symbol=symbol, error=str(exc))
+
+        # / news sentiment (phase 8)
+        sentiment_score: float | None = None
+        try:
+            sentiment_score = await compute_sentiment_score(symbol)
+            if sentiment_score != 0.0:
+                await store_sentiment(pool, symbol, sentiment_score)
+        except Exception as exc:
+            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
 
         # / fetch latest regime from regime_history
         try:
@@ -176,4 +186,6 @@ class AnalystAgent:
         if summary:
             d["summary"] = summary.summary if hasattr(summary, "summary") else str(summary)
             d["summary_signal"] = summary.signal if hasattr(summary, "signal") else None
+        # / sentiment_score is stored directly to news_sentiment table,
+        # / but also include in details for strategy agent consumption
         return d

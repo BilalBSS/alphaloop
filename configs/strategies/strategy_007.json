@@ -1,32 +1,34 @@
 {
   "id": "strategy_007",
-  "name": "SMA_Golden_Cross",
+  "name": "FVG_SR_Reversal",
   "version": 1,
   "created_by": "human",
   "parent_id": null,
-  "description": "Momentum-only: classic trend following — price crosses above SMA50 with ADX confirming trend strength",
+  "description": "Fair value gap near support zone with oversold stochastic — mean reversion play",
   "asset_class": "stocks",
   "universe": "all_stocks",
-
+  "fundamental_filters": {
+    "pe_ratio_max": 35,
+    "fcf_margin_min": 0.08,
+    "dcf_upside_min": 0.05
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      {"indicator": "sma", "condition": "price_above", "period": 50},
-      {"indicator": "adx", "condition": "above", "threshold": 20, "period": 14},
-      {"indicator": "volume", "condition": "above_average", "multiplier": 1.1, "period": 20}
+      {"indicator": "fair_value_gap", "condition": "bullish"},
+      {"indicator": "sr_zone", "condition": "near_support", "threshold": 0.03},
+      {"indicator": "stochastic", "condition": "below", "threshold": 25, "period": 14}
     ]
   },
-
   "exit_conditions": {
-    "stop_loss": {"type": "atr_trailing", "multiplier": 3.0, "period": 14},
-    "time_exit": {"max_holding_days": 60}
+    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_middle"},
+    "stop_loss": {"type": "fixed_pct", "pct": 0.04},
+    "time_exit": {"max_holding_days": 15}
   },
-
   "position_sizing": {
-    "method": "fixed_pct",
-    "max_position_pct": 0.04
+    "method": "strength_scaled",
+    "max_position_pct": 0.08
   },
-
   "metadata": {
     "generation": 1,
     "status": "backtest_pending"
