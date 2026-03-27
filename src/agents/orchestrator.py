@@ -30,6 +30,7 @@ ANALYST_MARKET_HOURS = 1800      # / 30 minutes
 ANALYST_OFF_HOURS = 1800         # / 30 minutes (crypto trades 24/7)
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
+DEEPSEEK_INTERVAL = 3600         # / 1 hour
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
 
@@ -77,6 +78,8 @@ class AgentOrchestrator:
         # / launch all loops
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
+            asyncio.create_task(self._deepseek_loop(), name="deepseek"),
+            asyncio.create_task(self._reasoner_loop(), name="reasoner"),
             asyncio.create_task(self._strategy_loop(), name="strategy"),
             asyncio.create_task(self._risk_poll_loop(), name="risk"),
             asyncio.create_task(self._executor_poll_loop(), name="executor"),
@@ -150,18 +153,59 @@ class AgentOrchestrator:
             return False  # / timeout expired normally
 
     async def _analyst_loop(self) -> None:
-        # / run analyst agent on schedule
+        # / run analyst agent on schedule (groq only, deepseek on separate hourly loop)
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
             try:
                 symbols = self._get_symbols()
-                await self._analyst.run(self._pool, symbols)
+                await self._analyst.run(self._pool, symbols, run_deepseek=False)
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
 
             if await self._wait_or_stop(interval):
                 break
+
+    async def _deepseek_loop(self) -> None:
+        # / run deepseek analysis hourly (separate from groq every-cycle)
+        while not self._stop_event.is_set():
+            if await self._wait_or_stop(DEEPSEEK_INTERVAL):
+                break
+            try:
+                symbols = self._get_symbols()
+                await self._analyst.run(self._pool, symbols, run_deepseek=True)
+                logger.info("deepseek_cycle_complete")
+            except Exception as exc:
+                logger.error("deepseek_loop_error", exc_info=True)
+                notify_system_error(str(exc), "deepseek_loop")
+
+    async def _reasoner_loop(self) -> None:
+        # / run daily synthesis at 5PM ET via deepseek-reasoner
+        from src.analysis.ai_summary import generate_daily_synthesis
+        from src.notifications.notifier import notify_daily_synthesis
+        while not self._stop_event.is_set():
+            # / calculate seconds until 5PM ET
+            et = timezone(timedelta(hours=-5))
+            now = datetime.now(et)
+            target = now.replace(hour=17, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_seconds = (target - now).total_seconds()
+
+            logger.info("reasoner_waiting", next_run=str(target), wait_seconds=wait_seconds)
+
+            if await self._wait_or_stop(wait_seconds):
+                break
+
+            try:
+                symbols = self._get_symbols()
+                result = await generate_daily_synthesis(self._pool, symbols)
+                if result:
+                    notify_daily_synthesis(result)
+                logger.info("reasoner_synthesis_complete")
+            except Exception as exc:
+                logger.error("reasoner_loop_error", exc_info=True)
+                notify_system_error(str(exc), "reasoner_loop")
 
     async def _strategy_loop(self) -> None:
         # / run strategy agent on schedule

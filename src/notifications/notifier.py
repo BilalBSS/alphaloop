@@ -46,6 +46,18 @@ class NotificationEvent:
     title: str
     message: str
     fields: dict[str, str] = field(default_factory=dict)
+    channel: str = "system"  # / discord channel: trades, analysis, strategy, daily, sentiment, system
+
+
+# / discord channel routing — each maps to a separate webhook
+DISCORD_CHANNELS = {
+    "trades":    "DISCORD_WEBHOOK_TRADES",
+    "analysis":  "DISCORD_WEBHOOK_ANALYSIS",
+    "strategy":  "DISCORD_WEBHOOK_STRATEGY",
+    "daily":     "DISCORD_WEBHOOK_DAILY",
+    "sentiment": "DISCORD_WEBHOOK_SENTIMENT",
+    "system":    "DISCORD_WEBHOOK_SYSTEM",
+}
 
 
 # / throttle state — tracks last send time per event key
@@ -72,7 +84,9 @@ def _is_throttled(event: NotificationEvent) -> bool:
 
 
 async def _send_discord(event: NotificationEvent) -> bool:
-    url = os.environ.get("DISCORD_WEBHOOK_URL")
+    # / route to channel-specific webhook, fall back to default
+    env_var = DISCORD_CHANNELS.get(event.channel, "DISCORD_WEBHOOK_SYSTEM")
+    url = os.environ.get(env_var) or os.environ.get("DISCORD_WEBHOOK_URL")
     if not url:
         return False
 
@@ -223,6 +237,7 @@ def notify_trade_executed(
         title="trade executed",
         message=f"{side.upper()} {qty} {symbol} @ ${price:.2f}",
         fields={"strategy": strategy_id or "unknown"},
+        channel="trades",
     ))
 
 
@@ -249,6 +264,7 @@ def notify_evolution_summary(summary: dict[str, Any]) -> asyncio.Task | None:
         title=f"evolution gen {gen} complete",
         message=f"killed {killed}, mutated {mutated}, promoted {promoted}",
         fields={"errors": str(errors)} if errors else {},
+        channel="strategy",
     ))
 
 
@@ -258,6 +274,7 @@ def notify_strategy_promoted(strategy_id: str, sharpe: float, days: int) -> asyn
         title="strategy promoted to live",
         message=f"{strategy_id} promoted after {days}d paper trading",
         fields={"sharpe": f"{sharpe:.2f}", "paper_days": str(days)},
+        channel="strategy",
     ))
 
 
@@ -276,4 +293,44 @@ def notify_daily_digest(
             "strategies": str(active_strategies),
             "positions": str(open_positions),
         },
+        channel="daily",
+    ))
+
+
+def notify_analysis_highlight(
+    symbol: str, consensus: str, score: float,
+) -> asyncio.Task | None:
+    color = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡", "disagree": "🔵"}
+    return notify_async(NotificationEvent(
+        severity=Severity.MEDIUM,
+        title=f"{color.get(consensus, '⚪')} {symbol} — {consensus}",
+        message=f"composite score: {score:.1f}",
+        channel="analysis",
+    ))
+
+
+def notify_sentiment_shift(
+    symbol: str, old_score: float, new_score: float,
+) -> asyncio.Task | None:
+    delta = new_score - old_score
+    direction = "bullish shift" if delta > 0 else "bearish shift"
+    return notify_async(NotificationEvent(
+        severity=Severity.MEDIUM,
+        title=f"{symbol} — {direction}",
+        message=f"sentiment {old_score:.2f} → {new_score:.2f} (Δ{delta:+.2f})",
+        channel="sentiment",
+    ))
+
+
+def notify_daily_synthesis(synthesis: dict[str, Any]) -> asyncio.Task | None:
+    buys = synthesis.get("top_buys", [])
+    avoids = synthesis.get("top_avoids", [])
+    risk = synthesis.get("portfolio_risk", "unknown")
+    buy_text = ", ".join(b.get("symbol", "?") for b in buys[:5]) if buys else "none"
+    avoid_text = ", ".join(a.get("symbol", "?") for a in avoids[:5]) if avoids else "none"
+    return notify_async(NotificationEvent(
+        severity=Severity.HIGH,
+        title="daily synthesis (5PM ET)",
+        message=f"buys: {buy_text}\navoids: {avoid_text}\nrisk: {risk}",
+        channel="daily",
     ))

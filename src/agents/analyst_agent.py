@@ -26,9 +26,10 @@ logger = structlog.get_logger(__name__)
 class AnalystAgent:
     # / stateless — all persistent state lives in the database
 
-    async def run(self, pool, symbols: list[str]) -> dict[str, float | None]:
+    async def run(self, pool, symbols: list[str], run_deepseek: bool = True) -> dict[str, float | None]:
         # / run full analysis pipeline for each symbol
-        # / returns {symbol: composite_score} for logging
+        # / run_deepseek=False: groq only (30-min cycle), True: groq + deepseek (hourly)
+        self._run_deepseek = run_deepseek
         results: dict[str, float | None] = {}
 
         # / social sentiment: stocktwits + fear & greed for all symbols
@@ -136,11 +137,20 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("regime_fetch_failed", symbol=symbol, error=str(exc))
 
-        # / dual-llm analysis: groq (fast) + deepseek (second opinion)
-        dual = await generate_dual_analysis(
-            symbol, ratio=ratio_score, dcf=dcf_result,
-            earnings=earnings_signal, insider=insider_signal, regime=regime,
-        )
+        # / llm analysis: groq every cycle, deepseek only on hourly cycle
+        if getattr(self, "_run_deepseek", True):
+            dual = await generate_dual_analysis(
+                symbol, ratio=ratio_score, dcf=dcf_result,
+                earnings=earnings_signal, insider=insider_signal, regime=regime,
+            )
+        else:
+            # / groq only, skip deepseek call
+            groq_only = await generate_summary(
+                symbol, ratio=ratio_score, dcf=dcf_result,
+                earnings=earnings_signal, insider=insider_signal, regime=regime,
+            )
+            from src.analysis.ai_summary import DualAnalysis
+            dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal)
 
         # / compute fundamental score as weighted average of available components
         fundamental_score = self._compute_fundamental_score(

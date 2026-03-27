@@ -169,6 +169,15 @@ async def get_analysis(symbol: str):
         ORDER BY filing_date DESC LIMIT 20""",
         symbol,
     )
+    evolution = await _query(
+        """SELECT generation, action, strategy_id, reason, details, created_at
+        FROM evolution_log
+        WHERE strategy_id IN (
+            SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
+        ) OR details::text LIKE '%' || $1 || '%'
+        ORDER BY created_at DESC LIMIT 20""",
+        symbol,
+    )
     return {
         "score": _serialize_one(score),
         "signals": _serialize(signals),
@@ -179,6 +188,7 @@ async def get_analysis(symbol: str):
         "dcf": _serialize_one(dcf),
         "price_history": _serialize(market),
         "insider_trades": _serialize(insider),
+        "evolution": _serialize(evolution),
     }
 
 
@@ -253,6 +263,26 @@ async def get_signals(limit: int = 50):
         """SELECT * FROM trade_signals
         ORDER BY created_at DESC LIMIT $1""",
         limit,
+    )
+    return _serialize(rows)
+
+
+@app.get("/api/synthesis")
+async def get_synthesis():
+    # / latest daily synthesis from 5PM reasoner
+    row = await _query_one(
+        "SELECT * FROM daily_synthesis ORDER BY date DESC LIMIT 1"
+    )
+    return _serialize_one(row)
+
+
+@app.get("/api/synthesis/history")
+async def get_synthesis_history(days: int = 7):
+    days = max(1, min(days, 30))
+    rows = await _query(
+        """SELECT * FROM daily_synthesis
+        ORDER BY date DESC LIMIT $1""",
+        days,
     )
     return _serialize(rows)
 

@@ -1,10 +1,10 @@
-# / social sentiment: stocktwits bullish/bearish + fear & greed index
-# / reddit placeholder for future oauth setup
+# / social sentiment: apewisdom (reddit mentions) + fear & greed + vix
 # / stores to social_sentiment table, computes aggregate -1.0 to 1.0
 
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import date
 from typing import Any
 
@@ -14,17 +14,70 @@ from .resilience import api_get, configure_rate_limit, with_retry
 
 logger = structlog.get_logger(__name__)
 
+APEWISDOM_BASE = "https://apewisdom.io/api/v1.0"
 STOCKTWITS_BASE = "https://api.stocktwits.com/api/2"
 FNG_URL = "https://api.alternative.me/fng/"
 
+from .symbols import is_crypto
+
+configure_rate_limit("apewisdom", max_concurrent=2, delay=1.0)
 configure_rate_limit("stocktwits", max_concurrent=3, delay=1.0)
 configure_rate_limit("fng", max_concurrent=2, delay=0.5)
 
 
+# ---------------------------------------------------------------------------
+# / apewisdom: reddit mention tracking (no api key needed)
+# ---------------------------------------------------------------------------
+
+@with_retry(source="apewisdom", max_retries=2, base_delay=2.0)
+async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str, Any]]:
+    # / fetch trending tickers from reddit via apewisdom
+    # / returns dict keyed by ticker with mentions, upvotes, rank, raw_score
+    result: dict[str, dict[str, Any]] = {}
+    try:
+        resp = await api_get(
+            f"{APEWISDOM_BASE}/filter/{filter_type}/page/1",
+            source="apewisdom",
+        )
+        data = resp.json()
+        items = data.get("results", [])
+        if not items:
+            return result
+
+        max_mentions = max((r.get("mentions", 1) for r in items), default=1)
+
+        for r in items:
+            ticker = (r.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            mentions = r.get("mentions", 0)
+            upvotes = r.get("upvotes", 0)
+            rank = r.get("rank", 999)
+            # / log-scaled buzz: top ticker ~1.0, tail ~0.2-0.4
+            raw = math.log1p(mentions) / math.log1p(max_mentions) if max_mentions > 0 else 0.0
+            result[ticker] = {
+                "mentions": mentions,
+                "upvotes": upvotes,
+                "rank": rank,
+                "raw_score": min(1.0, raw),
+            }
+
+        logger.info("apewisdom_fetched", filter=filter_type, count=len(result))
+    except Exception as exc:
+        logger.debug("apewisdom_fetch_failed", filter=filter_type, error=str(exc))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# / stocktwits (kept as fallback, api registrations currently paused)
+# ---------------------------------------------------------------------------
+
 @with_retry(source="stocktwits", max_retries=2, base_delay=2.0)
 async def fetch_stocktwits_sentiment(symbol: str) -> dict[str, Any] | None:
     # / fetch bullish/bearish ratio and volume from stocktwits
-    url = f"{STOCKTWITS_BASE}/streams/symbol/{symbol}.json"
+    # / crypto uses BTC.X format on stocktwits, not BTC-USD
+    st_symbol = symbol.replace("-USD", ".X") if symbol.endswith("-USD") else symbol
+    url = f"{STOCKTWITS_BASE}/streams/symbol/{st_symbol}.json"
     try:
         resp = await api_get(url, source="stocktwits")
         data = resp.json()
@@ -54,6 +107,10 @@ async def fetch_stocktwits_sentiment(symbol: str) -> dict[str, Any] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# / fear & greed index (crypto)
+# ---------------------------------------------------------------------------
+
 @with_retry(source="fng", max_retries=2, base_delay=1.0)
 async def fetch_fear_greed_index() -> dict[str, Any] | None:
     # / fetch fear & greed index, normalize 0-100 to -1.0 to 1.0
@@ -79,12 +136,46 @@ async def fetch_fear_greed_index() -> dict[str, Any] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# / vix (equity fear gauge)
+# ---------------------------------------------------------------------------
+
+def _fetch_vix_sync() -> float | None:
+    # / yfinance is sync, runs in thread pool
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("^VIX")
+        hist = ticker.history(period="1d")
+        if hist.empty:
+            return None
+        vix = float(hist["Close"].iloc[-1])
+        # / 10 = extreme greed (1.0), 30 = neutral (0.0), 50 = extreme fear (-1.0)
+        return max(-1.0, min(1.0, (30.0 - vix) / 20.0))
+    except Exception:
+        return None
+
+
+async def fetch_vix() -> float | None:
+    # / VIX fear gauge for equities, wrapped to avoid blocking event loop
+    try:
+        result = await asyncio.to_thread(_fetch_vix_sync)
+        if result is not None:
+            logger.info("vix_fetched", normalized=result)
+        return result
+    except Exception as exc:
+        logger.debug("vix_fetch_failed", error=str(exc))
+        return None
+
+
 async def fetch_reddit_sentiment(symbol: str) -> dict[str, Any] | None:
-    # / placeholder: needs oauth setup
-    # / TODO: implement reddit sentiment via praw or async praw
-    logger.debug("reddit_sentiment_not_implemented", symbol=symbol)
+    # / deprecated: use fetch_apewisdom instead
+    logger.debug("reddit_sentiment_deprecated_use_apewisdom", symbol=symbol)
     return None
 
+
+# ---------------------------------------------------------------------------
+# / storage + scoring
+# ---------------------------------------------------------------------------
 
 async def store_social_sentiment(
     pool: Any,
@@ -149,41 +240,60 @@ async def run_social_sentiment(
     # / run social sentiment pipeline for all symbols
     results: dict[str, float] = {}
 
-    # / fetch fear & greed once (market-wide, not per-symbol)
-    fng_data = await fetch_fear_greed_index()
+    # / fetch market-wide gauges once (not per-symbol)
+    fng_data = await fetch_fear_greed_index()  # / crypto fear & greed
+    vix_score = await fetch_vix()              # / equity VIX-based fear gauge
+
+    # / fetch apewisdom trending lists once (stocks + crypto)
+    aw_stocks = await fetch_apewisdom("all-stocks")
+    aw_crypto = await fetch_apewisdom("all-crypto")
 
     for symbol in symbols:
         try:
-            # / stocktwits per-symbol
-            st_data = await fetch_stocktwits_sentiment(symbol)
+            # / apewisdom per-symbol lookup (replaces stocktwits)
+            if is_crypto(symbol):
+                aw_ticker = symbol.replace("-USD", "")
+                aw_data = aw_crypto.get(aw_ticker)
+            else:
+                aw_data = aw_stocks.get(symbol)
 
-            if st_data:
+            if aw_data:
                 await store_social_sentiment(
-                    pool, symbol, "stocktwits",
-                    st_data["bullish_pct"],
-                    st_data["bearish_pct"],
-                    st_data["volume"],
-                    st_data["raw_score"],
+                    pool, symbol, "apewisdom",
+                    None, None,
+                    aw_data["mentions"],
+                    aw_data["raw_score"],
                 )
 
-            # / store fear & greed per symbol for easy querying
-            if fng_data:
-                await store_social_sentiment(
-                    pool, symbol, "fear_greed",
-                    None, None, None,
-                    fng_data["normalized"],
-                )
+            # / store fear gauge per symbol — VIX for equity, FNG for crypto
+            if is_crypto(symbol):
+                if fng_data:
+                    await store_social_sentiment(
+                        pool, symbol, "fear_greed",
+                        None, None, None,
+                        fng_data["normalized"],
+                    )
+                fear_score = fng_data["normalized"] if fng_data else None
+            else:
+                if vix_score is not None:
+                    await store_social_sentiment(
+                        pool, symbol, "vix",
+                        None, None, None,
+                        vix_score,
+                    )
+                fear_score = vix_score
 
             # / compute aggregate score
+            # / social buzz 60% + fear gauge 40%
             scores: list[float] = []
             weights: list[float] = []
 
-            if st_data and st_data.get("raw_score") is not None:
-                scores.append(st_data["raw_score"])
+            if aw_data and aw_data.get("raw_score") is not None:
+                scores.append(aw_data["raw_score"])
                 weights.append(0.6)
 
-            if fng_data and fng_data.get("normalized") is not None:
-                scores.append(fng_data["normalized"])
+            if fear_score is not None:
+                scores.append(fear_score)
                 weights.append(0.4)
 
             if scores:

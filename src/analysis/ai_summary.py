@@ -361,3 +361,112 @@ async def generate_dual_analysis(
     )
 
     return DualAnalysis(groq=groq_result, deepseek=deepseek_result, consensus=consensus)
+
+
+async def generate_daily_synthesis(
+    pool: Any,
+    symbols: list[str],
+) -> dict[str, Any] | None:
+    # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
+    # / reads all today's data, produces top buys/avoids/risk assessment
+    import json
+    from datetime import date as dt_date
+    from src.agents.tools import store_daily_synthesis
+
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not deepseek_key:
+        logger.info("no_deepseek_key_skipping_synthesis")
+        return None
+
+    # / gather today's analysis scores
+    today = dt_date.today()
+    scores = []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT symbol, composite_score, regime,
+                    details->>'ai_consensus' as ai_consensus
+                FROM analysis_scores
+                WHERE date >= $1
+                ORDER BY composite_score DESC""",
+                today,
+            )
+            scores = [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("synthesis_fetch_scores_failed", error=str(exc))
+
+    if not scores:
+        logger.info("synthesis_no_data_today")
+        return None
+
+    # / build the prompt
+    score_text = "\n".join(
+        f"  {s.get('symbol', '?')}: score={s.get('composite_score', 0)}, "
+        f"consensus={s.get('ai_consensus', '--')}, regime={s.get('regime', '--')}"
+        for s in scores[:50]
+    )
+
+    prompt = f"""You are a senior portfolio analyst. Review today's data across all symbols and produce a structured assessment.
+
+TODAY'S ANALYSIS SCORES ({len(scores)} symbols):
+{score_text}
+
+Produce a JSON response with:
+- "top_buys": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (top 5)
+- "top_avoids": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (bottom 5)
+- "portfolio_risk": "one paragraph about overall market conditions and risk"
+- "per_symbol_notes": {{"TICKER": "note"}} for any symbol with unusual activity
+
+Output ONLY valid JSON. No explanation outside the JSON."""
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {deepseek_key}"},
+                json={
+                    "model": "deepseek-reasoner",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 2000,
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"]
+
+        # / parse structured response
+        import re
+        text = raw.strip()
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        result = json.loads(text)
+
+        # / store to db
+        await store_daily_synthesis(
+            pool, today, "deepseek-reasoner",
+            result.get("top_buys"),
+            result.get("top_avoids"),
+            result.get("portfolio_risk"),
+            result.get("per_symbol_notes"),
+            raw,
+        )
+
+        logger.info("daily_synthesis_complete",
+            buys=len(result.get("top_buys", [])),
+            avoids=len(result.get("top_avoids", [])),
+        )
+        return result
+
+    except Exception as exc:
+        logger.error("daily_synthesis_failed", error=str(exc))
+        # / store raw response even on parse failure
+        try:
+            await store_daily_synthesis(
+                pool, today, "deepseek-reasoner",
+                None, None, None, None,
+                str(exc),
+            )
+        except Exception:
+            pass
+        return None

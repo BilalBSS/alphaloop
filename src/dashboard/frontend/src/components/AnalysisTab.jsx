@@ -33,6 +33,58 @@ function regimeBadge(r) {
   )
 }
 
+// / daily synthesis panel for list view
+function SynthesisPanel({ onSelect }) {
+  const { data, loading } = useApi('/api/synthesis', 120000)
+
+  if (loading && !data) return <SkeletonTable rows={3} cols={2} />
+
+  if (!data || !data.date) {
+    return <div className="text-text-muted text-sm py-2">No synthesis yet. The reasoner runs daily at 5PM ET.</div>
+  }
+
+  const buys = data.top_buys || []
+  const avoids = data.top_avoids || []
+  const dateStr = data.date?.split('T')[0] || data.date
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[11px] uppercase text-text-secondary">
+        Daily Synthesis — {dateStr} (5:00 PM ET)
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <div className="text-[11px] uppercase text-profit mb-1">Top Buys</div>
+          {buys.length > 0 ? buys.map((b, i) => (
+            <div key={i}
+              onClick={() => onSelect(b.symbol || b)}
+              className="flex justify-between text-xs py-0.5 cursor-pointer hover:text-accent"
+            >
+              <span className="font-mono">{i + 1}. {b.symbol || b}</span>
+              {b.score != null && <span className="text-profit font-mono">+{parseFloat(b.score).toFixed(1)}</span>}
+            </div>
+          )) : <div className="text-text-muted text-xs">--</div>}
+        </div>
+        <div>
+          <div className="text-[11px] uppercase text-loss mb-1">Top Avoids</div>
+          {avoids.length > 0 ? avoids.map((a, i) => (
+            <div key={i}
+              onClick={() => onSelect(a.symbol || a)}
+              className="flex justify-between text-xs py-0.5 cursor-pointer hover:text-accent"
+            >
+              <span className="font-mono">{i + 1}. {a.symbol || a}</span>
+              {a.score != null && <span className="text-loss font-mono">{parseFloat(a.score).toFixed(1)}</span>}
+            </div>
+          )) : <div className="text-text-muted text-xs">--</div>}
+        </div>
+      </div>
+      {data.portfolio_risk && (
+        <div className="text-xs text-warning">Risk: {data.portfolio_risk}</div>
+      )}
+    </div>
+  )
+}
+
 // / symbol list view
 function SymbolList({ symbols, loading, onSelect }) {
   const [filter, setFilter] = useState('')
@@ -307,7 +359,7 @@ function SentimentPanel({ sentiment, socialSentiment }) {
   )
 }
 
-// / ai analysis: dual-llm display
+// / ai analysis: dual-llm stacked vertical
 function AiAnalysisPanel({ score }) {
   const details = (score?.details && typeof score.details === 'object') ? score.details : {}
   const consensus = details.ai_consensus || '--'
@@ -316,35 +368,86 @@ function AiAnalysisPanel({ score }) {
   const groqText = details.llm_analysis_groq
   const deepseekText = details.llm_analysis_deepseek
 
-  if (!groqText && !deepseekText) {
-    return <div className="text-text-muted text-sm py-2">No AI analysis available</div>
-  }
-
   const signalColor = s => s === 'bullish' ? 'text-profit' : s === 'bearish' ? 'text-loss' : 'text-warning'
+
+  if (!groqText && !deepseekText) {
+    return <div className="text-text-muted text-sm py-2">AI analysis not yet available for this symbol.</div>
+  }
 
   return (
     <div className="space-y-3">
       <div className="text-xs">Consensus: {consensusBadge(consensus)}</div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {groqText && (
-          <div className="bg-bg-primary p-3 border border-border">
-            <div className="text-[11px] uppercase text-text-secondary mb-1">
-              Groq (Llama 3.1 8b)
-              {groqSignal && <span className={`ml-2 ${signalColor(groqSignal)}`}>{groqSignal}</span>}
-            </div>
-            <div className="text-xs text-text-primary whitespace-pre-wrap leading-relaxed">{groqText}</div>
+      <div className="space-y-3">
+        <div className="bg-bg-primary p-4 border border-border">
+          <div className="text-[11px] uppercase text-text-secondary mb-2">
+            Groq (Llama 3.1 8b)
+            {groqSignal && <span className={`ml-2 font-semibold ${signalColor(groqSignal)}`}>{groqSignal}</span>}
           </div>
-        )}
-        {deepseekText && (
-          <div className="bg-bg-primary p-3 border border-border">
-            <div className="text-[11px] uppercase text-text-secondary mb-1">
-              DeepSeek V3.2
-              {deepseekSignal && <span className={`ml-2 ${signalColor(deepseekSignal)}`}>{deepseekSignal}</span>}
-            </div>
-            <div className="text-xs text-text-primary whitespace-pre-wrap leading-relaxed">{deepseekText}</div>
+          {groqText
+            ? <div className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{groqText}</div>
+            : <div className="text-text-muted text-sm">Pending. Next cycle in ~30 min.</div>
+          }
+        </div>
+        <div className="bg-bg-primary p-4 border border-border">
+          <div className="text-[11px] uppercase text-text-secondary mb-2">
+            DeepSeek V3.2
+            {deepseekSignal && <span className={`ml-2 font-semibold ${signalColor(deepseekSignal)}`}>{deepseekSignal}</span>}
           </div>
-        )}
+          {deepseekText
+            ? <div className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{deepseekText}</div>
+            : <div className="text-text-muted text-sm">Pending. Next cycle in ~60 min.</div>
+          }
+        </div>
       </div>
+    </div>
+  )
+}
+
+// / evolution history table
+function EvolutionPanel({ evolution }) {
+  if (!evolution || evolution.length === 0) {
+    return <div className="text-text-muted text-sm py-2">No evolution events for this symbol.</div>
+  }
+  const actionColor = {
+    spawn: 'text-accent', spawn_tier2: 'text-accent', mutate: 'text-accent',
+    kill: 'text-loss', promote: 'text-profit', graduate: 'text-profit',
+  }
+  return (
+    <div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-secondary text-[11px] uppercase">
+            <th className="text-left px-2 py-1">Gen</th>
+            <th className="text-left px-2 py-1">Action</th>
+            <th className="text-left px-2 py-1">Strategy</th>
+            <th className="text-right px-2 py-1">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {evolution.map((e, i) => (
+            <tr key={i} className="border-t border-border" style={{ height: 32 }}>
+              <td className="px-2 py-1 font-mono">{e.generation}</td>
+              <td className={`px-2 py-1 uppercase ${actionColor[e.action] || 'text-text-secondary'}`}>
+                {e.action}
+              </td>
+              <td className="px-2 py-1 font-mono truncate max-w-[120px]" title={e.strategy_id}>
+                {e.strategy_id}
+              </td>
+              <td className="px-2 py-1 text-right text-text-muted">
+                {e.created_at?.split('T')[0] || '--'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {evolution[0]?.details && typeof evolution[0].details === 'object' && evolution[0].details.tier && (
+        <div className="text-xs text-text-secondary mt-2 px-2">
+          Tier: <span className="uppercase font-semibold">{evolution[0].details.tier}</span>
+          {evolution[0].details.sector && (
+            <span className="text-text-muted"> (from {evolution[0].details.sector} sector base)</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -511,12 +614,17 @@ function SymbolDetail({ symbol, onBack }) {
         </Panel>
       </div>
 
-      {/* row 5: ai analysis */}
+      {/* row 5: ai analysis — stacked vertical */}
       <Panel title="AI Analysis">
         <AiAnalysisPanel score={d.score} />
       </Panel>
 
-      {/* row 6: trades + signals */}
+      {/* row 6: evolution history */}
+      <Panel title="Evolution History">
+        <EvolutionPanel evolution={d.evolution} />
+      </Panel>
+
+      {/* row 7: trades + signals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Trade History">
           <TradeHistoryPanel trades={d.trades} />
@@ -529,7 +637,7 @@ function SymbolDetail({ symbol, onBack }) {
   )
 }
 
-// / main tab: symbol list or detail view
+// / main tab: synthesis + symbol list or detail view
 export default function AnalysisTab() {
   const [selectedSymbol, setSelectedSymbol] = useState(null)
   const symbols = useApi('/api/symbols', 60000)
@@ -545,12 +653,17 @@ export default function AnalysisTab() {
   }
 
   return (
-    <Panel title="Symbol Analysis">
-      <SymbolList
-        symbols={symbols.data}
-        loading={symbols.loading}
-        onSelect={setSelectedSymbol}
-      />
-    </Panel>
+    <div className="space-y-2">
+      <Panel title="Daily Synthesis">
+        <SynthesisPanel onSelect={setSelectedSymbol} />
+      </Panel>
+      <Panel title="Symbol Analysis">
+        <SymbolList
+          symbols={symbols.data}
+          loading={symbols.loading}
+          onSelect={setSelectedSymbol}
+        />
+      </Panel>
+    </div>
   )
 }
