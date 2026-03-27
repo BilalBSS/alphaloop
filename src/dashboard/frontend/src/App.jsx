@@ -5,8 +5,9 @@ import PortfolioTab from './components/PortfolioTab'
 import TradesTab from './components/TradesTab'
 import EvolutionTab from './components/EvolutionTab'
 import HealthTab from './components/HealthTab'
+import AnalysisTab from './components/AnalysisTab'
 
-const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health']
+const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health', 'Analysis']
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(() =>
@@ -84,6 +85,9 @@ export default function App() {
         )}
         {activeTab === 'Health' && (
           <HealthTab health={health.data} loading={loading.health} />
+        )}
+        {activeTab === 'Analysis' && (
+          <AnalysisTab />
         )}
       </main>
     </div>

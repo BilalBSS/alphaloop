@@ -162,6 +162,13 @@ async def get_analysis(symbol: str):
         ORDER BY date DESC LIMIT 30""",
         symbol,
     )
+    insider = await _query(
+        """SELECT filing_date, insider_name, insider_title, transaction_type,
+                shares, price_per_share, total_value
+        FROM insider_trades WHERE symbol = $1
+        ORDER BY filing_date DESC LIMIT 20""",
+        symbol,
+    )
     return {
         "score": _serialize_one(score),
         "signals": _serialize(signals),
@@ -171,6 +178,7 @@ async def get_analysis(symbol: str):
         "fundamentals": _serialize_one(fundamentals),
         "dcf": _serialize_one(dcf),
         "price_history": _serialize(market),
+        "insider_trades": _serialize(insider),
     }
 
 
@@ -288,6 +296,8 @@ def _serialize_one(row: dict | None) -> dict | None:
         if hasattr(v, "isoformat"):
             result[k] = v.isoformat()
         elif isinstance(v, (int, float, str, bool, type(None))):
+            result[k] = v
+        elif isinstance(v, (dict, list)):
             result[k] = v
         else:
             result[k] = str(v)
