@@ -114,6 +114,33 @@ async def _run_migrations(pool: asyncpg.Pool) -> None:
                 raise
 
 
+async def cleanup_old_data(pool: asyncpg.Pool) -> dict[str, int]:
+    # / data retention policy for neon 512mb limit
+    # / news_sentiment: 180d, crypto_onchain: 180d, data_quality: 180d, notification_log: 30d
+    retention = {
+        "news_sentiment": 180,
+        "crypto_onchain": 180,
+        "data_quality": 180,
+        "notification_log": 30,
+    }
+    results = {}
+    async with pool.acquire() as conn:
+        for table, days in retention.items():
+            try:
+                date_col = "created_at" if table in ("notification_log", "crypto_onchain") else "date"
+                result = await conn.execute(
+                    f"DELETE FROM {table} WHERE {date_col} < NOW() - INTERVAL '{days} days'"
+                )
+                count = int(result.split()[-1]) if result else 0
+                results[table] = count
+                if count > 0:
+                    logger.info("cleanup_deleted", table=table, rows=count, retention_days=days)
+            except Exception as exc:
+                logger.warning("cleanup_failed", table=table, error=str(exc))
+                results[table] = 0
+    return results
+
+
 def _mask_url(url: str) -> str:
     # / hide password in connection url for logging
     try:

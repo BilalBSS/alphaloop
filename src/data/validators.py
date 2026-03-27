@@ -22,7 +22,7 @@ class ValidationResult:
 
 # / bounds: (min, max) inclusive. none = no bound.
 PRICE_BOUNDS = (Decimal("0.0001"), Decimal("999999"))
-VOLUME_BOUNDS = (0, 100_000_000_000)
+VOLUME_BOUNDS = (0, 1_000_000_000_000)
 PE_BOUNDS = (Decimal("-1000"), Decimal("10000"))
 PS_BOUNDS = (Decimal("0"), Decimal("10000"))
 PEG_BOUNDS = (Decimal("-100"), Decimal("1000"))

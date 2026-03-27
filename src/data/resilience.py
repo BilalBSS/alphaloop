@@ -1,4 +1,5 @@
 # / retry + circuit breaker decorator for external api calls
+# / shared http client with per-source rate limiting
 # / circuit states: closed -> open (after N failures) -> half_open (after timeout) -> closed
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Callable
 
+import httpx
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -153,3 +155,74 @@ def reset_breaker(source: str) -> None:
 def get_breaker_state(source: str) -> CircuitState | None:
     # / get current state, none if not created yet
     return _breakers[source].state if source in _breakers else None
+
+
+# / shared http client — reused across all data source modules
+_http_client: httpx.AsyncClient | None = None
+_rate_limiters: dict[str, asyncio.Semaphore] = {}
+_rate_delays: dict[str, float] = {}
+
+
+def configure_rate_limit(source: str, max_concurrent: int = 5, delay: float = 0.3) -> None:
+    # / set concurrency + delay for a source (call at module import time)
+    _rate_limiters[source] = asyncio.Semaphore(max_concurrent)
+    _rate_delays[source] = delay
+
+
+async def get_http_client() -> httpx.AsyncClient:
+    # / lazy-init shared client
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
+
+async def close_http_client() -> None:
+    # / call on shutdown to cleanly close the shared client
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+
+
+async def api_get(
+    url: str,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    source: str | None = None,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    # / shared GET with optional per-source rate limiting
+    client = await get_http_client()
+    if source and source in _rate_limiters:
+        async with _rate_limiters[source]:
+            delay = _rate_delays.get(source, 0)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            resp = await client.get(url, headers=headers, params=params, timeout=timeout)
+    else:
+        resp = await client.get(url, headers=headers, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp
+
+
+async def api_post(
+    url: str,
+    headers: dict[str, str] | None = None,
+    json: Any = None,
+    data: Any = None,
+    source: str | None = None,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    # / shared POST with optional per-source rate limiting
+    client = await get_http_client()
+    if source and source in _rate_limiters:
+        async with _rate_limiters[source]:
+            delay = _rate_delays.get(source, 0)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            resp = await client.post(url, headers=headers, json=json, content=data, timeout=timeout)
+    else:
+        resp = await client.post(url, headers=headers, json=json, content=data, timeout=timeout)
+    resp.raise_for_status()
+    return resp
