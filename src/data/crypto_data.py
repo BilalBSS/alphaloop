@@ -24,6 +24,7 @@ _CG_IDS = {
     "ADA": "cardano", "DOT": "polkadot", "AVAX": "avalanche-2",
     "MATIC": "matic-network", "LINK": "chainlink", "UNI": "uniswap",
     "DOGE": "dogecoin", "XRP": "ripple", "ATOM": "cosmos",
+    "SUI": "sui", "RENDER": "render-token",
 }
 
 

@@ -17,6 +17,7 @@ from src.analysis.insider_activity import InsiderSignal, analyze_insider_activit
 from src.analysis.ai_summary import generate_summary
 from src.agents import tools
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
+from src.data.symbols import is_crypto
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +43,43 @@ class AnalystAgent:
         return results
 
     async def _analyze_symbol(self, pool, symbol: str) -> float | None:
+        # / route to crypto or equity analysis path
+        if is_crypto(symbol):
+            return await self._analyze_crypto_symbol(pool, symbol)
+        return await self._analyze_equity_symbol(pool, symbol)
+
+    async def _analyze_crypto_symbol(self, pool, symbol: str) -> float | None:
+        # / crypto: sentiment only — fundamentals use NVT/funding (strategy-side)
+        sentiment_score: float | None = None
+        try:
+            sentiment_score = await compute_sentiment_score(symbol)
+            if sentiment_score != 0.0:
+                await store_sentiment(pool, symbol, sentiment_score)
+        except Exception as exc:
+            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
+
+        regime: str | None = None
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT regime FROM regime_history
+                    WHERE market = 'crypto' ORDER BY date DESC LIMIT 1"""
+                )
+                if row:
+                    regime = row["regime"]
+        except Exception:
+            pass
+
+        await tools.store_analysis_score(
+            pool, symbol=symbol, as_of=date.today(),
+            fundamental_score=None, technical_score=None, composite_score=None,
+            regime=regime, regime_confidence=None, used_fundamentals=False,
+            details={"news_sentiment_score": sentiment_score} if sentiment_score else {},
+        )
+        logger.info("analyst_crypto_complete", symbol=symbol, sentiment=sentiment_score)
+        return None
+
+    async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
         # / run all analysis components, compute composite, store to db
         ratio_score: RatioScore | None = None
         dcf_result: DCFResult | None = None

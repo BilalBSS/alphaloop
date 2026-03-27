@@ -6,8 +6,27 @@ from __future__ import annotations
 
 _CRYPTO_SUFFIXES = ("-USD", "-USDT", "-EUR", "-GBP")
 
-EQUITY_UNIVERSE = ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
-CRYPTO_UNIVERSE = ["BTC-USD", "ETH-USD"]
+EQUITY_UNIVERSE = [
+    # / etfs
+    "SPY", "QQQ",
+    # / mega-cap tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # / semiconductors
+    "AMD", "AVGO", "QCOM", "MRVL", "ARM",
+    # / cybersecurity + cloud
+    "CRM", "ADBE", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB", "PANW", "ZS",
+    # / fintech
+    "SHOP", "SQ", "COIN", "HOOD", "SOFI", "AFRM",
+    # / consumer tech
+    "ABNB", "UBER", "DASH", "DUOL",
+    # / health + clean energy
+    "HIMS", "LLY", "MRNA", "ENPH", "FSLR", "ON",
+    # / space
+    "ASTS", "RKLB", "LUNR",
+]
+CRYPTO_UNIVERSE = [
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD",
+]
 FULL_UNIVERSE = EQUITY_UNIVERSE + CRYPTO_UNIVERSE
 
 # / named universes — strategies reference these by name

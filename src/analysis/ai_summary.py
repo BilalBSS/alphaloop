@@ -18,8 +18,9 @@ from .ratio_analysis import RatioScore
 
 logger = structlog.get_logger(__name__)
 
-# / groq free tier: llama models, 30 req/min
+# / groq free tier: separate rate limit pools per model
 DEFAULT_MODEL = "llama-3.1-8b-instant"
+FALLBACK_MODEL = "openai/gpt-oss-20b"
 MAX_TOKENS = 500
 
 
@@ -231,5 +232,39 @@ async def generate_summary(
             )
 
     except Exception as exc:
+        # / rate limit or other error — try fallback model
+        if "429" in str(exc) or "rate" in str(exc).lower():
+            try:
+                logger.info("groq_rate_limited_trying_fallback", symbol=symbol, fallback=FALLBACK_MODEL)
+                async with httpx.AsyncClient(timeout=15.0) as client2:
+                    resp2 = await client2.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": FALLBACK_MODEL,
+                            "messages": [
+                                {"role": "system", "content": "You are a concise equity analyst. Give actionable signals."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "max_tokens": MAX_TOKENS,
+                            "temperature": 0.3,
+                        },
+                    )
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
+                    summary_text = data2["choices"][0]["message"]["content"].strip()
+                    lower = summary_text.lower()
+                    signal = "bullish" if "bullish" in lower[:50] else "bearish" if "bearish" in lower[:50] else "neutral"
+                    logger.info("ai_summary_generated", symbol=symbol, model=FALLBACK_MODEL)
+                    return AnalysisSummary(
+                        symbol=symbol, date=date.today(), summary=summary_text,
+                        model_used=FALLBACK_MODEL, signal=signal, confidence=75.0,
+                    )
+            except Exception:
+                pass
+
         logger.warning("groq_api_failed_using_fallback", symbol=symbol, error=type(exc).__name__)
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)

@@ -26,10 +26,10 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
-ANALYST_MARKET_HOURS = 3600      # / 1 hour
-ANALYST_OFF_HOURS = 14400        # / 4 hours
-STRATEGY_MARKET_HOURS = 900      # / 15 minutes
-STRATEGY_OFF_HOURS = 3600        # / 1 hour
+ANALYST_MARKET_HOURS = 1800      # / 30 minutes
+ANALYST_OFF_HOURS = 1800         # / 30 minutes (crypto trades 24/7)
+STRATEGY_MARKET_HOURS = 300      # / 5 minutes
+STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
 

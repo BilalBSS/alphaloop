@@ -50,6 +50,19 @@ class RiskAgent:
         # / clamp to [0, 1] to prevent oversized positions from malformed data
         strength = max(0.0, min(1.0, float(signal["strength"]) if signal["strength"] else 0.5))
 
+        # / long-only guard: reject naked sells (shorts)
+        long_only = os.environ.get("LONG_ONLY", "true").lower() in ("true", "1", "yes")
+        if long_only and side == "sell":
+            positions_check = await broker.get_positions()
+            has_position = any(
+                (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol
+                for p in positions_check
+            )
+            if not has_position:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                logger.info("long_only_rejected", symbol=symbol, signal_id=signal_id)
+                return {"status": "rejected", "reason": "long_only_no_position"}
+
         # / get account state
         balance = await broker.get_account_balance()
         positions = await broker.get_positions()
