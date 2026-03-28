@@ -112,29 +112,41 @@ class AnalystAgent:
         except Exception:
             pass
 
-        # / llm analysis: build crypto-specific context string for the prompt
-        # / this gives the LLM actual data instead of just the symbol name
+        # / llm analysis: same dual-llm path as equities
+        # / 30-min cycle: groq only, hourly cycle: groq + deepseek
         ai_signal: str | None = None
         ai_summary_text: str | None = None
+        crypto_context = regime or "unknown"
+        if nvt is not None:
+            crypto_context += f" | mcap/vol ratio: {nvt:.1f}"
+        if funding_rate is not None:
+            crypto_context += f" | funding rate: {funding_rate:+.6f}"
+        if coin_data:
+            ch24 = coin_data.get("price_change_24h_pct")
+            ch7d = coin_data.get("price_change_7d_pct")
+            if ch24 is not None:
+                crypto_context += f" | 24h: {ch24:+.1f}%"
+            if ch7d is not None:
+                crypto_context += f" | 7d: {ch7d:+.1f}%"
+            mcap = coin_data.get("market_cap")
+            if mcap:
+                crypto_context += f" | mcap: ${mcap / 1e9:.1f}B"
+        if sentiment_score is not None:
+            crypto_context += f" | sentiment: {sentiment_score:+.2f}"
+
         if getattr(self, "_run_deepseek", True):
+            # / hourly: dual-llm (groq + deepseek), same as equities
             try:
-                crypto_context = regime or "unknown"
-                if nvt is not None:
-                    crypto_context += f" | mcap/vol ratio: {nvt:.1f}"
-                if funding_rate is not None:
-                    crypto_context += f" | funding rate: {funding_rate:+.6f}"
-                if coin_data:
-                    ch24 = coin_data.get("price_change_24h_pct")
-                    ch7d = coin_data.get("price_change_7d_pct")
-                    if ch24 is not None:
-                        crypto_context += f" | 24h: {ch24:+.1f}%"
-                    if ch7d is not None:
-                        crypto_context += f" | 7d: {ch7d:+.1f}%"
-                    mcap = coin_data.get("market_cap")
-                    if mcap:
-                        crypto_context += f" | mcap: ${mcap / 1e9:.1f}B"
-                if sentiment_score is not None:
-                    crypto_context += f" | sentiment: {sentiment_score:+.2f}"
+                dual = await generate_dual_analysis(
+                    symbol, ratio=None, dcf=None, earnings=None, insider=None, regime=crypto_context,
+                )
+                ai_signal = dual.consensus
+                ai_summary_text = dual.groq.summary if dual.groq else None
+            except Exception as exc:
+                logger.warning("analyst_crypto_dual_failed", symbol=symbol, error=str(exc))
+        else:
+            # / 30-min: groq only
+            try:
                 summary = await generate_summary(
                     symbol, ratio=None, dcf=None, earnings=None, insider=None, regime=crypto_context,
                 )
