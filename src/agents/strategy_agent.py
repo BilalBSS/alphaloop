@@ -11,6 +11,9 @@ import pandas as pd
 import structlog
 
 from src.agents import tools
+from src.indicators.momentum import rsi
+from src.indicators.trend import sma, macd, adx
+from src.indicators.volatility import bollinger_bands, atr
 from src.notifications.notifier import notify_strategy_evaluation
 from src.quant.particle_filter import ParticleFilter
 from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy, EntrySignal
@@ -26,6 +29,7 @@ class StrategyAgent:
     def __init__(self):
         self._filters: dict[str, ParticleFilter] = {}
         self._df_cache: dict[str, pd.DataFrame | None] = {}
+        self._indicators_stored: set[str] = set()  # / track which symbols had indicators stored this cycle
 
     async def _fetch_market_df(
         self, pool, symbol: str, min_bars: int = 50,
@@ -66,6 +70,7 @@ class StrategyAgent:
         # / evaluate all active strategies against all symbols
         # / returns list of generated signal dicts
         self._df_cache.clear()  # / reset per-cycle cache
+        self._indicators_stored.clear()
         signals: list[dict] = []
         stats: dict[str, Any] = {
             "total": 0, "insufficient_data": 0, "no_entry": 0,
@@ -155,6 +160,9 @@ class StrategyAgent:
                 stats["insufficient_data"] += 1
             return None
 
+        # / compute and store indicators (once per symbol per cycle)
+        await self._store_indicators(pool, symbol, df)
+
         # / fetch analysis data
         analysis_row = await tools.fetch_analysis_score(pool, symbol)
         analysis_data = None
@@ -239,6 +247,42 @@ class StrategyAgent:
             "symbol": symbol,
             "strength": smoothed_strength,
         }
+
+    async def _store_indicators(self, pool, symbol: str, df: pd.DataFrame) -> None:
+        # / compute and store latest indicator values, once per symbol per cycle
+        if symbol in self._indicators_stored or len(df) < 50:
+            return
+        self._indicators_stored.add(symbol)
+        try:
+            close = df["close"]
+            high, low = df["high"], df["low"]
+            rsi_val = rsi(close, 14)
+            macd_result = macd(close, 12, 26, 9)
+            macd_line, signal_line, hist = macd_result.macd_line, macd_result.signal_line, macd_result.histogram
+            adx_val = adx(high, low, close, 14)
+            sma20_val = sma(close, 20)
+            sma50_val = sma(close, 50)
+            bb = bollinger_bands(close, 20, 2.0)
+            atr_val = atr(high, low, close, 14)
+
+            indicators = {
+                "rsi14": float(rsi_val.iloc[-1]) if not rsi_val.empty else None,
+                "macd": float(macd_line.iloc[-1]) if not macd_line.empty else None,
+                "macd_signal": float(signal_line.iloc[-1]) if not signal_line.empty else None,
+                "macd_histogram": float(hist.iloc[-1]) if not hist.empty else None,
+                "adx": float(adx_val.iloc[-1]) if not adx_val.empty else None,
+                "sma20": float(sma20_val.iloc[-1]) if not sma20_val.empty else None,
+                "sma50": float(sma50_val.iloc[-1]) if not sma50_val.empty else None,
+                "bb_upper": float(bb.upper.iloc[-1]) if not bb.upper.empty else None,
+                "bb_middle": float(bb.middle.iloc[-1]) if not bb.middle.empty else None,
+                "bb_lower": float(bb.lower.iloc[-1]) if not bb.lower.empty else None,
+                "atr": float(atr_val.iloc[-1]) if not atr_val.empty else None,
+            }
+            # / filter NaN
+            indicators = {k: (v if v == v else None) for k, v in indicators.items()}
+            await tools.store_computed_indicators(pool, symbol, indicators)
+        except Exception as exc:
+            logger.debug("indicator_compute_failed", symbol=symbol, error=str(exc))
 
     def _smooth_signal(self, symbol: str, raw_strength: float) -> float:
         # / use particle filter to smooth noisy entry signals

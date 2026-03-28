@@ -298,6 +298,54 @@ function PriceChart({ priceHistory }) {
   )
 }
 
+// / technical indicators panel
+function IndicatorsPanel({ symbol }) {
+  const { data, loading } = useApi(`/api/indicators/${symbol}?limit=1`, 60000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+
+  const latest = Array.isArray(data) && data.length > 0 ? data[0] : null
+  if (!latest) return <div className="text-text-muted text-sm py-2">No indicator data yet</div>
+
+  const rows = [
+    { label: 'RSI (14)', val: latest.rsi14, fmt: v => v?.toFixed(1), color: v => v > 70 ? 'text-loss' : v < 30 ? 'text-profit' : '' },
+    { label: 'MACD', val: latest.macd, fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
+    { label: 'MACD Signal', val: latest.macd_signal, fmt: v => v?.toFixed(4) },
+    { label: 'MACD Hist', val: latest.macd_histogram, fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
+    { label: 'ADX', val: latest.adx, fmt: v => v?.toFixed(1), color: v => v > 25 ? 'text-profit' : 'text-text-muted' },
+    { label: 'SMA 20', val: latest.sma20, fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'SMA 50', val: latest.sma50, fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'BB Upper', val: latest.bb_upper, fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'BB Middle', val: latest.bb_middle, fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'BB Lower', val: latest.bb_lower, fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'ATR (14)', val: latest.atr, fmt: v => v?.toFixed(4) },
+  ]
+
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-text-secondary text-[11px] uppercase">
+          <th className="text-left px-2 py-1">Indicator</th>
+          <th className="text-right px-2 py-1">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(r => {
+          const v = parseFloat(r.val)
+          const display = isNaN(v) ? '--' : r.fmt(v)
+          const cls = r.color && !isNaN(v) ? r.color(v) : ''
+          return (
+            <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
+              <td className="px-2 py-1">{r.label}</td>
+              <td className={`px-2 py-1 text-right font-mono ${cls}`}>{display}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
 // / fundamentals table with sector comparison
 function FundamentalsPanel({ fundamentals }) {
   if (!fundamentals) return <div className="text-text-muted text-sm py-2">No fundamentals data</div>
@@ -305,9 +353,9 @@ function FundamentalsPanel({ fundamentals }) {
     { label: 'P/E', val: fundamentals.pe_ratio, sector: fundamentals.sector_pe_avg, lower: true },
     { label: 'P/S', val: fundamentals.ps_ratio, sector: fundamentals.sector_ps_avg, lower: true },
     { label: 'PEG', val: fundamentals.peg_ratio, sector: null, lower: true },
-    { label: 'FCF Margin', val: fundamentals.fcf_margin, sector: null, lower: false, pct: true },
-    { label: 'D/E', val: fundamentals.debt_to_equity, sector: null, lower: true },
-    { label: 'Rev Growth 1Y', val: fundamentals.revenue_growth_1y, sector: null, lower: false, pct: true },
+    { label: 'FCF Margin', val: fundamentals.fcf_margin, sector: fundamentals.sector_fcf_margin_avg, lower: false, pct: true },
+    { label: 'D/E', val: fundamentals.debt_to_equity, sector: fundamentals.sector_de_avg, lower: true },
+    { label: 'Rev Growth 1Y', val: fundamentals.revenue_growth_1y, sector: fundamentals.sector_rev_growth_avg, lower: false, pct: true },
   ]
   return (
     <table className="w-full text-xs">
@@ -342,7 +390,7 @@ function FundamentalsPanel({ fundamentals }) {
 
 // / dcf valuation panel
 function DcfPanel({ dcf }) {
-  if (!dcf) return <div className="text-text-muted text-sm py-2">No DCF data</div>
+  if (!dcf || !dcf.fair_value_median) return <div className="text-text-muted text-sm py-2">No DCF data</div>
   const p10 = parseFloat(dcf.fair_value_p10 || 0)
   const median = parseFloat(dcf.fair_value_median || 0)
   const p90 = parseFloat(dcf.fair_value_p90 || 0)
@@ -705,8 +753,11 @@ function SymbolDetail({ symbol, onBack }) {
         <PriceChart priceHistory={d.price_history} />
       </Panel>
 
-      {/* row 3: fundamentals + dcf */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+      {/* row 3: indicators + fundamentals + dcf */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <Panel title="Technical Indicators" collapsible defaultOpen={false}>
+          <IndicatorsPanel symbol={symbol} />
+        </Panel>
         <Panel title="Fundamentals">
           <FundamentalsPanel fundamentals={d.fundamentals} />
         </Panel>

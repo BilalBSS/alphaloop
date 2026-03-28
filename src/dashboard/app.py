@@ -148,7 +148,8 @@ async def get_analysis(symbol: str):
     )
     dcf = await _query_one(
         """SELECT * FROM dcf_valuations
-        WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+        WHERE symbol = $1 AND fair_value_median IS NOT NULL
+        ORDER BY date DESC LIMIT 1""",
         symbol,
     )
     market = await _query(
@@ -283,6 +284,19 @@ async def get_synthesis_history(days: int = 7):
         """SELECT * FROM daily_synthesis
         ORDER BY date DESC LIMIT $1""",
         days,
+    )
+    return _serialize(rows)
+
+
+@app.get("/api/indicators/{symbol}")
+async def get_indicators(symbol: str, limit: int = 60):
+    limit = max(1, min(limit, 250))
+    rows = await _query(
+        """SELECT date, rsi14, macd, macd_signal, macd_histogram,
+        adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr
+        FROM computed_indicators
+        WHERE symbol = $1 ORDER BY date DESC LIMIT $2""",
+        symbol, limit,
     )
     return _serialize(rows)
 

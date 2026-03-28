@@ -112,3 +112,40 @@ async def fetch_stablecoin_supply() -> dict[str, Any]:
     url = f"{DEFILLAMA_BASE}/stablecoins"
     resp = await api_get(url, source="defillama")
     return resp.json()
+
+
+# / loris tools: cross-exchange funding rates + OI rankings (free, no key)
+LORIS_BASE = "https://api.loris.tools"
+
+configure_rate_limit("loris", max_concurrent=1, delay=60.0)
+
+
+@with_retry(source="loris", max_retries=1, base_delay=5.0)
+async def fetch_funding_rates() -> dict[str, Any]:
+    # / fetch funding rates across all exchanges, rates ×10000
+    # / attribution: funding rate data provided by loris.tools
+    resp = await api_get(f"{LORIS_BASE}/funding", source="loris")
+    data = resp.json()
+    return data
+
+
+def get_funding_rate(funding_data: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+    # / extract funding rate for a symbol, average across exchanges
+    sym = symbol.upper().replace("-USD", "")
+    rates = funding_data.get("funding_rates", {})
+    values = []
+    for exchange, exchange_rates in rates.items():
+        if not isinstance(exchange_rates, dict):
+            continue
+        val = exchange_rates.get(sym)
+        if val is not None and isinstance(val, (int, float)):
+            values.append(val / 10000.0)  # / convert from ×10000 to decimal
+    if not values:
+        return None
+    avg_rate = sum(values) / len(values)
+    oi_rank = funding_data.get("oi_rankings", {}).get(sym)
+    return {
+        "funding_rate": avg_rate,
+        "exchanges_reporting": len(values),
+        "oi_rank": oi_rank,
+    }

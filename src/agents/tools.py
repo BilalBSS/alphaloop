@@ -440,3 +440,30 @@ async def store_strategy_evaluation(pool, stats: dict[str, Any]) -> int | None:
     except Exception as exc:
         logger.warning("store_strategy_evaluation_failed", error=str(exc))
         return None
+
+
+async def store_computed_indicators(pool, symbol: str, indicators: dict[str, Any]) -> None:
+    # / upsert latest indicator values for dashboard
+    from datetime import date as dt_date
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO computed_indicators
+                (symbol, date, rsi14, macd, macd_signal, macd_histogram,
+                 adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                    rsi14 = EXCLUDED.rsi14, macd = EXCLUDED.macd,
+                    macd_signal = EXCLUDED.macd_signal, macd_histogram = EXCLUDED.macd_histogram,
+                    adx = EXCLUDED.adx, sma20 = EXCLUDED.sma20, sma50 = EXCLUDED.sma50,
+                    bb_upper = EXCLUDED.bb_upper, bb_middle = EXCLUDED.bb_middle,
+                    bb_lower = EXCLUDED.bb_lower, atr = EXCLUDED.atr""",
+                symbol, dt_date.today(),
+                indicators.get("rsi14"), indicators.get("macd"),
+                indicators.get("macd_signal"), indicators.get("macd_histogram"),
+                indicators.get("adx"), indicators.get("sma20"), indicators.get("sma50"),
+                indicators.get("bb_upper"), indicators.get("bb_middle"),
+                indicators.get("bb_lower"), indicators.get("atr"),
+            )
+    except Exception as exc:
+        logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))

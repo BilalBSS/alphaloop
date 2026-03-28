@@ -16,6 +16,7 @@ from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
 from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.agents import tools
+from src.data.crypto_data import fetch_coin_data, fetch_funding_rates, get_funding_rate
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
@@ -27,10 +28,14 @@ logger = structlog.get_logger(__name__)
 class AnalystAgent:
     # / stateless — all persistent state lives in the database
 
+    def __init__(self):
+        self._funding_cache: dict | None = None
+
     async def run(self, pool, symbols: list[str], run_deepseek: bool = True) -> dict[str, float | None]:
         # / run full analysis pipeline for each symbol
         # / run_deepseek=False: groq only (30-min cycle), True: groq + deepseek (hourly)
         self._run_deepseek = run_deepseek
+        self._funding_cache = None  # / reset per cycle
         results: dict[str, float | None] = {}
 
         # / social sentiment: stocktwits + fear & greed for all symbols
@@ -58,14 +63,42 @@ class AnalystAgent:
         return await self._analyze_equity_symbol(pool, symbol)
 
     async def _analyze_crypto_symbol(self, pool, symbol: str) -> float | None:
-        # / crypto: sentiment only — fundamentals use NVT/funding (strategy-side)
+        # / crypto: NVT from coingecko + sentiment + LLM analysis
         sentiment_score: float | None = None
         try:
             sentiment_score = await compute_sentiment_score(symbol)
-            if sentiment_score != 0.0:
+            if sentiment_score and sentiment_score != 0.0:
                 await store_sentiment(pool, symbol, sentiment_score)
         except Exception as exc:
             logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
+
+        # / fetch coingecko data for NVT
+        nvt: float | None = None
+        coin_data: dict | None = None
+        try:
+            coin_data = await fetch_coin_data(symbol)
+            if coin_data:
+                mcap = coin_data.get("market_cap")
+                vol = coin_data.get("total_volume")
+                if mcap and vol and vol > 0:
+                    nvt = mcap / vol
+        except Exception as exc:
+            logger.warning("analyst_crypto_coingecko_failed", symbol=symbol, error=str(exc))
+
+        # / fetch cross-exchange funding rate via loris tools (cached per cycle)
+        funding_rate: float | None = None
+        oi_rank: int | None = None
+        try:
+            if self._funding_cache is None:
+                self._funding_cache = await fetch_funding_rates() or {}
+            if self._funding_cache:
+                fr = get_funding_rate(self._funding_cache, symbol)
+                if fr:
+                    funding_rate = fr["funding_rate"]
+                    oi_rank = fr.get("oi_rank")
+        except Exception as exc:
+            self._funding_cache = {}  # / mark as attempted, don't retry per-symbol
+            logger.warning("analyst_crypto_funding_failed", symbol=symbol, error=str(exc))
 
         regime: str | None = None
         try:
@@ -79,14 +112,95 @@ class AnalystAgent:
         except Exception:
             pass
 
+        # / llm analysis: build crypto-specific context string for the prompt
+        # / this gives the LLM actual data instead of just the symbol name
+        ai_signal: str | None = None
+        ai_summary_text: str | None = None
+        if getattr(self, "_run_deepseek", True):
+            try:
+                crypto_context = regime or "unknown"
+                if nvt is not None:
+                    crypto_context += f" | mcap/vol ratio: {nvt:.1f}"
+                if funding_rate is not None:
+                    crypto_context += f" | funding rate: {funding_rate:+.6f}"
+                if coin_data:
+                    ch24 = coin_data.get("price_change_24h_pct")
+                    ch7d = coin_data.get("price_change_7d_pct")
+                    if ch24 is not None:
+                        crypto_context += f" | 24h: {ch24:+.1f}%"
+                    if ch7d is not None:
+                        crypto_context += f" | 7d: {ch7d:+.1f}%"
+                    mcap = coin_data.get("market_cap")
+                    if mcap:
+                        crypto_context += f" | mcap: ${mcap / 1e9:.1f}B"
+                if sentiment_score is not None:
+                    crypto_context += f" | sentiment: {sentiment_score:+.2f}"
+                summary = await generate_summary(
+                    symbol, ratio=None, dcf=None, earnings=None, insider=None, regime=crypto_context,
+                )
+                if summary:
+                    ai_signal = summary.signal
+                    ai_summary_text = summary.summary
+            except Exception as exc:
+                logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
+
+        # / compute crypto composite: sentiment 0.2, mcap/vol 0.2, funding 0.2, AI 0.4
+        components: list[tuple[float, float]] = []
+        if sentiment_score is not None and sentiment_score != 0.0:
+            sent_100 = max(0.0, min(100.0, (sentiment_score + 1.0) * 50.0))
+            components.append((sent_100, 0.2))
+        if nvt is not None:
+            # / mcap/vol ratio (uses exchange volume, not on-chain tx volume)
+            # / typical range 1-20: low = high liquidity (bullish), high = low liquidity
+            mvr_score = max(0.0, min(100.0, (15.0 - nvt) / 15.0 * 80.0 + 10.0))
+            components.append((mvr_score, 0.2))
+        if funding_rate is not None:
+            # / funding rate: negative = bullish (shorts paying), positive = bearish
+            fr_score = max(0.0, min(100.0, (0.01 - funding_rate) / 0.02 * 100.0))
+            components.append((fr_score, 0.2))
+        if ai_signal:
+            signal_map = {"bullish": 80.0, "neutral": 50.0, "bearish": 20.0}
+            components.append((signal_map.get(ai_signal, 50.0), 0.4))
+
+        composite: float | None = None
+        if components:
+            total_w = sum(w for _, w in components)
+            composite = round(sum(s * w for s, w in components) / total_w, 1)
+
+        details: dict = {
+            "nvt_ratio": nvt,
+            "funding_rate": funding_rate,
+            "oi_rank": oi_rank,
+            "ai_consensus": ai_signal,
+            "news_sentiment_score": sentiment_score,
+        }
+        if coin_data:
+            details["price_change_24h"] = coin_data.get("price_change_24h_pct")
+            details["price_change_7d"] = coin_data.get("price_change_7d_pct")
+            details["market_cap"] = coin_data.get("market_cap")
+        if ai_summary_text:
+            details["summary"] = ai_summary_text
+
         await tools.store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
-            fundamental_score=None, technical_score=None, composite_score=None,
-            regime=regime, regime_confidence=None, used_fundamentals=False,
-            details={"news_sentiment_score": sentiment_score} if sentiment_score else {},
+            fundamental_score=composite, technical_score=None, composite_score=composite,
+            regime=regime, regime_confidence=None, used_fundamentals=nvt is not None,
+            details=details,
         )
-        logger.info("analyst_crypto_complete", symbol=symbol, sentiment=sentiment_score)
-        return None
+
+        # / notify discord on strong crypto signals
+        if ai_signal in ("bullish", "bearish") and composite is not None:
+            notify_details = {
+                "nvt_ratio": nvt,
+                "regime": regime,
+                "ai_excerpt": ai_summary_text[:200] if ai_summary_text else None,
+            }
+            if coin_data:
+                notify_details["price_change_24h"] = coin_data.get("price_change_24h_pct")
+            notify_analysis_highlight(symbol, ai_signal, composite, details=notify_details)
+
+        logger.info("analyst_crypto_complete", symbol=symbol, composite=composite, nvt=nvt)
+        return composite
 
     async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
         # / run all analysis components, compute composite, store to db

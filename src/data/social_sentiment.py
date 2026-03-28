@@ -43,6 +43,8 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
         data = resp.json()
         items = data.get("results", [])
         if not items:
+            logger.info("apewisdom_empty_results", filter=filter_type,
+                        keys=list(data.keys())[:5], count=data.get("count", 0))
             return result
 
         max_mentions = max((r.get("mentions", 1) for r in items), default=1)

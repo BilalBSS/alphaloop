@@ -116,13 +116,22 @@ def _compute_sector_averages(data: list[dict[str, Any]]) -> None:
     for sector, items in sectors.items():
         pe_values = [d["pe_ratio"] for d in items if d.get("pe_ratio") is not None]
         ps_values = [d["ps_ratio"] for d in items if d.get("ps_ratio") is not None]
+        fcf_values = [d["fcf_margin"] for d in items if d.get("fcf_margin") is not None]
+        de_values = [d["debt_to_equity"] for d in items if d.get("debt_to_equity") is not None]
+        rev_values = [d["revenue_growth_1y"] for d in items if d.get("revenue_growth_1y") is not None]
 
         avg_pe = sum(pe_values) / len(pe_values) if pe_values else None
         avg_ps = sum(ps_values) / len(ps_values) if ps_values else None
+        avg_fcf = sum(fcf_values) / len(fcf_values) if fcf_values else None
+        avg_de = sum(de_values) / len(de_values) if de_values else None
+        avg_rev = sum(rev_values) / len(rev_values) if rev_values else None
 
         for d in items:
             d["sector_pe_avg"] = avg_pe
             d["sector_ps_avg"] = avg_ps
+            d["sector_fcf_margin_avg"] = avg_fcf
+            d["sector_de_avg"] = avg_de
+            d["sector_rev_growth_avg"] = avg_rev
 
 
 async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
@@ -155,8 +164,9 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                     INSERT INTO fundamentals (
                         symbol, date, pe_ratio, pe_forward, ps_ratio, peg_ratio,
                         revenue_growth_1y, revenue_growth_3y, fcf_margin,
-                        debt_to_equity, sector, sector_pe_avg, sector_ps_avg
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                        debt_to_equity, sector, sector_pe_avg, sector_ps_avg,
+                        sector_fcf_margin_avg, sector_de_avg, sector_rev_growth_avg
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                     ON CONFLICT (symbol, date) DO UPDATE SET
                         pe_ratio = EXCLUDED.pe_ratio,
                         pe_forward = EXCLUDED.pe_forward,
@@ -168,13 +178,18 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                         debt_to_equity = EXCLUDED.debt_to_equity,
                         sector = EXCLUDED.sector,
                         sector_pe_avg = EXCLUDED.sector_pe_avg,
-                        sector_ps_avg = EXCLUDED.sector_ps_avg
+                        sector_ps_avg = EXCLUDED.sector_ps_avg,
+                        sector_fcf_margin_avg = EXCLUDED.sector_fcf_margin_avg,
+                        sector_de_avg = EXCLUDED.sector_de_avg,
+                        sector_rev_growth_avg = EXCLUDED.sector_rev_growth_avg
                     """,
                     d["symbol"], d["date"], d.get("pe_ratio"), d.get("pe_forward"),
                     d.get("ps_ratio"), d.get("peg_ratio"), d.get("revenue_growth_1y"),
                     d.get("revenue_growth_3y"), d.get("fcf_margin"),
                     d.get("debt_to_equity"), d.get("sector", "Unknown"),
                     d.get("sector_pe_avg"), d.get("sector_ps_avg"),
+                    d.get("sector_fcf_margin_avg"), d.get("sector_de_avg"),
+                    d.get("sector_rev_growth_avg"),
                 )
                 inserted += 1
             except Exception as exc:
