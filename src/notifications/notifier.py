@@ -307,17 +307,41 @@ def notify_system_error(error: str, context: str = "") -> asyncio.Task | None:
 def notify_evolution_summary(summary: dict[str, Any]) -> asyncio.Task | None:
     gen = summary.get("generation", "?")
     killed_list = summary.get("killed", [])
-    mutated = len(summary.get("mutated", []))
+    mutated_list = summary.get("mutated", [])
     promoted_list = summary.get("promoted", [])
     errors = len(summary.get("errors", []))
+    scores = summary.get("scores", {})
 
-    lines = [f"killed {len(killed_list)}, mutated {mutated}, promoted {len(promoted_list)}"]
-    if killed_list:
-        ids = ", ".join(str(k) if isinstance(k, (str, int)) else str(k.get("id", k)) for k in killed_list[:3])
-        lines.append(f"killed: {ids}")
+    # / top and worst performer from scores dict
+    top_name = top_sharpe = worst_name = worst_sharpe = None
+    if scores:
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)
+        if sorted_scores:
+            top_name, top_sharpe = sorted_scores[0]
+        if len(sorted_scores) > 1:
+            worst_name, worst_sharpe = sorted_scores[-1]
+
+    lines = []
+    if top_name:
+        lines.append(f"top: {top_name} (sharpe {top_sharpe:.2f})" if isinstance(top_sharpe, (int, float)) else f"top: {top_name}")
+    if worst_name and worst_name != top_name:
+        lines.append(f"worst: {worst_name} (sharpe {worst_sharpe:.2f})" if isinstance(worst_sharpe, (int, float)) else f"worst: {worst_name}")
+
+    lines.append(f"killed {len(killed_list)}, mutated {len(mutated_list)}, promoted {len(promoted_list)}")
+
+    if mutated_list:
+        for m in mutated_list[:2]:
+            mid = m.get("id", m) if isinstance(m, dict) else m
+            reason = m.get("mutation", "") if isinstance(m, dict) else ""
+            lines.append(f"  mutated: {mid}" + (f" — {reason}" if reason else ""))
+
     if promoted_list:
         ids = ", ".join(str(p) if isinstance(p, (str, int)) else str(p.get("id", p)) for p in promoted_list[:3])
         lines.append(f"promoted: {ids}")
+
+    next_run = summary.get("next_evolution")
+    if next_run:
+        lines.append(f"next: {next_run}")
 
     fields: dict[str, str] = {}
     if errors:
@@ -451,12 +475,11 @@ def notify_strategy_evaluation(stats: dict[str, Any]) -> asyncio.Task | None:
     blocked_t = stats.get("blocked_threshold", 0)
     signals = stats.get("signals", 0)
     strategies = stats.get("strategies_evaluated", 0)
+    regime = stats.get("regime", "unknown")
 
     lines = [
-        f"evaluated {total} pairs ({strategies} strategies)",
-        f"entry hits: {entry_hits}",
-        f"blocked: {blocked_c} consensus, {blocked_t} threshold",
-        f"signals: {signals}",
+        f"{strategies} strategies, {regime} regime, {signals}/{total} triggered",
+        f"entry hits: {entry_hits}, blocked: {blocked_c} consensus + {blocked_t} threshold",
     ]
 
     near_misses = stats.get("near_misses", [])[:3]

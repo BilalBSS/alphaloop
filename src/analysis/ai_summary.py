@@ -50,6 +50,8 @@ def _build_prompt(
     earnings: EarningsSignal | None,
     insider: InsiderSignal | None,
     regime: str | None = None,
+    indicators: dict | None = None,
+    sentiment: dict | None = None,
 ) -> str:
     # / construct analysis prompt from available data
     parts = [f"Provide a concise investment analysis summary for {symbol}."]
@@ -90,6 +92,35 @@ def _build_prompt(
         parts.append(f"  Buys: {insider.total_buys}, Sells: {insider.total_sells}")
         if insider.cluster_detected:
             parts.append(f"  Cluster buying detected")
+
+    if indicators:
+        parts.append(f"\nTechnical indicators:")
+        rsi = indicators.get("rsi14")
+        if rsi is not None:
+            label = "overbought" if rsi > 70 else "oversold" if rsi < 30 else "neutral"
+            parts.append(f"  RSI(14): {rsi:.1f} ({label})")
+        macd_h = indicators.get("macd_histogram")
+        if macd_h is not None:
+            parts.append(f"  MACD histogram: {macd_h:.4f} ({'bullish' if macd_h > 0 else 'bearish'})")
+        adx = indicators.get("adx")
+        if adx is not None:
+            parts.append(f"  ADX: {adx:.1f} ({'strong' if adx > 25 else 'weak'} trend)")
+
+    if sentiment:
+        parts.append(f"\nSentiment:")
+        news_score = sentiment.get("news_score")
+        if news_score is not None:
+            label = "bullish" if news_score > 0.1 else "bearish" if news_score < -0.1 else "neutral"
+            parts.append(f"  News: {news_score:.2f} ({label})")
+        social = sentiment.get("social")
+        if social:
+            vol = social.get("volume", 0)
+            bull = social.get("bullish_pct")
+            if vol or bull is not None:
+                s = f"  Social: {vol} mentions" if vol else "  Social:"
+                if bull is not None:
+                    s += f", {bull:.0%} bullish"
+                parts.append(s)
 
     parts.append("\nKeep the summary under 150 words. Focus on actionable insight.")
 
@@ -178,34 +209,18 @@ def _build_fallback_summary(
     )
 
 
-async def generate_summary(
-    symbol: str,
-    ratio: RatioScore | None = None,
-    dcf: DCFResult | None = None,
-    earnings: EarningsSignal | None = None,
-    insider: InsiderSignal | None = None,
-    regime: str | None = None,
-) -> AnalysisSummary:
-    # / try groq llm, fall back to structured summary
-    prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime)
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
-        return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
-
+async def _call_llm(
+    api_key: str, model: str, prompt: str, symbol: str,
+) -> AnalysisSummary | None:
+    # / single llm api call — returns None on failure so caller can try next model
     try:
         import httpx
-
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": DEFAULT_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": "You are a concise equity analyst. Give actionable signals."},
                         {"role": "user", "content": prompt},
@@ -216,67 +231,47 @@ async def generate_summary(
             )
             resp.raise_for_status()
             data = resp.json()
-
             summary_text = data["choices"][0]["message"]["content"].strip()
-            model_used = data.get("model", DEFAULT_MODEL)
-
-            # / infer signal from summary
             lower = summary_text.lower()
-            if "bullish" in lower[:50]:
-                signal = "bullish"
-            elif "bearish" in lower[:50]:
-                signal = "bearish"
-            else:
-                signal = "neutral"
-
-            logger.info("ai_summary_generated", symbol=symbol, model=model_used)
-
+            signal = "bullish" if "bullish" in lower[:50] else "bearish" if "bearish" in lower[:50] else "neutral"
+            logger.info("ai_summary_generated", symbol=symbol, model=model)
             return AnalysisSummary(
-                symbol=symbol,
-                date=date.today(),
-                summary=summary_text,
-                model_used=model_used,
-                signal=signal,
-                confidence=75.0,  # llm summaries get moderate confidence
+                symbol=symbol, date=date.today(), summary=summary_text,
+                model_used=model, signal=signal, confidence=75.0,
             )
-
     except Exception as exc:
-        # / rate limit or other error — try fallback model
-        if "429" in str(exc) or "rate" in str(exc).lower():
-            try:
-                logger.info("groq_rate_limited_trying_fallback", symbol=symbol, fallback=FALLBACK_MODEL)
-                async with httpx.AsyncClient(timeout=15.0) as client2:
-                    resp2 = await client2.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": FALLBACK_MODEL,
-                            "messages": [
-                                {"role": "system", "content": "You are a concise equity analyst. Give actionable signals."},
-                                {"role": "user", "content": prompt},
-                            ],
-                            "max_tokens": MAX_TOKENS,
-                            "temperature": 0.3,
-                        },
-                    )
-                    resp2.raise_for_status()
-                    data2 = resp2.json()
-                    summary_text = data2["choices"][0]["message"]["content"].strip()
-                    lower = summary_text.lower()
-                    signal = "bullish" if "bullish" in lower[:50] else "bearish" if "bearish" in lower[:50] else "neutral"
-                    logger.info("ai_summary_generated", symbol=symbol, model=FALLBACK_MODEL)
-                    return AnalysisSummary(
-                        symbol=symbol, date=date.today(), summary=summary_text,
-                        model_used=FALLBACK_MODEL, signal=signal, confidence=75.0,
-                    )
-            except Exception:
-                pass
+        logger.info("llm_model_failed", symbol=symbol, model=model, error=str(exc)[:100])
+        return None
 
-        logger.warning("groq_api_failed_using_fallback", symbol=symbol, error=type(exc).__name__)
+
+async def generate_summary(
+    symbol: str,
+    ratio: RatioScore | None = None,
+    dcf: DCFResult | None = None,
+    earnings: EarningsSignal | None = None,
+    insider: InsiderSignal | None = None,
+    regime: str | None = None,
+    indicators: dict | None = None,
+    sentiment: dict | None = None,
+) -> AnalysisSummary:
+    # / try groq llm, fall back to structured summary
+    prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
+                           indicators=indicators, sentiment=sentiment)
+
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+
+    # / try models in order: default → 120b → fallback 20b
+    models = [DEFAULT_MODEL, "openai/gpt-oss-120b", FALLBACK_MODEL]
+    for model in models:
+        result = await _call_llm(api_key, model, prompt, symbol)
+        if result:
+            return result
+
+    logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)
+    return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
 
 
 async def _generate_deepseek_summary(
@@ -286,13 +281,16 @@ async def _generate_deepseek_summary(
     earnings: EarningsSignal | None = None,
     insider: InsiderSignal | None = None,
     regime: str | None = None,
+    indicators: dict | None = None,
+    sentiment: dict | None = None,
 ) -> AnalysisSummary | None:
     # / independent second opinion via deepseek — gets same raw data, NOT groq's output
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         return None
 
-    prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime)
+    prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
+                           indicators=indicators, sentiment=sentiment)
 
     try:
         import httpx
@@ -341,11 +339,15 @@ async def generate_dual_analysis(
     earnings: EarningsSignal | None = None,
     insider: InsiderSignal | None = None,
     regime: str | None = None,
+    indicators: dict | None = None,
+    sentiment: dict | None = None,
 ) -> DualAnalysis:
     # / run groq + deepseek in parallel, compute consensus
     import asyncio
-    groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime)
-    deepseek_task = _generate_deepseek_summary(symbol, ratio, dcf, earnings, insider, regime)
+    groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
+                                 indicators=indicators, sentiment=sentiment)
+    deepseek_task = _generate_deepseek_summary(symbol, ratio, dcf, earnings, insider, regime,
+                                                indicators=indicators, sentiment=sentiment)
 
     groq_result, deepseek_result = await asyncio.gather(groq_task, deepseek_task)
 

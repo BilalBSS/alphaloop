@@ -270,20 +270,72 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("regime_fetch_failed", symbol=symbol, error=str(exc))
 
+        # / store dcf result to dcf_valuations table (regime known at this point)
+        if dcf_result:
+            try:
+                from src.analysis.dcf_model import store_dcf_result
+                await store_dcf_result(pool, dcf_result, regime=regime)
+            except Exception as exc:
+                logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
+
+        # / fetch indicators + sentiment from db for llm prompt enrichment
+        indicator_data: dict | None = None
+        sentiment_data: dict | None = None
+        try:
+            async with pool.acquire() as conn:
+                ind_row = await conn.fetchrow(
+                    """SELECT rsi14, macd_histogram, adx FROM computed_indicators
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                    symbol,
+                )
+                if ind_row:
+                    indicator_data = dict(ind_row)
+        except Exception:
+            pass
+        try:
+            async with pool.acquire() as conn:
+                news_row = await conn.fetchrow(
+                    """SELECT sentiment_score FROM news_sentiment
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                    symbol,
+                )
+                social_row = await conn.fetchrow(
+                    """SELECT bullish_pct, volume FROM social_sentiment
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                    symbol,
+                )
+                sentiment_data = {}
+                if news_row:
+                    sentiment_data["news_score"] = news_row["sentiment_score"]
+                if social_row:
+                    sentiment_data["social"] = dict(social_row)
+                if not sentiment_data:
+                    sentiment_data = None
+        except Exception:
+            pass
+
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
-        if getattr(self, "_run_deepseek", True):
-            dual = await generate_dual_analysis(
-                symbol, ratio=ratio_score, dcf=dcf_result,
-                earnings=earnings_signal, insider=insider_signal, regime=regime,
-            )
-        else:
-            # / groq only, skip deepseek call
-            groq_only = await generate_summary(
-                symbol, ratio=ratio_score, dcf=dcf_result,
-                earnings=earnings_signal, insider=insider_signal, regime=regime,
-            )
-            from src.analysis.ai_summary import DualAnalysis
-            dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal)
+        try:
+            if getattr(self, "_run_deepseek", True):
+                dual = await generate_dual_analysis(
+                    symbol, ratio=ratio_score, dcf=dcf_result,
+                    earnings=earnings_signal, insider=insider_signal, regime=regime,
+                    indicators=indicator_data, sentiment=sentiment_data,
+                )
+            else:
+                # / groq only, skip deepseek call
+                groq_only = await generate_summary(
+                    symbol, ratio=ratio_score, dcf=dcf_result,
+                    earnings=earnings_signal, insider=insider_signal, regime=regime,
+                    indicators=indicator_data, sentiment=sentiment_data,
+                )
+                from src.analysis.ai_summary import DualAnalysis
+                dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal)
+        except Exception as exc:
+            logger.warning("analyst_llm_failed", symbol=symbol, error=str(exc))
+            from src.analysis.ai_summary import DualAnalysis, _build_fallback_summary
+            fallback = _build_fallback_summary(symbol, ratio_score, dcf_result, earnings_signal, insider_signal)
+            dual = DualAnalysis(groq=fallback, deepseek=None, consensus=fallback.signal)
 
         # / compute fundamental score as weighted average of available components
         fundamental_score = self._compute_fundamental_score(

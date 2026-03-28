@@ -431,44 +431,74 @@ function DcfPanel({ dcf }) {
   )
 }
 
-// / insider activity table
-function InsiderPanel({ insiderTrades }) {
+// / insider activity table with aggregate summary
+function InsiderPanel({ insiderTrades, score }) {
   if (!insiderTrades || insiderTrades.length === 0) {
     return <div className="text-text-muted text-sm py-2">No insider activity</div>
   }
   const typeColor = { buy: 'text-profit', sell: 'text-loss', option_exercise: 'text-warning' }
+
+  // / compute aggregates from trades
+  const buys = insiderTrades.filter(t => t.transaction_type === 'buy')
+  const sells = insiderTrades.filter(t => t.transaction_type === 'sell')
+  const buyTotal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
+  const sellTotal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
+  const netBuy = buyTotal > sellTotal
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
+  const insiderStrength = details.insider_score_100
+
+  const fmtVal = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${(v / 1e3).toFixed(0)}K`
+
   return (
-    <table className="w-full text-xs">
-      <thead>
-        <tr className="text-text-secondary text-[11px] uppercase">
-          <th className="text-left px-2 py-1">Date</th>
-          <th className="text-left px-2 py-1">Name</th>
-          <th className="text-left px-2 py-1">Type</th>
-          <th className="text-right px-2 py-1">Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        {insiderTrades.slice(0, 10).map((t, i) => (
-          <tr key={i} className="border-t border-border" style={{ height: 32 }}>
-            <td className="px-2 py-1 text-text-muted">{t.filing_date?.split('T')[0] || '--'}</td>
-            <td className="px-2 py-1 truncate max-w-[100px]" title={`${t.insider_name} (${t.insider_title})`}>
-              {t.insider_name}
-            </td>
-            <td className={`px-2 py-1 uppercase ${typeColor[t.transaction_type] || ''}`}>
-              {t.transaction_type}
-            </td>
-            <td className="px-2 py-1 text-right font-mono">
-              ${parseFloat(t.total_value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </td>
+    <div className="space-y-2">
+      {/* aggregate summary */}
+      <div className={`text-xs font-semibold px-2 py-1 border-l-2 ${netBuy ? 'border-l-profit text-profit' : 'border-l-loss text-loss'}`}>
+        {buys.length} buys ({fmtVal(buyTotal)}) / {sells.length} sells ({fmtVal(sellTotal)})
+      </div>
+      {insiderStrength != null && (
+        <div className="px-2">
+          <div className="flex items-center gap-2 text-[10px] text-text-secondary">
+            <span>Signal</span>
+            <div className="flex-1 h-1.5 bg-bg-primary rounded overflow-hidden">
+              <div className={`h-full ${netBuy ? 'bg-profit' : 'bg-loss'}`}
+                style={{ width: `${Math.min(100, parseFloat(insiderStrength))}%` }} />
+            </div>
+            <span className="font-mono">{parseFloat(insiderStrength).toFixed(0)}</span>
+          </div>
+        </div>
+      )}
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-secondary text-[11px] uppercase">
+            <th className="text-left px-2 py-1">Date</th>
+            <th className="text-left px-2 py-1">Name</th>
+            <th className="text-left px-2 py-1">Type</th>
+            <th className="text-right px-2 py-1">Value</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {insiderTrades.slice(0, 10).map((t, i) => (
+            <tr key={i} className="border-t border-border" style={{ height: 32 }}>
+              <td className="px-2 py-1 text-text-muted">{t.filing_date?.split('T')[0] || '--'}</td>
+              <td className="px-2 py-1 truncate max-w-[100px]" title={`${t.insider_name} (${t.insider_title})`}>
+                {t.insider_name}
+              </td>
+              <td className={`px-2 py-1 uppercase ${typeColor[t.transaction_type] || ''}`}>
+                {t.transaction_type}
+              </td>
+              <td className="px-2 py-1 text-right font-mono">
+                ${parseFloat(t.total_value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
-// / sentiment panel: news bar chart + social summary
-function SentimentPanel({ sentiment, socialSentiment }) {
+// / sentiment panel: news bar chart + social summary with bullish/bearish bars
+function SentimentPanel({ sentiment, socialSentiment, isCrypto }) {
   const hasNews = sentiment && sentiment.length > 0
   const latestSocial = socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null
 
@@ -479,42 +509,126 @@ function SentimentPanel({ sentiment, socialSentiment }) {
       }))
     : []
 
+  const bullPct = latestSocial ? parseFloat(latestSocial.bullish_pct || 0) : 0
+  const bearPct = latestSocial ? parseFloat(latestSocial.bearish_pct || 0) : 0
+  const mentions = latestSocial ? parseInt(latestSocial.volume || 0) : 0
+
   return (
     <div className="space-y-3">
       {hasNews ? (
-        <ResponsiveContainer width="100%" height={140}>
-          <BarChart data={chartData}>
-            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
-            <YAxis domain={[-1, 1]} tick={{ fontSize: 9, fill: '#8888a0' }} width={30} />
-            <Tooltip contentStyle={TIP} formatter={v => [v.toFixed(3), 'Sentiment']} />
-            <Bar dataKey="score">
-              {chartData.map((d, i) => (
-                <Cell key={i} fill={d.score >= 0 ? '#00dc82' : '#ff4757'} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        <>
+          <div className="text-[10px] uppercase text-text-muted px-1">
+            {isCrypto ? 'Crypto FNG' : 'VIX Fear Gauge'} + News
+          </div>
+          <ResponsiveContainer width="100%" height={140}>
+            <BarChart data={chartData}>
+              <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
+              <YAxis domain={[-1, 1]} tick={{ fontSize: 9, fill: '#8888a0' }} width={30} />
+              <Tooltip contentStyle={TIP} formatter={v => [v.toFixed(3), 'Sentiment']} />
+              <Bar dataKey="score">
+                {chartData.map((d, i) => (
+                  <Cell key={i} fill={d.score >= 0 ? '#00dc82' : '#ff4757'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </>
       ) : (
         <div className="text-text-muted text-sm py-2">No news sentiment data</div>
       )}
       {latestSocial && (
-        <div className="text-xs text-text-secondary">
-          {latestSocial.source || 'Social'}:{' '}
-          {latestSocial.raw_score != null
-            ? <span className={`font-mono ${parseFloat(latestSocial.raw_score) >= 0 ? 'text-profit' : 'text-loss'}`}>
+        <div className="space-y-1.5 px-1">
+          <div className="flex items-center gap-2 text-[10px] text-text-secondary">
+            <span className="uppercase">{latestSocial.source || 'Social'}</span>
+            {mentions > 0 && <span className="text-text-muted">({mentions} mentions)</span>}
+          </div>
+          {/* bullish/bearish bar */}
+          {(bullPct > 0 || bearPct > 0) && (
+            <div className="flex h-2 w-full overflow-hidden rounded">
+              <div className="bg-profit transition-all" style={{ width: `${bullPct * 100}%` }}
+                title={`Bullish: ${(bullPct * 100).toFixed(0)}%`} />
+              <div className="bg-loss transition-all" style={{ width: `${bearPct * 100}%` }}
+                title={`Bearish: ${(bearPct * 100).toFixed(0)}%`} />
+              <div className="bg-bg-primary flex-1" />
+            </div>
+          )}
+          <div className="flex gap-3 text-xs">
+            {latestSocial.raw_score != null ? (
+              <span className={`font-mono ${parseFloat(latestSocial.raw_score) >= 0 ? 'text-profit' : 'text-loss'}`}>
                 {parseFloat(latestSocial.raw_score).toFixed(2)}
               </span>
-            : <>
-                <span className="text-profit font-mono">{(parseFloat(latestSocial.bullish_pct || 0) * 100).toFixed(0)}%</span>
-                {' '}bull /{' '}
-                <span className="text-loss font-mono">{(parseFloat(latestSocial.bearish_pct || 0) * 100).toFixed(0)}%</span>
-                {' '}bear
+            ) : (
+              <>
+                <span className="text-profit font-mono">{(bullPct * 100).toFixed(0)}% bull</span>
+                <span className="text-loss font-mono">{(bearPct * 100).toFixed(0)}% bear</span>
               </>
-          }
-          {latestSocial.volume > 0 && <span className="text-text-muted ml-2">({latestSocial.volume} mentions)</span>}
+            )}
+          </div>
         </div>
       )}
     </div>
+  )
+}
+
+// / quant metrics: strategy performance for this symbol
+function QuantMetricsPanel({ symbol }) {
+  const { data, loading } = useApi(`/api/quant-metrics/${symbol}`, 60000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+
+  if (!data || data.length === 0) {
+    return <div className="text-text-muted text-sm py-2">No quant metrics yet — strategies need live/paper trades</div>
+  }
+
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-text-secondary text-[11px] uppercase">
+          <th className="text-left px-2 py-1">Strategy</th>
+          <th className="text-right px-2 py-1">Sharpe</th>
+          <th className="text-right px-2 py-1">Sortino</th>
+          <th className="text-right px-2 py-1">Max DD</th>
+          <th className="text-right px-2 py-1">Win Rate</th>
+          <th className="text-right px-2 py-1">Brier</th>
+          <th className="text-right px-2 py-1">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((s, i) => {
+          const sharpe = parseFloat(s.sharpe_ratio || 0)
+          const sortino = parseFloat(s.sortino_ratio || 0)
+          const dd = parseFloat(s.max_drawdown || 0)
+          const wr = parseFloat(s.win_rate || 0)
+          const brier = parseFloat(s.brier_score || 0)
+          const score = parseFloat(s.composite_score || 0)
+          return (
+            <tr key={i} className="border-t border-border" style={{ height: 32 }}>
+              <td className="px-2 py-1 font-mono truncate max-w-[120px]" title={s.strategy_id}>
+                {s.strategy_id}
+              </td>
+              <td className={`px-2 py-1 text-right font-mono ${sharpe >= 1 ? 'text-profit' : sharpe < 0 ? 'text-loss' : ''}`}>
+                {sharpe.toFixed(2)}
+              </td>
+              <td className={`px-2 py-1 text-right font-mono ${sortino >= 1 ? 'text-profit' : sortino < 0 ? 'text-loss' : ''}`}>
+                {sortino.toFixed(2)}
+              </td>
+              <td className={`px-2 py-1 text-right font-mono ${dd > -0.1 ? 'text-profit' : 'text-loss'}`}>
+                {(dd * 100).toFixed(1)}%
+              </td>
+              <td className={`px-2 py-1 text-right font-mono ${wr >= 0.5 ? 'text-profit' : 'text-loss'}`}>
+                {(wr * 100).toFixed(0)}%
+              </td>
+              <td className={`px-2 py-1 text-right font-mono ${brier < 0.2 ? 'text-profit' : 'text-warning'}`}>
+                {brier.toFixed(3)}
+              </td>
+              <td className={`px-2 py-1 text-right font-mono font-semibold ${scoreColor(score)}`}>
+                {score.toFixed(1)}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
   )
 }
 
@@ -769,10 +883,11 @@ function SymbolDetail({ symbol, onBack }) {
       {/* row 4: sentiment + insider */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Sentiment">
-          <SentimentPanel sentiment={d.sentiment} socialSentiment={d.social_sentiment} />
+          <SentimentPanel sentiment={d.sentiment} socialSentiment={d.social_sentiment}
+            isCrypto={symbol.includes('-USD') || symbol.includes('/')} />
         </Panel>
         <Panel title="Insider Activity">
-          <InsiderPanel insiderTrades={d.insider_trades} />
+          <InsiderPanel insiderTrades={d.insider_trades} score={d.score} />
         </Panel>
       </div>
 
@@ -781,12 +896,17 @@ function SymbolDetail({ symbol, onBack }) {
         <AiAnalysisPanel score={d.score} />
       </Panel>
 
-      {/* row 6: evolution history */}
+      {/* row 6: quant metrics */}
+      <Panel title="Quant Metrics">
+        <QuantMetricsPanel symbol={symbol} />
+      </Panel>
+
+      {/* row 7: evolution history */}
       <Panel title="Evolution History">
         <EvolutionPanel evolution={d.evolution} />
       </Panel>
 
-      {/* row 7: trades + signals */}
+      {/* row 8: trades + signals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Trade History">
           <TradeHistoryPanel trades={d.trades} />

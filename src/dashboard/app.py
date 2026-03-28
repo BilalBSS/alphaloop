@@ -301,6 +301,19 @@ async def get_indicators(symbol: str, limit: int = 60):
     return _serialize(rows)
 
 
+@app.get("/api/quant-metrics/{symbol}")
+async def get_quant_metrics(symbol: str):
+    rows = await _query(
+        """SELECT ss.* FROM strategy_scores ss
+        WHERE ss.strategy_id IN (
+            SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
+        )
+        ORDER BY ss.composite_score DESC NULLS LAST""",
+        symbol,
+    )
+    return _serialize(rows)
+
+
 @app.get("/api/strategy-evaluations")
 async def get_strategy_evaluations(limit: int = 20):
     limit = max(1, min(limit, 100))

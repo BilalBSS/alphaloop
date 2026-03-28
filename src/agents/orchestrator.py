@@ -17,7 +17,7 @@ from src.agents.risk_agent import RiskAgent
 from src.agents.strategy_agent import StrategyAgent
 from src.brokers.broker_factory import BrokerFactory
 from src.data.db import close_db, init_db
-from src.data.symbols import FULL_UNIVERSE
+from src.data.symbols import FULL_UNIVERSE, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
 from src.notifications.notifier import notify_system_error
 from src.strategies.strategy_loader import load_all_configs
@@ -84,6 +84,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._risk_poll_loop(), name="risk"),
             asyncio.create_task(self._executor_poll_loop(), name="executor"),
             asyncio.create_task(self._evolution_loop(), name="evolution"),
+            asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
         ]
 
         try:
@@ -289,3 +290,31 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
                 notify_system_error(str(exc), "evolution_loop")
+
+    async def _insider_backfill_loop(self) -> None:
+        # / refresh insider trades from sec edgar daily at 6am et
+        while not self._stop_event.is_set():
+            et = timezone(timedelta(hours=-5))
+            now = datetime.now(et)
+            target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+
+            logger.info("insider_backfill_waiting", next_run=str(target))
+
+            if await self._wait_or_stop((target - now).total_seconds()):
+                break
+
+            try:
+                from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                for symbol in symbols:
+                    try:
+                        trades = await fetch_insider_trades(symbol)
+                        if trades:
+                            await store_insider_trades(self._pool, trades)
+                    except Exception as exc:
+                        logger.warning("insider_backfill_symbol_error", symbol=symbol, error=str(exc))
+            except Exception as exc:
+                logger.error("insider_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "insider_backfill")
