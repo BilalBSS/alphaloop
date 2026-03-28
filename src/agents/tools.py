@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import json
+
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -47,7 +47,7 @@ async def store_analysis_score(
             Decimal(str(composite_score)) if composite_score is not None else None,
             regime, Decimal(str(regime_confidence)) if regime_confidence is not None else None,
             used_fundamentals,
-            json.dumps(details) if details else None,
+            details if details else None,
         )
         return row["id"]
 
@@ -77,7 +77,7 @@ async def store_trade_signal(
             RETURNING id""",
             strategy_id, symbol, signal_type,
             Decimal(str(strength)), regime,
-            json.dumps(details) if details else None,
+            details if details else None,
         )
         return row["id"]
 
@@ -151,7 +151,7 @@ async def store_trade_log(
             order_id, broker, regime,
             Decimal(str(pnl)) if pnl is not None else None,
             strategy_id,
-            json.dumps(details) if details else None,
+            details if details else None,
         )
         return row["id"]
 
@@ -175,7 +175,7 @@ async def store_strategy_score(
             Decimal(str(win_rate)),
             Decimal(str(brier_score)) if brier_score is not None else None,
             total_trades,
-            json.dumps(regime_breakdown) if regime_breakdown else None,
+            regime_breakdown if regime_breakdown else None,
         )
         return row["id"]
 
@@ -200,7 +200,7 @@ async def store_evolution_log(
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id""",
             generation, action, strategy_id, parent_id, reason,
-            json.dumps(details) if details else None,
+            details if details else None,
         )
         return row["id"]
 
@@ -231,9 +231,9 @@ async def store_crypto_onchain(
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO crypto_onchain (symbol, date, data_type, chain, data, source)
-            VALUES ($1, CURRENT_DATE, $2, $3, $4::jsonb, $5)
+            VALUES ($1, CURRENT_DATE, $2, $3, $4, $5)
             ON CONFLICT DO NOTHING""",
-            symbol, data_type, chain, json.dumps(data), source,
+            symbol, data_type, chain, data, source,
         )
 
 
@@ -307,8 +307,8 @@ async def store_sector_profile(
                 total_trades = EXCLUDED.total_trades
             RETURNING id""",
             sector, date,
-            json.dumps(best_indicators) if best_indicators else None,
-            json.dumps(best_fundamentals) if best_fundamentals else None,
+            best_indicators if best_indicators else None,
+            best_fundamentals if best_fundamentals else None,
             avg_sharpe, avg_win_rate, total_trades,
         )
         return row["id"]
@@ -341,7 +341,7 @@ async def store_symbol_profile(
                 total_trades = EXCLUDED.total_trades
             RETURNING id""",
             symbol, sector, date, tier,
-            json.dumps(parameter_overrides) if parameter_overrides else None,
+            parameter_overrides if parameter_overrides else None,
             avg_sharpe, total_trades,
         )
         return row["id"]
@@ -384,10 +384,10 @@ async def store_daily_synthesis(
                 per_symbol_notes = EXCLUDED.per_symbol_notes, raw_response = EXCLUDED.raw_response
             RETURNING id""",
             date, model,
-            json.dumps(top_buys) if top_buys else None,
-            json.dumps(top_avoids) if top_avoids else None,
+            top_buys if top_buys else None,
+            top_avoids if top_avoids else None,
             portfolio_risk,
-            json.dumps(per_symbol_notes) if per_symbol_notes else None,
+            per_symbol_notes if per_symbol_notes else None,
             raw_response,
         )
         return row["id"]

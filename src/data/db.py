@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -44,11 +45,19 @@ async def init_db(database_url: str | None = None) -> asyncpg.Pool:
 
         logger.info("connecting_to_database", url=_mask_url(url))
 
+        async def _init_conn(conn):
+            # / register jsonb codec so asyncpg returns dicts, not strings
+            await conn.set_type_codec(
+                'jsonb', encoder=lambda v: json.dumps(v, default=str),
+                decoder=json.loads, schema='pg_catalog',
+            )
+
         _pool = await asyncpg.create_pool(
             url,
             min_size=2,
             max_size=10,
             command_timeout=30,
+            init=_init_conn,
         )
 
         await _run_migrations(_pool)
