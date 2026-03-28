@@ -162,6 +162,15 @@ class AnalystAgent:
         details = self._build_details(
             ratio_score, dcf_result, earnings_signal, insider_signal, dual.groq,
         )
+        # / store individual 0-100 component scores for dashboard breakdown
+        if ratio_score and ratio_score.composite_score is not None:
+            details["ratio_score_100"] = ratio_score.composite_score
+        if dcf_result and dcf_result.upside_pct is not None:
+            details["dcf_score_100"] = round(max(0.0, min(100.0, (dcf_result.upside_pct + 0.5) / 1.0 * 100)), 1)
+        if earnings_signal and earnings_signal.strength is not None:
+            details["earnings_score_100"] = earnings_signal.strength
+        if insider_signal and insider_signal.strength is not None:
+            details["insider_score_100"] = insider_signal.strength
         # / add dual-llm fields
         details["ai_consensus"] = dual.consensus
         details["llm_analysis_groq"] = dual.groq.summary
@@ -187,7 +196,16 @@ class AnalystAgent:
 
         # / notify discord on strong consensus
         if dual.consensus in ("bullish", "bearish") and fundamental_score is not None:
-            notify_analysis_highlight(symbol, dual.consensus, fundamental_score)
+            notify_details = {
+                "pe_ratio": details.get("pe_ratio"),
+                "dcf_upside": details.get("dcf_upside"),
+                "earnings_surprise_pct": details.get("earnings_surprise_pct"),
+                "consecutive_beats": details.get("consecutive_beats"),
+                "insider_signal": details.get("insider_signal"),
+                "regime": regime,
+                "ai_excerpt": dual.groq.summary if dual.groq and hasattr(dual.groq, "summary") else None,
+            }
+            notify_analysis_highlight(symbol, dual.consensus, fundamental_score, details=notify_details)
 
         return fundamental_score
 

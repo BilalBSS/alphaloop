@@ -287,6 +287,17 @@ async def get_synthesis_history(days: int = 7):
     return _serialize(rows)
 
 
+@app.get("/api/strategy-evaluations")
+async def get_strategy_evaluations(limit: int = 20):
+    limit = max(1, min(limit, 100))
+    rows = await _query(
+        """SELECT * FROM strategy_evaluations
+        ORDER BY created_at DESC LIMIT $1""",
+        limit,
+    )
+    return _serialize(rows)
+
+
 # / websocket for live updates
 
 @app.websocket("/ws")

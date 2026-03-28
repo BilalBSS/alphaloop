@@ -201,7 +201,21 @@ class AgentOrchestrator:
                 symbols = self._get_symbols()
                 result = await generate_daily_synthesis(self._pool, symbols)
                 if result:
-                    notify_daily_synthesis(result)
+                    # / fetch portfolio stats for merged synthesis message
+                    portfolio = None
+                    try:
+                        broker = self._broker_factory.get_broker()
+                        account = await broker.get_account_balance()
+                        positions = await broker.get_positions()
+                        portfolio = {
+                            "value": account.get("portfolio_value", 0),
+                            "daily_pnl": account.get("daily_pnl", 0),
+                            "positions": len(positions),
+                            "strategies": self._strategy_pool.size,
+                        }
+                    except Exception as exc:
+                        logger.warning("portfolio_fetch_for_synthesis_failed", error=str(exc))
+                    notify_daily_synthesis(result, portfolio=portfolio)
                 logger.info("reasoner_synthesis_complete")
             except Exception as exc:
                 logger.error("reasoner_loop_error", exc_info=True)

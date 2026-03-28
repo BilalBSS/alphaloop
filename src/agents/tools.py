@@ -415,3 +415,28 @@ async def count_all_symbol_trades(pool, symbol: str) -> int:
             symbol,
         )
         return int(row["cnt"]) if row else 0
+
+
+async def store_strategy_evaluation(pool, stats: dict[str, Any]) -> int | None:
+    # / persist strategy evaluation cycle stats for dashboard
+    import json
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO strategy_evaluations
+                (total_pairs, entry_hits, blocked_consensus, blocked_threshold,
+                 signals_generated, strategies_evaluated, near_misses)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id""",
+                stats.get("total", 0),
+                stats.get("total", 0) - stats.get("no_entry", 0) - stats.get("insufficient_data", 0),
+                stats.get("blocked_consensus", 0),
+                stats.get("blocked_threshold", 0),
+                stats.get("signals", 0),
+                stats.get("strategies_evaluated", 0),
+                json.dumps(stats.get("near_misses", [])),
+            )
+            return row["id"] if row else None
+    except Exception as exc:
+        logger.warning("store_strategy_evaluation_failed", error=str(exc))
+        return None

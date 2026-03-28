@@ -228,15 +228,66 @@ def buffer_error(error_type: str, message: str) -> None:
 
 # / convenience helpers for integration points
 
+
+def _truncate(text: str, max_len: int = 200) -> str:
+    # / truncate to max_len, break at last sentence boundary if possible
+    if not text or len(text) <= max_len:
+        return text or ""
+    truncated = text[:max_len]
+    # / try to break at sentence end
+    for sep in (". ", "! ", "? "):
+        idx = truncated.rfind(sep)
+        if idx > max_len // 2:
+            return truncated[:idx + 1]
+    return truncated.rstrip() + "..."
+
+
+def _detail_fields(details: dict[str, Any] | None) -> dict[str, str]:
+    # / build embed fields from details dict, skipping None values
+    if not details:
+        return {}
+    fields: dict[str, str] = {}
+    mapping: list[tuple[str, str, str]] = [
+        ("pe_ratio", "P/E", "{:.1f}"),
+        ("dcf_upside", "DCF upside", "{:+.0%}"),
+        ("earnings_surprise_pct", "earnings", "{:+.1%}"),
+        ("consecutive_beats", "beat streak", "{}x"),
+        ("insider_signal", "insider", "{}"),
+        ("regime", "regime", "{}"),
+        ("win_rate", "win rate", "{:.0%}"),
+        ("max_drawdown", "max DD", "{:.1%}"),
+        ("total_trades", "trades", "{}"),
+        ("vix_level", "VIX", "{:.1f}"),
+        ("fear_gauge", "fear/greed", "{:.0f}"),
+    ]
+    for key, label, fmt in mapping:
+        val = details.get(key)
+        if val is not None:
+            try:
+                fields[label] = fmt.format(float(val) if isinstance(val, (int, float, str)) else val)
+            except (ValueError, TypeError):
+                fields[label] = str(val)
+    return fields
+
+
 def notify_trade_executed(
     symbol: str, side: str, qty: float, price: float,
     strategy_id: str | None = None,
+    details: dict[str, Any] | None = None,
 ) -> asyncio.Task | None:
+    fields = {"strategy": strategy_id or "unknown"}
+    if details:
+        if details.get("reasons"):
+            fields["reasons"] = ", ".join(str(r) for r in details["reasons"][:3])
+        if details.get("score") is not None:
+            fields["score"] = f"{details['score']:.1f}"
+        if details.get("consensus"):
+            fields["consensus"] = details["consensus"]
     return notify_async(NotificationEvent(
         severity=Severity.HIGH,
         title="trade executed",
         message=f"{side.upper()} {qty} {symbol} @ ${price:.2f}",
-        fields={"strategy": strategy_id or "unknown"},
+        fields=fields,
         channel="trades",
     ))
 
@@ -255,25 +306,43 @@ def notify_system_error(error: str, context: str = "") -> asyncio.Task | None:
 
 def notify_evolution_summary(summary: dict[str, Any]) -> asyncio.Task | None:
     gen = summary.get("generation", "?")
-    killed = len(summary.get("killed", []))
+    killed_list = summary.get("killed", [])
     mutated = len(summary.get("mutated", []))
-    promoted = len(summary.get("promoted", []))
+    promoted_list = summary.get("promoted", [])
     errors = len(summary.get("errors", []))
+
+    lines = [f"killed {len(killed_list)}, mutated {mutated}, promoted {len(promoted_list)}"]
+    if killed_list:
+        ids = ", ".join(str(k) if isinstance(k, (str, int)) else str(k.get("id", k)) for k in killed_list[:3])
+        lines.append(f"killed: {ids}")
+    if promoted_list:
+        ids = ", ".join(str(p) if isinstance(p, (str, int)) else str(p.get("id", p)) for p in promoted_list[:3])
+        lines.append(f"promoted: {ids}")
+
+    fields: dict[str, str] = {}
+    if errors:
+        fields["errors"] = str(errors)
+
     return notify_async(NotificationEvent(
         severity=Severity.MEDIUM,
         title=f"evolution gen {gen} complete",
-        message=f"killed {killed}, mutated {mutated}, promoted {promoted}",
-        fields={"errors": str(errors)} if errors else {},
+        message="\n".join(lines),
+        fields=fields,
         channel="strategy",
     ))
 
 
-def notify_strategy_promoted(strategy_id: str, sharpe: float, days: int) -> asyncio.Task | None:
+def notify_strategy_promoted(
+    strategy_id: str, sharpe: float, days: int,
+    details: dict[str, Any] | None = None,
+) -> asyncio.Task | None:
+    fields: dict[str, str] = {"sharpe": f"{sharpe:.2f}", "paper_days": str(days)}
+    fields.update(_detail_fields(details))
     return notify_async(NotificationEvent(
         severity=Severity.HIGH,
         title="strategy promoted to live",
         message=f"{strategy_id} promoted after {days}d paper trading",
-        fields={"sharpe": f"{sharpe:.2f}", "paper_days": str(days)},
+        fields=fields,
         channel="strategy",
     ))
 
@@ -299,38 +368,109 @@ def notify_daily_digest(
 
 def notify_analysis_highlight(
     symbol: str, consensus: str, score: float,
+    details: dict[str, Any] | None = None,
 ) -> asyncio.Task | None:
     color = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡", "disagree": "🔵"}
+
+    # / build description: ai excerpt + score
+    excerpt = _truncate(details.get("ai_excerpt", "")) if details else ""
+    desc = f'"{excerpt}"\n\n' if excerpt else ""
+    desc += f"composite score: {score:.1f}"
+
+    fields = _detail_fields(details)
+
     return notify_async(NotificationEvent(
         severity=Severity.MEDIUM,
         title=f"{color.get(consensus, '⚪')} {symbol} — {consensus}",
-        message=f"composite score: {score:.1f}",
+        message=desc,
+        fields=fields,
         channel="analysis",
     ))
 
 
 def notify_sentiment_shift(
     symbol: str, old_score: float, new_score: float,
+    context: dict[str, Any] | None = None,
 ) -> asyncio.Task | None:
     delta = new_score - old_score
     direction = "bullish shift" if delta > 0 else "bearish shift"
+    fields = _detail_fields(context)
     return notify_async(NotificationEvent(
         severity=Severity.MEDIUM,
         title=f"{symbol} — {direction}",
         message=f"sentiment {old_score:.2f} → {new_score:.2f} (Δ{delta:+.2f})",
+        fields=fields,
         channel="sentiment",
     ))
 
 
-def notify_daily_synthesis(synthesis: dict[str, Any]) -> asyncio.Task | None:
+def notify_daily_synthesis(
+    synthesis: dict[str, Any],
+    portfolio: dict[str, Any] | None = None,
+) -> asyncio.Task | None:
     buys = synthesis.get("top_buys", [])
     avoids = synthesis.get("top_avoids", [])
     risk = synthesis.get("portfolio_risk", "unknown")
+    regime = synthesis.get("regime", "")
     buy_text = ", ".join(b.get("symbol", "?") for b in buys[:5]) if buys else "none"
     avoid_text = ", ".join(a.get("symbol", "?") for a in avoids[:5]) if avoids else "none"
+
+    lines = [
+        f"buys: {buy_text}",
+        f"avoids: {avoid_text}",
+        f"risk: {risk}" + (f" | regime: {regime}" if regime else ""),
+    ]
+
+    if portfolio:
+        value = portfolio.get("value", 0)
+        pnl = portfolio.get("daily_pnl", 0)
+        prev = value - pnl if value else 0
+        pnl_pct = max(-999, min(999, (pnl / prev * 100) if prev else 0))
+        sign = "+" if pnl >= 0 else ""
+        positions = portfolio.get("positions", 0)
+        strategies = portfolio.get("strategies", 0)
+        lines.append("")
+        lines.append(f"portfolio: ${value:,.2f} ({sign}{pnl_pct:.2f}%)")
+        lines.append(f"positions: {positions} | strategies: {strategies} active")
+
     return notify_async(NotificationEvent(
         severity=Severity.HIGH,
         title="daily synthesis (5PM ET)",
-        message=f"buys: {buy_text}\navoids: {avoid_text}\nrisk: {risk}",
+        message="\n".join(lines),
         channel="daily",
+    ))
+
+
+def notify_strategy_evaluation(stats: dict[str, Any]) -> asyncio.Task | None:
+    # / per-cycle strategy evaluation summary to #strategy
+    total = stats.get("total", 0)
+    no_entry = stats.get("no_entry", 0)
+    insufficient = stats.get("insufficient_data", 0)
+    entry_hits = total - no_entry - insufficient
+    blocked_c = stats.get("blocked_consensus", 0)
+    blocked_t = stats.get("blocked_threshold", 0)
+    signals = stats.get("signals", 0)
+    strategies = stats.get("strategies_evaluated", 0)
+
+    lines = [
+        f"evaluated {total} pairs ({strategies} strategies)",
+        f"entry hits: {entry_hits}",
+        f"blocked: {blocked_c} consensus, {blocked_t} threshold",
+        f"signals: {signals}",
+    ]
+
+    near_misses = stats.get("near_misses", [])[:3]
+    if near_misses:
+        lines.append("\nnear-misses:")
+        for nm in near_misses:
+            sym = nm.get("symbol", "?")
+            strength = nm.get("raw_strength", 0)
+            reason = nm.get("block_reason", "unknown")
+            lines.append(f"  {sym} — {strength:.2f} ({reason})")
+
+    return notify_async(NotificationEvent(
+        severity=Severity.LOW,
+        title="strategy evaluation cycle",
+        message="\n".join(lines),
+        channel="strategy",
     ))

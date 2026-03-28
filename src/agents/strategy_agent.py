@@ -11,6 +11,7 @@ import pandas as pd
 import structlog
 
 from src.agents import tools
+from src.notifications.notifier import notify_strategy_evaluation
 from src.quant.particle_filter import ParticleFilter
 from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy, EntrySignal
 from src.strategies.strategy_pool import StrategyPool
@@ -24,13 +25,54 @@ SIGNAL_THRESHOLD = 0.3
 class StrategyAgent:
     def __init__(self):
         self._filters: dict[str, ParticleFilter] = {}
+        self._df_cache: dict[str, pd.DataFrame | None] = {}
+
+    async def _fetch_market_df(
+        self, pool, symbol: str, min_bars: int = 50,
+    ) -> pd.DataFrame | None:
+        # / fetch ohlcv and build dataframe, cached per cycle
+        if symbol in self._df_cache:
+            return self._df_cache[symbol]
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT date, open, high, low, close, volume
+                FROM market_data WHERE symbol = $1
+                ORDER BY date DESC LIMIT 250""",
+                symbol,
+            )
+
+        if len(rows) < min_bars:
+            self._df_cache[symbol] = None
+            return None
+
+        rows = list(reversed(rows))
+        df = pd.DataFrame(
+            [{
+                "open": float(r["open"]) if r["open"] else 0,
+                "high": float(r["high"]) if r["high"] else 0,
+                "low": float(r["low"]) if r["low"] else 0,
+                "close": float(r["close"]) if r["close"] else 0,
+                "volume": int(r["volume"]) if r["volume"] else 0,
+            } for r in rows],
+            index=pd.DatetimeIndex([r["date"] for r in rows]),
+        )
+        self._df_cache[symbol] = df
+        return df
 
     async def run(
         self, pool, strategy_pool: StrategyPool, broker,
     ) -> list[dict]:
         # / evaluate all active strategies against all symbols
         # / returns list of generated signal dicts
+        self._df_cache.clear()  # / reset per-cycle cache
         signals: list[dict] = []
+        stats: dict[str, Any] = {
+            "total": 0, "insufficient_data": 0, "no_entry": 0,
+            "blocked_consensus": 0, "blocked_threshold": 0,
+            "signals": 0, "strategies_evaluated": 0,
+            "near_misses": [],
+        }
 
         # / get active strategies
         active = (
@@ -43,8 +85,9 @@ class StrategyAgent:
 
         for entry in active:
             strategy = entry.strategy
+            stats["strategies_evaluated"] += 1
             try:
-                new_signals = await self._evaluate_strategy(pool, strategy, broker)
+                new_signals = await self._evaluate_strategy(pool, strategy, broker, stats)
                 signals.extend(new_signals)
             except Exception as exc:
                 logger.warning(
@@ -60,11 +103,24 @@ class StrategyAgent:
         except Exception as exc:
             logger.warning("exit_check_failed", error=str(exc))
 
-        logger.info("strategy_agent_complete", signals_generated=len(signals))
+        # / sort near-misses by strength descending, keep top 3
+        stats["near_misses"] = sorted(
+            stats["near_misses"], key=lambda nm: nm.get("raw_strength", 0), reverse=True,
+        )[:3]
+
+        try:
+            notify_strategy_evaluation(stats)
+            await tools.store_strategy_evaluation(pool, stats)
+        except Exception as exc:
+            logger.warning("strategy_eval_observability_failed", error=str(exc))
+
+        logger.info("strategy_agent_complete", signals_generated=len(signals),
+                     total_evaluated=stats["total"])
         return signals
 
     async def _evaluate_strategy(
         self, pool, strategy: ConfigDrivenStrategy, broker,
+        stats: dict[str, Any] | None = None,
     ) -> list[dict]:
         # / evaluate one strategy against its universe
         signals: list[dict] = []
@@ -72,7 +128,7 @@ class StrategyAgent:
 
         for symbol in universe:
             try:
-                signal = await self._evaluate_symbol(pool, strategy, symbol)
+                signal = await self._evaluate_symbol(pool, strategy, symbol, stats)
                 if signal:
                     signals.append(signal)
             except Exception as exc:
@@ -87,32 +143,17 @@ class StrategyAgent:
 
     async def _evaluate_symbol(
         self, pool, strategy: ConfigDrivenStrategy, symbol: str,
+        stats: dict[str, Any] | None = None,
     ) -> dict | None:
         # / evaluate entry signal for one (strategy, symbol) pair
-        # / fetch market data from db
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT date, open, high, low, close, volume
-                FROM market_data WHERE symbol = $1
-                ORDER BY date DESC LIMIT 250""",
-                symbol,
-            )
+        if stats is not None:
+            stats["total"] += 1
 
-        if len(rows) < 50:
-            return None  # / insufficient data
-
-        # / build dataframe (reverse to ascending order)
-        rows = list(reversed(rows))
-        df = pd.DataFrame(
-            [{
-                "open": float(r["open"]) if r["open"] else 0,
-                "high": float(r["high"]) if r["high"] else 0,
-                "low": float(r["low"]) if r["low"] else 0,
-                "close": float(r["close"]) if r["close"] else 0,
-                "volume": int(r["volume"]) if r["volume"] else 0,
-            } for r in rows],
-            index=pd.DatetimeIndex([r["date"] for r in rows]),
-        )
+        df = await self._fetch_market_df(pool, symbol)
+        if df is None:
+            if stats is not None:
+                stats["insufficient_data"] += 1
+            return None
 
         # / fetch analysis data
         analysis_row = await tools.fetch_analysis_score(pool, symbol)
@@ -128,12 +169,20 @@ class StrategyAgent:
         entry_signal = strategy.should_enter(symbol, df, analysis_data)
 
         if not entry_signal.should_enter:
+            if stats is not None:
+                stats["no_entry"] += 1
             return None
 
         # / ai consensus filter: dual-llm agreement gates signal strength
         consensus = analysis_data.ai_consensus if analysis_data else None
         if consensus == "bearish":
             logger.debug("signal_blocked_ai_bearish", symbol=symbol)
+            if stats is not None:
+                stats["blocked_consensus"] += 1
+                stats["near_misses"].append({
+                    "symbol": symbol, "raw_strength": entry_signal.strength,
+                    "block_reason": "bearish consensus",
+                })
             return None
         if consensus == "disagree":
             entry_signal = EntrySignal(
@@ -150,6 +199,12 @@ class StrategyAgent:
                 symbol=symbol, raw=entry_signal.strength,
                 smoothed=smoothed_strength,
             )
+            if stats is not None:
+                stats["blocked_threshold"] += 1
+                stats["near_misses"].append({
+                    "symbol": symbol, "raw_strength": entry_signal.strength,
+                    "block_reason": f"threshold ({smoothed_strength:.2f} < {SIGNAL_THRESHOLD})",
+                })
             return None
 
         # / store trade signal
@@ -167,6 +222,9 @@ class StrategyAgent:
                 "reasons": entry_signal.reasons,
             },
         )
+
+        if stats is not None:
+            stats["signals"] += 1
 
         logger.info(
             "trade_signal_generated",
@@ -210,29 +268,9 @@ class StrategyAgent:
             for entry in active:
                 strategy = entry.strategy
                 try:
-                    # / fetch market data
-                    async with pool.acquire() as conn:
-                        rows = await conn.fetch(
-                            """SELECT date, open, high, low, close, volume
-                            FROM market_data WHERE symbol = $1
-                            ORDER BY date DESC LIMIT 250""",
-                            pos.symbol,
-                        )
-
-                    if len(rows) < 50:
+                    df = await self._fetch_market_df(pool, pos.symbol)
+                    if df is None:
                         continue
-
-                    rows = list(reversed(rows))
-                    df = pd.DataFrame(
-                        [{
-                            "open": float(r["open"]) if r["open"] else 0,
-                            "high": float(r["high"]) if r["high"] else 0,
-                            "low": float(r["low"]) if r["low"] else 0,
-                            "close": float(r["close"]) if r["close"] else 0,
-                            "volume": int(r["volume"]) if r["volume"] else 0,
-                        } for r in rows],
-                        index=pd.DatetimeIndex([r["date"] for r in rows]),
-                    )
 
                     exit_signal = strategy.should_exit(
                         pos.symbol, df, pos.avg_entry_price,

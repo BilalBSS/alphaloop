@@ -85,6 +85,69 @@ function SynthesisPanel({ onSelect }) {
   )
 }
 
+// / strategy evaluation cycle panel (collapsed by default)
+function StrategyEvalPanel({ onSelect }) {
+  const { data, loading } = useApi('/api/strategy-evaluations?limit=1', 120000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+
+  const latest = Array.isArray(data) && data.length > 0 ? data[0] : null
+  if (!latest) return <div className="text-text-muted text-sm py-2">No evaluation data yet. Strategy agent posts every 5 min.</div>
+
+  const nearMisses = latest.near_misses || []
+  const ts = latest.created_at?.split('T')[1]?.slice(0, 5) || ''
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-4 text-xs font-mono">
+        <span>{latest.total_pairs} pairs</span>
+        <span className="text-profit">{latest.entry_hits} hits</span>
+        <span className="text-loss">{latest.blocked_consensus} consensus</span>
+        <span className="text-warning">{latest.blocked_threshold} threshold</span>
+        <span className={latest.signals_generated > 0 ? 'text-profit font-bold' : ''}>{latest.signals_generated} signals</span>
+        {ts && <span className="text-text-muted">{ts} UTC</span>}
+      </div>
+      {nearMisses.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary mb-1">Near-Misses</div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-text-secondary text-[11px] uppercase">
+                <th className="text-left px-2 py-1">Symbol</th>
+                <th className="text-right px-2 py-1">Strength</th>
+                <th className="text-left px-2 py-1">Block</th>
+              </tr>
+            </thead>
+            <tbody>
+              {nearMisses.map((nm, i) => {
+                const isConsensus = (nm.block_reason || '').includes('consensus')
+                return (
+                  <tr
+                    key={i}
+                    onClick={() => onSelect(nm.symbol)}
+                    className={`border-t border-border hover:bg-bg-hover cursor-pointer border-l-2 ${isConsensus ? 'border-l-loss' : 'border-l-warning'}`}
+                    style={{ height: 32 }}
+                  >
+                    <td className="px-2 py-1 font-mono font-semibold">{nm.symbol}</td>
+                    <td className={`px-2 py-1 text-right font-mono ${scoreColor(nm.raw_strength * 100)}`}>
+                      {parseFloat(nm.raw_strength || 0).toFixed(2)}
+                    </td>
+                    <td className="px-2 py-1">
+                      <span className={`px-2 py-0.5 text-xs font-semibold uppercase ${isConsensus ? 'text-loss' : 'text-warning'}`}>
+                        {isConsensus ? 'consensus' : 'threshold'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // / symbol list view
 function SymbolList({ symbols, loading, onSelect }) {
   const [filter, setFilter] = useState('')
@@ -141,32 +204,73 @@ function SymbolList({ symbols, loading, onSelect }) {
   )
 }
 
-// / score overview badges
+// / score overview badges + composite breakdown
 function ScoreOverview({ score }) {
   if (!score) return <div className="text-text-muted text-sm py-2">No analysis data</div>
   const details = typeof score.details === 'object' ? score.details : {}
+
+  // / component scores for stacked bar breakdown (all 0-100 scale)
+  const components = [
+    { key: 'ratio_score_100', label: 'Ratio', weight: 35, color: 'bg-accent' },
+    { key: 'dcf_score_100', label: 'DCF', weight: 25, color: 'bg-profit' },
+    { key: 'earnings_score_100', label: 'Earnings', weight: 20, color: 'bg-warning' },
+    { key: 'insider_score_100', label: 'Insider', weight: 20, color: 'bg-text-secondary' },
+  ]
+  const hasBreakdown = components.some(c => details[c.key] != null)
+
   return (
-    <div className="flex flex-wrap gap-4 items-center">
-      <div>
-        <div className="text-[11px] uppercase text-text-secondary">Composite</div>
-        <div className={`text-2xl font-mono font-bold ${scoreColor(score.composite_score)}`}>
-          {parseFloat(score.composite_score || 0).toFixed(1)}
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-4 items-center">
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary">Composite</div>
+          <div className={`text-2xl font-mono font-bold ${scoreColor(score.composite_score)}`}>
+            {parseFloat(score.composite_score || 0).toFixed(1)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary">Fundamental</div>
+          <div className={`text-lg font-mono ${scoreColor(score.fundamental_score)}`}>
+            {parseFloat(score.fundamental_score || 0).toFixed(1)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary">AI Consensus</div>
+          {consensusBadge(details.ai_consensus || score.ai_consensus)}
+        </div>
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary">Regime</div>
+          {regimeBadge(score.regime)}
         </div>
       </div>
-      <div>
-        <div className="text-[11px] uppercase text-text-secondary">Fundamental</div>
-        <div className={`text-lg font-mono ${scoreColor(score.fundamental_score)}`}>
-          {parseFloat(score.fundamental_score || 0).toFixed(1)}
-        </div>
-      </div>
-      <div>
-        <div className="text-[11px] uppercase text-text-secondary">AI Consensus</div>
-        {consensusBadge(details.ai_consensus || score.ai_consensus)}
-      </div>
-      <div>
-        <div className="text-[11px] uppercase text-text-secondary">Regime</div>
-        {regimeBadge(score.regime)}
-      </div>
+      {hasBreakdown && (
+        <>
+          <div className="flex h-2 w-full overflow-hidden">
+            {components.map(c => {
+              const raw = parseFloat(details[c.key] || 0)
+              const opacity = Math.max(0.15, Math.min(1, raw / 100))
+              return (
+                <div
+                  key={c.key}
+                  className={`${c.color} transition-all`}
+                  style={{ width: `${c.weight}%`, opacity }}
+                  title={`${c.label}: ${raw.toFixed(1)}`}
+                />
+              )
+            })}
+          </div>
+          <div className="grid grid-cols-4 gap-1 text-[10px]">
+            {components.map(c => {
+              const raw = details[c.key]
+              return (
+                <div key={c.key} className="text-center">
+                  <div className="text-text-muted">{c.label} ({c.weight}%)</div>
+                  <div className="font-mono">{raw != null ? parseFloat(raw).toFixed(1) : '--'}</div>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -663,6 +767,9 @@ export default function AnalysisTab() {
     <div className="space-y-2">
       <Panel title="Daily Synthesis">
         <SynthesisPanel onSelect={setSelectedSymbol} />
+      </Panel>
+      <Panel title="Strategy Evaluation" collapsible defaultOpen={false}>
+        <StrategyEvalPanel onSelect={setSelectedSymbol} />
       </Panel>
       <Panel title="Symbol Analysis">
         <SymbolList
