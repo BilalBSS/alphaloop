@@ -134,6 +134,7 @@ class AnalystAgent:
         if sentiment_score is not None:
             crypto_context += f" | sentiment: {sentiment_score:+.2f}"
 
+        deepseek_text: str | None = None
         if getattr(self, "_run_deepseek", True):
             # / hourly: dual-llm (groq + deepseek), same as equities
             try:
@@ -142,6 +143,7 @@ class AnalystAgent:
                 )
                 ai_signal = dual.consensus
                 ai_summary_text = dual.groq.summary if dual.groq else None
+                deepseek_text = dual.deepseek.summary if dual.deepseek else None
             except Exception as exc:
                 logger.warning("analyst_crypto_dual_failed", symbol=symbol, error=str(exc))
         else:
@@ -190,8 +192,12 @@ class AnalystAgent:
             details["price_change_24h"] = coin_data.get("price_change_24h_pct")
             details["price_change_7d"] = coin_data.get("price_change_7d_pct")
             details["market_cap"] = coin_data.get("market_cap")
+        # / use same field names as equity path so dashboard AiAnalysisPanel works
         if ai_summary_text:
-            details["summary"] = ai_summary_text
+            details["llm_analysis_groq"] = ai_summary_text
+            details["llm_signal_groq"] = ai_signal
+        if deepseek_text:
+            details["llm_analysis_deepseek"] = deepseek_text
 
         await tools.store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
