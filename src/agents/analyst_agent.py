@@ -19,6 +19,7 @@ from src.agents import tools
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
+from src.notifications.notifier import notify_analysis_highlight
 
 logger = structlog.get_logger(__name__)
 
@@ -183,6 +184,11 @@ class AnalystAgent:
         )
 
         logger.info("analyst_symbol_complete", symbol=symbol, score=fundamental_score)
+
+        # / notify discord on strong consensus
+        if dual.consensus in ("bullish", "bearish") and fundamental_score is not None:
+            notify_analysis_highlight(symbol, dual.consensus, fundamental_score)
+
         return fundamental_score
 
     def _compute_fundamental_score(

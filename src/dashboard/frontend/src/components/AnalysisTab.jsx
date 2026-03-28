@@ -347,12 +347,19 @@ function SentimentPanel({ sentiment, socialSentiment }) {
       )}
       {latestSocial && (
         <div className="text-xs text-text-secondary">
-          StockTwits:{' '}
-          <span className="text-profit font-mono">{(parseFloat(latestSocial.bullish_pct || 0) * 100).toFixed(0)}%</span>
-          {' '}bull /{' '}
-          <span className="text-loss font-mono">{(parseFloat(latestSocial.bearish_pct || 0) * 100).toFixed(0)}%</span>
-          {' '}bear
-          <span className="text-text-muted ml-2">({latestSocial.volume || 0} posts)</span>
+          {latestSocial.source || 'Social'}:{' '}
+          {latestSocial.raw_score != null
+            ? <span className={`font-mono ${parseFloat(latestSocial.raw_score) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {parseFloat(latestSocial.raw_score).toFixed(2)}
+              </span>
+            : <>
+                <span className="text-profit font-mono">{(parseFloat(latestSocial.bullish_pct || 0) * 100).toFixed(0)}%</span>
+                {' '}bull /{' '}
+                <span className="text-loss font-mono">{(parseFloat(latestSocial.bearish_pct || 0) * 100).toFixed(0)}%</span>
+                {' '}bear
+              </>
+          }
+          {latestSocial.volume > 0 && <span className="text-text-muted ml-2">({latestSocial.volume} mentions)</span>}
         </div>
       )}
     </div>

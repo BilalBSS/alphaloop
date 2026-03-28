@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from .resilience import api_get, configure_rate_limit, with_retry
+from src.notifications.notifier import notify_sentiment_shift
 
 logger = structlog.get_logger(__name__)
 
@@ -303,6 +304,23 @@ async def run_social_sentiment(
                 ))
             else:
                 results[symbol] = 0.0
+
+            # / notify on large fear gauge swings (>0.3 delta, same source)
+            try:
+                fear_source = "vix" if not is_crypto(symbol) else "fear_greed"
+                if fear_score is not None:
+                    async with pool.acquire() as conn:
+                        prev = await conn.fetchval(
+                            """SELECT raw_score FROM social_sentiment
+                            WHERE symbol = $1 AND source = $2
+                            AND date < CURRENT_DATE
+                            ORDER BY date DESC LIMIT 1""",
+                            symbol, fear_source,
+                        )
+                        if prev is not None and abs(fear_score - float(prev)) > 0.3:
+                            notify_sentiment_shift(symbol, float(prev), fear_score)
+            except Exception:
+                pass  # / notification is best-effort
 
             logger.info("social_sentiment_processed", symbol=symbol, score=results[symbol])
         except Exception as exc:
