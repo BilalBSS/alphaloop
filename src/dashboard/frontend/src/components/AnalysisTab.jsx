@@ -883,7 +883,7 @@ function SymbolDetail({ symbol, onBack }) {
 
       {/* row 3: indicators + fundamentals + dcf */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <Panel title="Technical Indicators" collapsible defaultOpen={false}>
+        <Panel title="Technical Indicators">
           <IndicatorsPanel symbol={symbol} />
         </Panel>
         <Panel title="Fundamentals">

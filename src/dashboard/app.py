@@ -224,7 +224,7 @@ async def get_evolution():
 
 @app.get("/api/health")
 async def get_health():
-    # / system health: db connection, last backfill, last evolution
+    # / system health: db connection, cycles, storage
     db_ok = False
     try:
         await _query_one("SELECT 1 as ok")
@@ -241,6 +241,33 @@ async def get_health():
     last_analysis = await _query_one(
         "SELECT date FROM analysis_scores ORDER BY date DESC LIMIT 1"
     )
+    last_synthesis = await _query_one(
+        "SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"
+    )
+    last_eval = await _query_one(
+        "SELECT created_at FROM strategy_evaluations ORDER BY created_at DESC LIMIT 1"
+    )
+
+    # / count symbols with recent analysis
+    symbols_analyzed = await _query_one(
+        """SELECT COUNT(DISTINCT symbol) as cnt FROM analysis_scores
+        WHERE date >= CURRENT_DATE"""
+    )
+
+    # / last groq vs fallback: check if latest analysis has llm model
+    last_llm = await _query_one(
+        """SELECT symbol, details->>'llm_analysis_groq' as groq,
+                details->>'llm_analysis_deepseek' as deepseek
+        FROM analysis_scores WHERE date >= CURRENT_DATE
+        ORDER BY date DESC LIMIT 1"""
+    )
+    groq_status = "unknown"
+    if last_llm:
+        groq_text = last_llm.get("groq") or ""
+        # / fallback format starts with "SYMBOL —", llm format is a paragraph
+        groq_status = "fallback" if " — " in groq_text[:30] else "active"
+
+    deepseek_status = "active" if (last_llm and last_llm.get("deepseek")) else "pending"
 
     # / storage estimate
     storage = await _query_one(
@@ -254,6 +281,11 @@ async def get_health():
         "last_trade": str(last_trade["created_at"]) if last_trade else None,
         "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
         "last_analysis": str(last_analysis["date"]) if last_analysis else None,
+        "last_synthesis": str(last_synthesis["date"]) if last_synthesis else None,
+        "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
+        "symbols_today": symbols_analyzed["cnt"] if symbols_analyzed else 0,
+        "groq_status": groq_status,
+        "deepseek_status": deepseek_status,
     }
 
 
@@ -308,7 +340,7 @@ async def get_quant_metrics(symbol: str):
         WHERE ss.strategy_id IN (
             SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
         )
-        ORDER BY ss.composite_score DESC NULLS LAST""",
+        ORDER BY ss.sharpe_ratio DESC NULLS LAST""",
         symbol,
     )
     return _serialize(rows)
