@@ -38,7 +38,7 @@ async def store_analysis_score(
                 regime = EXCLUDED.regime,
                 regime_confidence = EXCLUDED.regime_confidence,
                 used_fundamentals = EXCLUDED.used_fundamentals,
-                details = EXCLUDED.details
+                details = COALESCE(analysis_scores.details, '{}'::jsonb) || COALESCE(EXCLUDED.details, '{}'::jsonb)
             RETURNING id
             """,
             symbol, as_of,
@@ -419,7 +419,6 @@ async def count_all_symbol_trades(pool, symbol: str) -> int:
 
 async def store_strategy_evaluation(pool, stats: dict[str, Any]) -> int | None:
     # / persist strategy evaluation cycle stats for dashboard
-    import json
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -434,7 +433,7 @@ async def store_strategy_evaluation(pool, stats: dict[str, Any]) -> int | None:
                 stats.get("blocked_threshold", 0),
                 stats.get("signals", 0),
                 stats.get("strategies_evaluated", 0),
-                json.dumps(stats.get("near_misses", [])),
+                stats.get("near_misses", []),
             )
             return row["id"] if row else None
     except Exception as exc:

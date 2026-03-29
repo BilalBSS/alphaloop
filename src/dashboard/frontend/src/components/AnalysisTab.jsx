@@ -433,9 +433,24 @@ function DcfPanel({ dcf }) {
 
 // / insider activity table with aggregate summary
 function InsiderPanel({ insiderTrades, score }) {
-  if (!insiderTrades || insiderTrades.length === 0) {
-    return <div className="text-text-muted text-sm py-2">No insider activity</div>
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
+  const hasTradeRows = insiderTrades && insiderTrades.length > 0
+
+  if (!hasTradeRows) {
+    const sig = details.insider_signal
+    const str = details.insider_score_100
+    if (!sig) return <div className="text-text-muted text-sm py-2">No insider activity</div>
+    const c = sig === 'bullish' ? 'border-l-profit text-profit' : sig === 'bearish' ? 'border-l-loss text-loss' : 'border-l-text-secondary text-text-secondary'
+    return (
+      <div className="space-y-2">
+        <div className={`text-xs font-semibold px-2 py-1 border-l-2 ${c}`}>
+          {sig} {str != null && <span className="font-mono ml-1">({parseFloat(str).toFixed(0)})</span>}
+        </div>
+        <div className="text-text-muted text-[10px] px-2">Trade data refreshes at 6AM ET</div>
+      </div>
+    )
   }
+
   const typeColor = { buy: 'text-profit', sell: 'text-loss', option_exercise: 'text-warning' }
 
   // / compute aggregates from trades
@@ -444,7 +459,6 @@ function InsiderPanel({ insiderTrades, score }) {
   const buyTotal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
   const sellTotal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
   const netBuy = buyTotal > sellTotal
-  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
   const insiderStrength = details.insider_score_100
 
   const fmtVal = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${(v / 1e3).toFixed(0)}K`
