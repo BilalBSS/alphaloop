@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-
+import json
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -466,3 +466,20 @@ async def store_computed_indicators(pool, symbol: str, indicators: dict[str, Any
             )
     except Exception as exc:
         logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))
+
+
+async def log_event(
+    pool, level: str, source: str, message: str,
+    symbol: str | None = None, details: dict | None = None,
+) -> None:
+    # / fire-and-forget event log — never blocks pipeline
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO system_events (level, source, symbol, message, details)
+                VALUES ($1, $2, $3, $4, $5::jsonb)""",
+                level, source, symbol, message,
+                json.dumps(details) if details else None,
+            )
+    except Exception as exc:
+        logger.warning("log_event_failed", source=source, error=str(exc))

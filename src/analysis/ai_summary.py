@@ -92,11 +92,17 @@ def _build_prompt(
         if insider.cluster_detected:
             parts.append(f"  Cluster buying detected — multiple insiders buying within 30 days")
         if insider.details:
-            # / include top trades by value for llm context
             weighted_buy = insider.details.get("weighted_buy_value", 0)
             weighted_sell = insider.details.get("weighted_sell_value", 0)
             if weighted_buy > 0 or weighted_sell > 0:
                 parts.append(f"  Buy volume: ${weighted_buy:,.0f}, Sell volume: ${weighted_sell:,.0f}")
+        # / individual trades for llm to reference specific insiders
+        if insider.top_trades:
+            parts.append(f"  Top trades:")
+            for t in insider.top_trades:
+                title = f" ({t['title']})" if t.get("title") else ""
+                action = "bought" if t["type"] == "buy" else "sold"
+                parts.append(f"    {t['name']}{title} — {action} {t['shares']:,} shares (${t['value']:,.0f}) on {t['date']}")
 
     if indicators:
         parts.append(f"\nTechnical indicators:")

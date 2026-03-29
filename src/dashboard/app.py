@@ -239,7 +239,7 @@ async def get_evolution():
 
 @app.get("/api/health")
 async def get_health():
-    # / system health: db connection, cycles, storage
+    # / system health v2: db, cycles, storage, connections, events
     db_ok = False
     try:
         await _query_one("SELECT 1 as ok")
@@ -247,6 +247,7 @@ async def get_health():
     except Exception:
         pass
 
+    # / cycle timestamps
     last_trade = await _query_one(
         "SELECT created_at FROM trade_log ORDER BY created_at DESC LIMIT 1"
     )
@@ -269,7 +270,7 @@ async def get_health():
         WHERE date >= CURRENT_DATE"""
     )
 
-    # / last groq vs fallback: check if latest analysis has llm model
+    # / groq vs deepseek status
     last_llm = await _query_one(
         """SELECT symbol, details->>'llm_analysis_groq' as groq,
                 details->>'llm_analysis_deepseek' as deepseek
@@ -281,27 +282,126 @@ async def get_health():
         groq_text = last_llm.get("groq") or ""
         # / fallback format starts with "SYMBOL —", llm format is a paragraph
         groq_status = "fallback" if " — " in groq_text[:30] else "active"
-
     deepseek_status = "active" if (last_llm and last_llm.get("deepseek")) else "pending"
 
-    # / storage estimate
-    storage = await _query_one(
-        """SELECT pg_database_size(current_database()) as size_bytes"""
-    )
+    # / db size
+    try:
+        db_size = await _query_one(
+            "SELECT pg_database_size(current_database()) as size_bytes"
+        )
+        db_size_mb = round(db_size["size_bytes"] / 1024 / 1024, 1) if db_size else 0
+    except Exception:
+        db_size_mb = None
+
+    # / per-table sizes + row counts (top 10)
+    try:
+        tables = await _query(
+            """SELECT relname as name,
+                pg_total_relation_size(relid) as size_bytes,
+                n_live_tup as rows
+            FROM pg_stat_user_tables
+            ORDER BY pg_total_relation_size(relid) DESC LIMIT 10"""
+        )
+        table_stats = [
+            {"name": t["name"], "size_mb": round(t["size_bytes"] / 1024 / 1024, 2), "rows": t["rows"]}
+            for t in tables
+        ]
+    except Exception:
+        table_stats = []
+
+    # / connection stats from pg_stat_database
+    try:
+        conn_stats = await _query_one(
+            """SELECT numbackends, xact_commit, xact_rollback, blks_read, blks_hit
+            FROM pg_stat_database WHERE datname = current_database()"""
+        )
+        hit = conn_stats["blks_hit"] or 0
+        read = conn_stats["blks_read"] or 0
+        cache_ratio = round(hit / (hit + read), 4) if (hit + read) > 0 else 0
+    except Exception:
+        conn_stats = None
+        cache_ratio = 0
+
+    # / active connections count
+    try:
+        active = await _query_one(
+            "SELECT COUNT(*) as cnt FROM pg_stat_activity WHERE state = 'active'"
+        )
+        active_conns = active["cnt"] if active else 0
+    except Exception:
+        active_conns = None
+
+    # / recent errors from system_events
+    try:
+        recent_errors = await _query(
+            """SELECT timestamp, source, symbol, message
+            FROM system_events WHERE level IN ('error', 'warning')
+            ORDER BY timestamp DESC LIMIT 20"""
+        )
+    except Exception:
+        recent_errors = []
+
+    # / per-source health status (errors in last 24h)
+    try:
+        source_stats = await _query(
+            """SELECT source,
+                COUNT(*) FILTER (WHERE level = 'error') as errors_24h,
+                MAX(timestamp) FILTER (WHERE level = 'error') as last_error
+            FROM system_events
+            WHERE timestamp > NOW() - INTERVAL '24 hours'
+            GROUP BY source"""
+        )
+        sources = {}
+        for s in source_stats:
+            sources[s["source"]] = {
+                "status": "degraded" if s["errors_24h"] > 0 else "active",
+                "last_error": str(s["last_error"]) if s["last_error"] else None,
+                "errors_24h": s["errors_24h"],
+            }
+    except Exception:
+        sources = {}
+
+    # / ensure groq + deepseek always present in sources
+    if "groq" not in sources:
+        sources["groq"] = {"status": groq_status, "last_error": None, "errors_24h": 0}
+    if "deepseek" not in sources:
+        sources["deepseek"] = {"status": deepseek_status, "last_error": None, "errors_24h": 0}
 
     return {
         "db_connected": db_ok,
-        "storage_bytes": storage["size_bytes"] if storage else 0,
-        "storage_mb": round(storage["size_bytes"] / 1024 / 1024, 1) if storage else 0,
-        "last_trade": str(last_trade["created_at"]) if last_trade else None,
-        "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
-        "last_analysis": str(last_analysis["date"]) if last_analysis else None,
-        "last_synthesis": str(last_synthesis["date"]) if last_synthesis else None,
-        "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
-        "symbols_today": symbols_analyzed["cnt"] if symbols_analyzed else 0,
-        "groq_status": groq_status,
-        "deepseek_status": deepseek_status,
+        "storage": {
+            "db_size_mb": db_size_mb,
+            "tables": table_stats,
+        },
+        "connections": {
+            "active": active_conns,
+            "commits": conn_stats["xact_commit"] if conn_stats else None,
+            "rollbacks": conn_stats["xact_rollback"] if conn_stats else None,
+            "cache_hit_ratio": cache_ratio,
+        },
+        "cycles": {
+            "last_analysis": str(last_analysis["date"]) if last_analysis else None,
+            "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
+            "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
+            "last_trade": str(last_trade["created_at"]) if last_trade else None,
+            "last_synthesis": str(last_synthesis["date"]) if last_synthesis else None,
+            "symbols_today": symbols_analyzed["cnt"] if symbols_analyzed else 0,
+        },
+        "sources": sources,
+        "recent_errors": _serialize(recent_errors),
     }
+
+
+@app.get("/api/insider/{symbol}")
+async def get_insider(symbol: str):
+    # / recent insider trades for symbol (last 90 days)
+    rows = await _query(
+        """SELECT * FROM insider_trades
+        WHERE symbol = $1 AND filing_date > CURRENT_DATE - INTERVAL '90 days'
+        ORDER BY filing_date DESC LIMIT 20""",
+        symbol.upper(),
+    )
+    return _serialize(rows)
 
 
 @app.get("/api/signals")

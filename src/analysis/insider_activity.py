@@ -53,6 +53,7 @@ class InsiderSignal:
     unique_buyers: int
     unique_sellers: int
     details: dict[str, Any] = field(default_factory=dict)
+    top_trades: list[dict[str, Any]] = field(default_factory=list)  # / top trades by value for llm context
 
 
 def _title_weight(title: str) -> float:
@@ -174,6 +175,20 @@ def compute_insider_signal(
     else:
         signal = "neutral"
 
+    # / top trades by value for llm prompt context
+    all_trades = buys + sells
+    sorted_trades = sorted(all_trades, key=lambda t: abs(float(t.get("total_value", 0))), reverse=True)
+    top = []
+    for t in sorted_trades[:5]:
+        top.append({
+            "name": t.get("insider_name", "Unknown"),
+            "title": t.get("insider_title", ""),
+            "type": t.get("transaction_type", ""),
+            "shares": int(float(t.get("shares", 0))),
+            "value": round(float(t.get("total_value", 0)), 2),
+            "date": str(t.get("filing_date", "")),
+        })
+
     return InsiderSignal(
         symbol=symbol,
         date=date.today(),
@@ -192,6 +207,7 @@ def compute_insider_signal(
             "weighted_sell_value": round(weighted_sell_value, 2),
             "trade_count": trade_count,
         },
+        top_trades=top,
     )
 
 

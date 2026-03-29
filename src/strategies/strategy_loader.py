@@ -138,6 +138,8 @@ class StrategyConfig(BaseModel):
     exit_conditions: ExitConditionsConfig
     position_sizing: PositionSizingConfig = PositionSizingConfig()
     metadata: StrategyMetadata = StrategyMetadata()
+    bypass_consensus: bool = False           # / skip ai consensus gate (for pipeline testing)
+    signal_threshold_override: float | None = None  # / override SIGNAL_THRESHOLD per-strategy
 
     @field_validator("universe", mode="before")
     @classmethod

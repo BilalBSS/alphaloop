@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import date
 from typing import Any
 
@@ -38,6 +39,7 @@ class AnalystAgent:
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
         results: dict[str, float | None] = {}
+        cycle_start = time.monotonic()
 
         # / social sentiment: stocktwits + fear & greed for all symbols
         try:
@@ -51,13 +53,20 @@ class AnalystAgent:
                 results[symbol] = score
             except Exception as exc:
                 logger.warning("analyst_symbol_failed", symbol=symbol, error=str(exc))
+                await tools.log_event(pool, "warning", "analyst", f"analysis failed: {str(exc)[:200]}", symbol=symbol)
                 results[symbol] = None
             # / throttle between symbols to avoid groq 429 rate limits
             if i < len(symbols) - 1:
-                await asyncio.sleep(2)
+                await asyncio.sleep(4)
 
-        logger.info("analyst_run_complete", symbols_analyzed=len(results),
-                     successful=sum(1 for v in results.values() if v is not None))
+        successful = sum(1 for v in results.values() if v is not None)
+        duration = round(time.monotonic() - cycle_start, 1)
+        logger.info("analyst_run_complete", symbols_analyzed=len(results), successful=successful)
+        await tools.log_event(
+            pool, "info", "analyst",
+            f"cycle complete: {successful}/{len(results)} symbols in {duration}s",
+            details={"successful": successful, "total": len(results), "duration_s": duration},
+        )
         return results
 
     async def _analyze_symbol(self, pool, symbol: str) -> float | None:

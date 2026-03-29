@@ -1,11 +1,13 @@
 {
     "id": "strategy_011",
     "name": "Loose_Pipeline_Test",
-    "version": 1,
+    "version": 2,
     "created_by": "manual",
-    "description": "Relaxed entry conditions to force full pipeline in paper mode on bullish-consensus symbols",
+    "description": "Relaxed entry conditions to force full pipeline in paper mode, bypasses consensus gate and signal threshold",
     "asset_class": "stocks",
     "universe": "all_stocks",
+    "bypass_consensus": true,
+    "signal_threshold_override": 0.10,
 
     "fundamental_filters": {
         "pe_ratio_max": 60,

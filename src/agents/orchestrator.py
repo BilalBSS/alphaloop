@@ -56,6 +56,15 @@ class AgentOrchestrator:
         # / init db
         self._pool = await init_db()
 
+        # / prune old system events (keep 30 days)
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM system_events WHERE timestamp < NOW() - INTERVAL '30 days'"
+                )
+        except Exception:
+            pass  # / table may not exist yet on first run
+
         # / init broker
         self._broker_factory = BrokerFactory(mode=self._mode)
 

@@ -841,6 +841,244 @@ function SignalsPanel({ signals }) {
   )
 }
 
+// / edgar fundamentals: raw financial data from analysis details
+function EdgarFundamentalsPanel({ score, fundamentals }) {
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
+
+  // / pull raw data from details or fundamentals
+  const src = fundamentals || {}
+  const dataSource = src.data_source || details.data_source || '--'
+
+  const rows = [
+    { label: 'Revenue', val: src.revenue || details.revenue, fmt: v => fmtLargeNum(v) },
+    { label: 'Free Cash Flow', val: src.free_cash_flow || details.free_cash_flow, fmt: v => fmtLargeNum(v) },
+    { label: 'Shares Outstanding', val: src.shares_outstanding || details.shares_outstanding, fmt: v => fmtLargeNum(v) },
+    { label: 'Net Debt', val: src.net_debt || details.net_debt, fmt: v => fmtLargeNum(v) },
+    { label: 'Total Debt', val: src.total_debt || details.total_debt, fmt: v => fmtLargeNum(v) },
+    { label: 'Total Cash', val: src.total_cash || details.total_cash, fmt: v => fmtLargeNum(v) },
+    { label: 'Market Cap', val: src.market_cap || details.market_cap, fmt: v => fmtLargeNum(v) },
+    { label: 'Enterprise Value', val: src.enterprise_value || details.enterprise_value, fmt: v => fmtLargeNum(v) },
+  ]
+
+  const hasData = rows.some(r => r.val != null)
+  if (!hasData) return <div className="text-text-muted text-sm py-2">No EDGAR/fundamental data available</div>
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] uppercase text-text-muted px-1">
+        Source: <span className="font-semibold">{dataSource}</span>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-secondary text-[11px] uppercase">
+            <th className="text-left px-2 py-1">Metric</th>
+            <th className="text-right px-2 py-1">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            if (r.val == null) return null
+            return (
+              <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
+                <td className="px-2 py-1 text-text-secondary">{r.label}</td>
+                <td className="px-2 py-1 text-right font-mono">{r.fmt(r.val)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// / format large numbers to human-readable
+function fmtLargeNum(v) {
+  const n = parseFloat(v)
+  if (isNaN(n)) return '--'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`
+  return `${sign}$${abs.toFixed(2)}`
+}
+
+// / insider trades panel: fetches from /api/insider/{symbol}
+function InsiderTradesPanel({ symbol }) {
+  const { data, loading } = useApi(`/api/insider/${symbol}`, 60000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+
+  if (!data || data.length === 0) {
+    return <div className="text-text-muted text-sm py-2">No insider trades in last 90 days</div>
+  }
+
+  const fmtVal = v => {
+    const n = parseFloat(v || 0)
+    if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`
+    if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`
+    return `$${n.toFixed(0)}`
+  }
+
+  // / aggregate stats
+  const buys = data.filter(t => t.transaction_type === 'buy')
+  const sells = data.filter(t => t.transaction_type === 'sell')
+  const buyVal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
+  const sellVal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
+
+  return (
+    <div className="space-y-2">
+      {/* aggregate summary */}
+      <div className="flex gap-4 text-xs px-1">
+        <span className="text-profit font-mono">{buys.length} buys ({fmtVal(buyVal)})</span>
+        <span className="text-loss font-mono">{sells.length} sells ({fmtVal(sellVal)})</span>
+      </div>
+      <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-text-secondary text-[11px] uppercase">
+              <th className="text-left px-2 py-1">Date</th>
+              <th className="text-left px-2 py-1">Name</th>
+              <th className="text-left px-2 py-1">Title</th>
+              <th className="text-left px-2 py-1">Type</th>
+              <th className="text-right px-2 py-1">Shares</th>
+              <th className="text-right px-2 py-1">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((t, i) => {
+              const isBuy = t.transaction_type === 'buy'
+              const rowColor = isBuy ? 'border-l-profit' : 'border-l-loss'
+              return (
+                <tr key={i} className={`border-t border-border border-l-2 ${rowColor}`} style={{ height: 32 }}>
+                  <td className="px-2 py-1 text-text-muted whitespace-nowrap">
+                    {t.filing_date?.split('T')[0] || '--'}
+                  </td>
+                  <td className="px-2 py-1 truncate max-w-[120px]" title={t.insider_name}>
+                    {t.insider_name || '--'}
+                  </td>
+                  <td className="px-2 py-1 text-text-muted truncate max-w-[100px]" title={t.insider_title}>
+                    {t.insider_title || '--'}
+                  </td>
+                  <td className={`px-2 py-1 uppercase font-semibold ${isBuy ? 'text-profit' : 'text-loss'}`}>
+                    {t.transaction_type || '--'}
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono">
+                    {parseInt(t.shares || 0).toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono">
+                    {fmtVal(t.total_value)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// / sentiment detail: fear/greed, vix, social mentions breakdown
+function SentimentDetailPanel({ score, socialSentiment, isCrypto }) {
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
+  const latestSocial = socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null
+
+  const fng = details.fear_greed_index || details.fear_greed || latestSocial?.raw_score
+  const vix = details.vix || details.vix_level
+  const mentions = latestSocial ? parseInt(latestSocial.volume || 0) : 0
+  const bullPct = latestSocial ? parseFloat(latestSocial.bullish_pct || 0) : 0
+  const bearPct = latestSocial ? parseFloat(latestSocial.bearish_pct || 0) : 0
+  const source = latestSocial?.source || 'social'
+
+  // / fear/greed label
+  function fngLabel(v) {
+    const n = parseFloat(v)
+    if (isNaN(n)) return '--'
+    if (n <= 20) return 'Extreme Fear'
+    if (n <= 40) return 'Fear'
+    if (n <= 60) return 'Neutral'
+    if (n <= 80) return 'Greed'
+    return 'Extreme Greed'
+  }
+
+  function fngColor(v) {
+    const n = parseFloat(v)
+    if (isNaN(n)) return ''
+    if (n <= 30) return 'text-loss'
+    if (n <= 60) return 'text-warning'
+    return 'text-profit'
+  }
+
+  const hasAnyData = fng != null || vix != null || mentions > 0 || bullPct > 0
+
+  if (!hasAnyData) {
+    return <div className="text-text-muted text-sm py-2">No sentiment detail available</div>
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {/* fear & greed */}
+        {fng != null && (
+          <div className="bg-bg-primary border border-border p-3">
+            <div className="text-[10px] uppercase text-text-muted mb-1">
+              {isCrypto ? 'Crypto F&G' : 'Fear & Greed'}
+            </div>
+            <div className={`text-xl font-mono font-bold ${fngColor(fng)}`}>
+              {parseFloat(fng).toFixed(0)}
+            </div>
+            <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>
+              {fngLabel(fng)}
+            </div>
+          </div>
+        )}
+
+        {/* vix */}
+        {vix != null && (
+          <div className="bg-bg-primary border border-border p-3">
+            <div className="text-[10px] uppercase text-text-muted mb-1">VIX</div>
+            <div className={`text-xl font-mono font-bold ${parseFloat(vix) > 25 ? 'text-loss' : parseFloat(vix) > 18 ? 'text-warning' : 'text-profit'}`}>
+              {parseFloat(vix).toFixed(1)}
+            </div>
+            <div className="text-[10px] text-text-muted">
+              {parseFloat(vix) > 25 ? 'High Vol' : parseFloat(vix) > 18 ? 'Elevated' : 'Low Vol'}
+            </div>
+          </div>
+        )}
+
+        {/* social mentions */}
+        {mentions > 0 && (
+          <div className="bg-bg-primary border border-border p-3">
+            <div className="text-[10px] uppercase text-text-muted mb-1">
+              {source} Mentions
+            </div>
+            <div className="text-xl font-mono font-bold text-text-primary">
+              {mentions.toLocaleString()}
+            </div>
+          </div>
+        )}
+
+        {/* bullish pct */}
+        {(bullPct > 0 || bearPct > 0) && (
+          <div className="bg-bg-primary border border-border p-3">
+            <div className="text-[10px] uppercase text-text-muted mb-1">Bullish %</div>
+            <div className={`text-xl font-mono font-bold ${bullPct > bearPct ? 'text-profit' : 'text-loss'}`}>
+              {(bullPct * 100).toFixed(0)}%
+            </div>
+            <div className="flex h-1.5 w-full overflow-hidden rounded mt-1">
+              <div className="bg-profit" style={{ width: `${bullPct * 100}%` }} />
+              <div className="bg-loss" style={{ width: `${bearPct * 100}%` }} />
+              <div className="bg-bg-primary flex-1" />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // / detail view: fetches its own data, keyed on symbol for clean remount
 function SymbolDetail({ symbol, onBack }) {
   const { data, loading, error } = useApi(`/api/analysis/${symbol}`, 30000)
@@ -905,22 +1143,39 @@ function SymbolDetail({ symbol, onBack }) {
         </Panel>
       </div>
 
-      {/* row 5: ai analysis — stacked vertical */}
+      {/* row 5: edgar + insider trades + sentiment detail (collapsible) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <Panel title="EDGAR Fundamentals" collapsible defaultOpen={false}>
+          <EdgarFundamentalsPanel score={d.score} fundamentals={d.fundamentals} />
+        </Panel>
+        <Panel title="Insider Trades (90d)" collapsible defaultOpen={false}>
+          <InsiderTradesPanel symbol={symbol} />
+        </Panel>
+        <Panel title="Sentiment Detail" collapsible defaultOpen={false}>
+          <SentimentDetailPanel
+            score={d.score}
+            socialSentiment={d.social_sentiment}
+            isCrypto={symbol.includes('-USD') || symbol.includes('/')}
+          />
+        </Panel>
+      </div>
+
+      {/* row 6: ai analysis — stacked vertical */}
       <Panel title="AI Analysis">
         <AiAnalysisPanel score={d.score} />
       </Panel>
 
-      {/* row 6: quant metrics */}
+      {/* row 7: quant metrics */}
       <Panel title="Quant Metrics">
         <QuantMetricsPanel symbol={symbol} />
       </Panel>
 
-      {/* row 7: evolution history */}
+      {/* row 8: evolution history */}
       <Panel title="Evolution History">
         <EvolutionPanel evolution={d.evolution} />
       </Panel>
 
-      {/* row 8: trades + signals */}
+      {/* row 9: trades + signals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Trade History">
           <TradeHistoryPanel trades={d.trades} />

@@ -121,6 +121,20 @@ class StrategyAgent:
 
         logger.info("strategy_agent_complete", signals_generated=len(signals),
                      total_evaluated=stats["total"])
+        # / log strategy eval cycle to system_events
+        entry_hits = stats["total"] - stats["no_entry"] - stats.get("insufficient_data", 0)
+        await tools.log_event(
+            pool, "info", "strategy",
+            f"eval: {stats['total']} pairs, {entry_hits} entry hits, "
+            f"{stats.get('blocked_consensus', 0)} consensus blocked, "
+            f"{stats.get('blocked_threshold', 0)} threshold blocked",
+            details={
+                "total": stats["total"], "entry_hits": entry_hits,
+                "blocked_consensus": stats.get("blocked_consensus", 0),
+                "blocked_threshold": stats.get("blocked_threshold", 0),
+                "signals": len(signals),
+            },
+        )
         return signals
 
     async def _evaluate_strategy(
@@ -182,8 +196,9 @@ class StrategyAgent:
             return None
 
         # / ai consensus filter: dual-llm agreement gates signal strength
+        bypass_consensus = strategy.config.get("bypass_consensus", False)
         consensus = analysis_data.ai_consensus if analysis_data else None
-        if consensus == "bearish":
+        if consensus == "bearish" and not bypass_consensus:
             logger.debug("signal_blocked_ai_bearish", symbol=symbol)
             if stats is not None:
                 stats["blocked_consensus"] += 1
@@ -192,7 +207,7 @@ class StrategyAgent:
                     "block_reason": "bearish consensus",
                 })
             return None
-        if consensus == "disagree":
+        if consensus == "disagree" and not bypass_consensus:
             entry_signal = EntrySignal(
                 should_enter=True,
                 strength=entry_signal.strength * 0.5,
@@ -200,8 +215,9 @@ class StrategyAgent:
             )
 
         # / smooth with particle filter
+        threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)
-        if smoothed_strength < SIGNAL_THRESHOLD:
+        if smoothed_strength < threshold:
             logger.debug(
                 "signal_below_threshold",
                 symbol=symbol, raw=entry_signal.strength,
@@ -211,7 +227,7 @@ class StrategyAgent:
                 stats["blocked_threshold"] += 1
                 stats["near_misses"].append({
                     "symbol": symbol, "raw_strength": entry_signal.strength,
-                    "block_reason": f"threshold ({smoothed_strength:.2f} < {SIGNAL_THRESHOLD})",
+                    "block_reason": f"threshold ({smoothed_strength:.2f} < {threshold})",
                 })
             return None
 
