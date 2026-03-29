@@ -209,10 +209,14 @@ def _build_fallback_summary(
     )
 
 
+class _RateLimited(Exception):
+    pass
+
+
 async def _call_llm(
     api_key: str, model: str, prompt: str, symbol: str,
 ) -> AnalysisSummary | None:
-    # / single llm api call — returns None on failure so caller can try next model
+    # / single llm api call — returns None on failure, raises _RateLimited on 429
     try:
         import httpx
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -229,6 +233,9 @@ async def _call_llm(
                     "temperature": 0.3,
                 },
             )
+            if resp.status_code == 429:
+                logger.info("llm_rate_limited", symbol=symbol, model=model)
+                raise _RateLimited()
             resp.raise_for_status()
             data = resp.json()
             summary_text = data["choices"][0]["message"]["content"].strip()
@@ -239,6 +246,8 @@ async def _call_llm(
                 symbol=symbol, date=date.today(), summary=summary_text,
                 model_used=model, signal=signal, confidence=75.0,
             )
+    except _RateLimited:
+        raise
     except Exception as exc:
         logger.info("llm_model_failed", symbol=symbol, model=model, error=str(exc)[:100])
         return None
@@ -264,11 +273,15 @@ async def generate_summary(
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
 
     # / try models in order: default → 120b → fallback 20b
+    # / stop on 429 — all groq models share the same rate limit
     models = [DEFAULT_MODEL, "openai/gpt-oss-120b", FALLBACK_MODEL]
     for model in models:
-        result = await _call_llm(api_key, model, prompt, symbol)
-        if result:
-            return result
+        try:
+            result = await _call_llm(api_key, model, prompt, symbol)
+            if result:
+                return result
+        except _RateLimited:
+            break
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)
     return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)

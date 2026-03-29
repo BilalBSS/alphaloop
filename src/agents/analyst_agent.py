@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date
 from typing import Any
@@ -44,13 +45,16 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("social_sentiment_batch_failed", error=str(exc))
 
-        for symbol in symbols:
+        for i, symbol in enumerate(symbols):
             try:
                 score = await self._analyze_symbol(pool, symbol)
                 results[symbol] = score
             except Exception as exc:
                 logger.warning("analyst_symbol_failed", symbol=symbol, error=str(exc))
                 results[symbol] = None
+            # / throttle between symbols to avoid groq 429 rate limits
+            if i < len(symbols) - 1:
+                await asyncio.sleep(2)
 
         logger.info("analyst_run_complete", symbols_analyzed=len(results),
                      successful=sum(1 for v in results.values() if v is not None))
