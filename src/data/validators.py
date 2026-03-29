@@ -27,7 +27,7 @@ PE_BOUNDS = (Decimal("-1000"), Decimal("10000"))
 PS_BOUNDS = (Decimal("0"), Decimal("10000"))
 PEG_BOUNDS = (Decimal("-100"), Decimal("1000"))
 GROWTH_BOUNDS = (Decimal("-1.0"), Decimal("100.0"))
-FCF_MARGIN_BOUNDS = (Decimal("-10.0"), Decimal("1.0"))
+FCF_MARGIN_BOUNDS = (Decimal("-50.0"), Decimal("5.0"))
 DEBT_EQUITY_BOUNDS = (Decimal("0"), Decimal("1000"))
 SENTIMENT_BOUNDS = (Decimal("-1.0"), Decimal("1.0"))
 
