@@ -74,8 +74,7 @@ async def _groq_score_headlines(headlines: list[str]) -> float | None:
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"].strip()
             # / extract first number from response in case llm adds words
-            import re as _re
-            match = _re.search(r"-?\d+\.?\d*", text)
+            match = re.search(r"-?\d+\.?\d*", text)
             if not match:
                 return None
             score = float(match.group())

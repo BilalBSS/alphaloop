@@ -95,6 +95,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._evolution_loop(), name="evolution"),
             asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
+            asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
         ]
 
         try:
@@ -354,3 +355,35 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("fundamentals_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "fundamentals_backfill")
+
+    async def _crypto_backfill_loop(self) -> None:
+        # / refresh crypto market data daily at 8am et
+        while not self._stop_event.is_set():
+            et = timezone(timedelta(hours=-5))
+            now = datetime.now(et)
+            target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+
+            logger.info("crypto_backfill_waiting", next_run=str(target))
+
+            if await self._wait_or_stop((target - now).total_seconds()):
+                break
+
+            try:
+                from src.data.crypto_data import fetch_coin_data
+                symbols = [s for s in self._get_symbols() if is_crypto(s)]
+                for symbol in symbols:
+                    try:
+                        data = await fetch_coin_data(symbol)
+                        if data and self._pool:
+                            await tools.log_event(
+                                self._pool, "crypto_backfill", symbol=symbol,
+                                message=f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
+                            )
+                    except Exception as exc:
+                        logger.warning("crypto_backfill_symbol_error", symbol=symbol, error=str(exc))
+                logger.info("crypto_backfill_complete", count=len(symbols))
+            except Exception as exc:
+                logger.error("crypto_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "crypto_backfill")

@@ -68,55 +68,52 @@ def run_dcf_simulation(
     n = num_simulations
     years = assumptions.projection_years
 
-    # / randomize growth rates per year per simulation
-    growth_rates = rng.normal(
-        assumptions.revenue_growth,
-        assumptions.growth_std,
-        size=(n, years),
-    )
-    # / clamp growth to reasonable range — unclamped can flip revenue negative
+    # / antithetic variates: generate n/2 Z-samples, mirror with -Z for n total
+    # / negatively-correlated pairs reduce variance on monotone payoffs
+    half = (n + 1) // 2
+
+    z_growth = rng.standard_normal((half, years))
+    z_margins = rng.standard_normal((half, years))
+    z_terminal = rng.standard_normal(half)
+
+    growth_rates = np.vstack([
+        assumptions.revenue_growth + assumptions.growth_std * z_growth,
+        assumptions.revenue_growth + assumptions.growth_std * (-z_growth),
+    ])[:n]
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
-    # / randomize fcf margins
-    margins = rng.normal(
-        assumptions.fcf_margin,
-        assumptions.margin_std,
-        size=(n, years),
-    )
-    # / clamp margins to reasonable range
+    margins = np.vstack([
+        assumptions.fcf_margin + assumptions.margin_std * z_margins,
+        assumptions.fcf_margin + assumptions.margin_std * (-z_margins),
+    ])[:n]
     margins = np.clip(margins, -0.5, 0.8)
 
-    # / randomize terminal multiples
-    terminal_multiples = rng.normal(
-        assumptions.terminal_multiple,
-        assumptions.terminal_multiple_std,
-        size=n,
-    )
+    terminal_multiples = np.concatenate([
+        assumptions.terminal_multiple + assumptions.terminal_multiple_std * z_terminal,
+        assumptions.terminal_multiple + assumptions.terminal_multiple_std * (-z_terminal),
+    ])[:n]
     terminal_multiples = np.clip(terminal_multiples, 3.0, 50.0)
 
-    # / project revenue and fcf for each simulation
+    # / vectorized dcf: cumprod for compounding, broadcast for discounting
     discount_factors = np.array([
         1.0 / (1.0 + assumptions.discount_rate) ** (y + 1)
         for y in range(years)
     ])
 
-    enterprise_values = np.zeros(n)
+    # / cumulative revenue growth per simulation per year
+    cum_growth = np.cumprod(1.0 + growth_rates, axis=1)
+    revenues = assumptions.revenue * cum_growth
 
-    for sim in range(n):
-        revenue = assumptions.revenue
-        pv_fcf = 0.0
+    # / present value of projected fcf
+    fcfs = revenues * margins
+    pv_fcfs = (fcfs * discount_factors[np.newaxis, :]).sum(axis=1)
 
-        for y in range(years):
-            revenue *= (1.0 + growth_rates[sim, y])
-            fcf = revenue * margins[sim, y]
-            pv_fcf += fcf * discount_factors[y]
+    # / terminal value using last year's revenue and margin
+    terminal_fcfs = revenues[:, -1] * margins[:, -1]
+    terminal_values = terminal_fcfs * terminal_multiples
+    pv_terminals = terminal_values * discount_factors[-1]
 
-        # / terminal value: last year fcf * terminal multiple, discounted
-        terminal_fcf = revenue * margins[sim, -1]
-        terminal_value = terminal_fcf * terminal_multiples[sim]
-        pv_terminal = terminal_value * discount_factors[-1]
-
-        enterprise_values[sim] = pv_fcf + pv_terminal
+    enterprise_values = pv_fcfs + pv_terminals
 
     # / equity value = ev - net debt
     equity_values = enterprise_values - assumptions.net_debt

@@ -82,6 +82,21 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         shares = _fin_val(financials.get_shares_outstanding_basic())
         total_equity = _fin_val(financials.get_stockholders_equity())
         total_liabilities = _fin_val(financials.get_total_liabilities())
+        net_income = _fin_val(financials.get_net_income())
+        total_cash = _fin_val(financials.get_cash_and_equivalents())
+
+        # / xbrl fallback for shares_outstanding when standardized getter returns None
+        if shares is None:
+            try:
+                facts = company.get_facts()
+                for concept in ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "CommonStockSharesIssued"):
+                    fact = facts.get(f"us-gaap:{concept}") if facts else None
+                    if fact is not None:
+                        shares = _fin_val(fact)
+                        if shares:
+                            break
+            except Exception:
+                pass
 
         # / compute derived fields
         if fcf_val is None and operating_cf is not None and capex is not None:
@@ -91,8 +106,8 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
 
         # / estimate debt from liabilities - equity (no dedicated getter for total debt)
         total_debt_est = (total_liabilities - total_equity) if (total_liabilities and total_equity) else None
-        # / rough net debt: liabilities heavy portion minus implied cash
-        net_debt_val = total_debt_est  # / simplified, cash not directly available
+        # / net debt = total debt - cash
+        net_debt_val = (total_debt_est - total_cash) if (total_debt_est is not None and total_cash is not None) else total_debt_est
 
         # / debt to equity
         de_ratio = total_liabilities / total_equity if (total_liabilities and total_equity and total_equity > 0) else None
@@ -122,9 +137,10 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
             "sector_pe_avg": None,
             "sector_ps_avg": None,
             "total_revenue": _safe_decimal(revenue),
+            "net_income": _safe_decimal(net_income),
             "free_cash_flow": _safe_decimal(fcf_val),
             "total_debt": _safe_decimal(total_debt_est),
-            "total_cash": None,
+            "total_cash": _safe_decimal(total_cash),
             "shares_outstanding": int(shares) if shares else None,
             "net_debt": _safe_decimal(net_debt_val),
             "data_source": "edgar",
@@ -411,8 +427,8 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                         debt_to_equity, sector, sector_pe_avg, sector_ps_avg,
                         sector_fcf_margin_avg, sector_de_avg, sector_rev_growth_avg,
                         shares_outstanding, net_debt, total_revenue, free_cash_flow,
-                        total_debt, total_cash, data_source
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+                        total_debt, total_cash, net_income, data_source
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
                     ON CONFLICT (symbol, date) DO UPDATE SET
                         pe_ratio = EXCLUDED.pe_ratio,
                         pe_forward = EXCLUDED.pe_forward,
@@ -434,6 +450,7 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                         free_cash_flow = EXCLUDED.free_cash_flow,
                         total_debt = EXCLUDED.total_debt,
                         total_cash = EXCLUDED.total_cash,
+                        net_income = EXCLUDED.net_income,
                         data_source = EXCLUDED.data_source
                     """,
                     d["symbol"], d["date"], d.get("pe_ratio"), d.get("pe_forward"),
@@ -446,7 +463,7 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                     d.get("shares_outstanding"), d.get("net_debt"),
                     d.get("total_revenue"), d.get("free_cash_flow"),
                     d.get("total_debt"), d.get("total_cash"),
-                    d.get("data_source"),
+                    d.get("net_income"), d.get("data_source"),
                 )
                 inserted += 1
             except Exception as exc:
