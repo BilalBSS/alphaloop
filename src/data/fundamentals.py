@@ -54,7 +54,7 @@ def _safe_float(value: Any) -> float | None:
 # / --- edgar fetcher (primary) ---
 
 def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
-    # / sync edgartools fetch of 10-K financial data
+    # / edgartools v5: use Financials class with standardized getters
     try:
         from edgar import Company
     except ImportError:
@@ -64,146 +64,90 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
     try:
         os.environ.setdefault("EDGAR_IDENTITY", os.environ.get("SEC_EDGAR_USER_AGENT", "QuantTrader quant@example.com"))
         company = Company(symbol)
-
-        # / get latest 10-K filing
-        filings = company.get_filings(form="10-K")
-        if filings is None or len(filings) == 0:
-            logger.info("no_10k_filings", symbol=symbol)
+        financials = company.get_financials()
+        if financials is None:
+            logger.info("edgar_no_financials", symbol=symbol)
             return None
 
-        filing = filings[0]
-        filing_date = filing.filing_date
-        if hasattr(filing_date, "date"):
-            filing_date = filing_date.date()
-
-        # / parse financial data from filing
-        xbrl = None
-        try:
-            xbrl = filing.xbrl()
-        except Exception:
-            pass
-
-        revenue = None
-        operating_cf = None
-        capex = None
-        total_debt_val = None
-        total_cash_val = None
-        shares = None
-        total_equity = None
-
-        if xbrl:
-            # / try common xbrl tags for each field
-            revenue = _xbrl_get(xbrl, [
-                "Revenues",
-                "RevenueFromContractWithCustomerExcludingAssessedTax",
-                "SalesRevenueNet",
-                "RevenueFromContractWithCustomerIncludingAssessedTax",
-            ])
-            operating_cf = _xbrl_get(xbrl, [
-                "NetCashProvidedByOperatingActivities",
-                "CashProvidedByOperatingActivities",
-            ])
-            capex = _xbrl_get(xbrl, [
-                "PaymentsToAcquirePropertyPlantAndEquipment",
-                "CapitalExpenditures",
-            ])
-            total_debt_val = _xbrl_get(xbrl, [
-                "LongTermDebt",
-                "LongTermDebtNoncurrent",
-            ])
-            short_term = _xbrl_get(xbrl, [
-                "ShortTermBorrowings",
-                "CurrentPortionOfLongTermDebt",
-            ])
-            if total_debt_val and short_term:
-                total_debt_val = total_debt_val + short_term
-            total_cash_val = _xbrl_get(xbrl, [
-                "CashAndCashEquivalentsAtCarryingValue",
-                "Cash",
-            ])
-            shares = _xbrl_get(xbrl, [
-                "CommonStockSharesOutstanding",
-                "EntityCommonStockSharesOutstanding",
-            ])
-            total_equity = _xbrl_get(xbrl, [
-                "StockholdersEquity",
-                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-            ])
-
-        # / also try company-level attributes as fallback
-        if shares is None:
-            shares = _safe_float(getattr(company, "shares_outstanding", None))
-
+        # / standardized getters handle xbrl tag differences across companies
+        revenue = _fin_val(financials.get_revenue())
         if not revenue:
             logger.info("edgar_no_revenue", symbol=symbol)
             return None
 
-        # / compute derived fields
-        fcf = (operating_cf - capex) if (operating_cf is not None and capex is not None) else None
-        fcf_margin = _safe_decimal(fcf / revenue) if (fcf is not None and revenue > 0) else None
-        net_debt = (total_debt_val - total_cash_val) if (total_debt_val is not None and total_cash_val is not None) else None
-        de_ratio = (total_debt_val / total_equity) if (total_debt_val is not None and total_equity and total_equity > 0) else None
-        rev_growth = None  # / would need prior year filing to compute
+        prev_revenue = _fin_val(financials.get_revenue(1))
+        operating_cf = _fin_val(financials.get_operating_cash_flow())
+        capex = _fin_val(financials.get_capital_expenditures())
+        fcf_val = _fin_val(financials.get_free_cash_flow())
+        shares = _fin_val(financials.get_shares_outstanding_basic())
+        total_equity = _fin_val(financials.get_stockholders_equity())
+        total_liabilities = _fin_val(financials.get_total_liabilities())
 
-        # / get sector from company info
-        sector = getattr(company, "sic_description", None) or getattr(company, "industry", None) or "Unknown"
-        # / simplify sec sector descriptions
-        sector_lower = sector.lower() if sector else ""
-        if "software" in sector_lower or "computer" in sector_lower or "semiconductor" in sector_lower:
+        # / compute derived fields
+        if fcf_val is None and operating_cf is not None and capex is not None:
+            fcf_val = operating_cf - abs(capex)
+        fcf_margin = fcf_val / revenue if (fcf_val is not None and revenue > 0) else None
+        rev_growth = (revenue - prev_revenue) / abs(prev_revenue) if (prev_revenue and abs(prev_revenue) > 0) else None
+
+        # / estimate debt from liabilities - equity (no dedicated getter for total debt)
+        total_debt_est = (total_liabilities - total_equity) if (total_liabilities and total_equity) else None
+        # / rough net debt: liabilities heavy portion minus implied cash
+        net_debt_val = total_debt_est  # / simplified, cash not directly available
+
+        # / debt to equity
+        de_ratio = total_liabilities / total_equity if (total_liabilities and total_equity and total_equity > 0) else None
+
+        # / sector from company sic description
+        sector = getattr(company, "sic_description", None) or "Unknown"
+        sector_lower = sector.lower()
+        if any(k in sector_lower for k in ("software", "computer", "semiconductor", "electronic")):
             sector = "Technology"
-        elif "pharma" in sector_lower or "biotech" in sector_lower or "medical" in sector_lower:
+        elif any(k in sector_lower for k in ("pharma", "biotech", "medical", "drug")):
             sector = "Healthcare"
-        elif "retail" in sector_lower or "consumer" in sector_lower:
+        elif any(k in sector_lower for k in ("retail", "consumer")):
             sector = "Consumer Cyclical"
 
         result = {
             "symbol": symbol,
             "date": date.today(),
-            "pe_ratio": None,  # / needs current price, computed downstream
+            "pe_ratio": None,  # / needs current market price
             "pe_forward": None,
-            "ps_ratio": None,  # / needs current price + revenue
+            "ps_ratio": None,
             "peg_ratio": None,
             "revenue_growth_1y": _safe_decimal(rev_growth),
             "revenue_growth_3y": None,
-            "fcf_margin": fcf_margin,
+            "fcf_margin": _safe_decimal(fcf_margin),
             "debt_to_equity": _safe_decimal(de_ratio),
             "sector": sector,
             "sector_pe_avg": None,
             "sector_ps_avg": None,
             "total_revenue": _safe_decimal(revenue),
-            "free_cash_flow": _safe_decimal(fcf),
-            "total_debt": _safe_decimal(total_debt_val),
-            "total_cash": _safe_decimal(total_cash_val),
+            "free_cash_flow": _safe_decimal(fcf_val),
+            "total_debt": _safe_decimal(total_debt_est),
+            "total_cash": None,
             "shares_outstanding": int(shares) if shares else None,
-            "net_debt": _safe_decimal(net_debt),
+            "net_debt": _safe_decimal(net_debt_val),
             "data_source": "edgar",
         }
         logger.info("edgar_fundamentals_fetched", symbol=symbol, revenue=revenue, shares=shares)
         return result
 
     except Exception as exc:
-        logger.info("edgar_fetch_failed", symbol=symbol, error=str(exc)[:100])
+        logger.info("edgar_fetch_failed", symbol=symbol, error=str(exc)[:150])
         return None
 
 
-def _xbrl_get(xbrl: Any, tags: list[str]) -> float | None:
-    # / try multiple xbrl tag names, return first non-none value
-    for tag in tags:
-        try:
-            val = xbrl.get_fact(f"us-gaap:{tag}")
-            if val is not None:
-                v = getattr(val, "value", val)
-                return float(v) if v is not None else None
-        except Exception:
-            pass
-        try:
-            val = xbrl.get_fact(f"dei:{tag}")
-            if val is not None:
-                v = getattr(val, "value", val)
-                return float(v) if v is not None else None
-        except Exception:
-            pass
-    return None
+def _fin_val(metric: Any) -> float | None:
+    # / extract numeric value from edgartools financial metric object
+    if metric is None:
+        return None
+    try:
+        if hasattr(metric, "value"):
+            v = metric.value
+            return float(v) if v is not None else None
+        return float(metric)
+    except (ValueError, TypeError):
+        return None
 
 
 # / --- finnhub fetcher (fallback) ---
@@ -266,9 +210,12 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
             "sector_ps_avg": None,
             "total_revenue": _safe_decimal(total_rev),
             "shares_outstanding": shares_int,
+            "total_debt": _safe_decimal(metrics.get("totalDebtMRQ")),
+            "total_cash": _safe_decimal(metrics.get("cashPerShareQuarterly") * shares if (metrics.get("cashPerShareQuarterly") and shares) else None),
+            "free_cash_flow": _safe_decimal(metrics.get("freeCashFlowTTM")),
             "net_debt": _safe_decimal(
-                metrics.get("netDebtAnnual") or metrics.get("netDebt") or
-                ((metrics.get("totalDebtMRQ") or 0) - (metrics.get("currentRatioQuarterly") or 0) if metrics.get("totalDebtMRQ") else None)
+                (metrics.get("totalDebtMRQ") or 0) - (metrics.get("cashPerShareQuarterly", 0) * shares if (metrics.get("cashPerShareQuarterly") and shares) else 0)
+                if metrics.get("totalDebtMRQ") else None
             ),
             "data_source": "finnhub",
         }
