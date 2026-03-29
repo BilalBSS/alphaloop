@@ -61,14 +61,14 @@ def _build_prompt(
         parts.append(f"\nMarket regime: {regime}")
 
     if ratio:
-        parts.append(f"\nValuation ratios (score 0-100, higher=more undervalued):")
-        parts.append(f"  Composite: {ratio.composite_score}")
-        if ratio.pe_score is not None:
-            parts.append(f"  P/E score: {ratio.pe_score}")
-        if ratio.peg_score is not None:
-            parts.append(f"  PEG score: {ratio.peg_score}")
-        if ratio.fcf_margin_score is not None:
-            parts.append(f"  FCF margin score: {ratio.fcf_margin_score}")
+        parts.append(f"\nValuation (ratio score 0-100, measures value vs sector peers):")
+        parts.append(f"  Overall ratio score: {ratio.composite_score}/100")
+        if ratio.details.get("pe_ratio") is not None:
+            parts.append(f"  P/E ratio: {ratio.details['pe_ratio']:.1f} (sector avg: {ratio.details.get('sector_pe_avg', 'N/A')})")
+        if ratio.details.get("fcf_margin") is not None:
+            parts.append(f"  FCF margin: {ratio.details['fcf_margin']:.1%}")
+        if ratio.details.get("debt_to_equity") is not None:
+            parts.append(f"  Debt/Equity: {ratio.details['debt_to_equity']:.1f}")
 
     if dcf:
         parts.append(f"\nDCF valuation:")

@@ -142,8 +142,19 @@ async def get_analysis(symbol: str):
         symbol,
     )
     fundamentals = await _query_one(
-        """SELECT * FROM fundamentals
-        WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+        """SELECT f.*,
+            s.avg_fcf_margin as sector_fcf_margin_avg,
+            s.avg_de as sector_de_avg,
+            s.avg_rev_growth as sector_rev_growth_avg
+        FROM fundamentals f
+        LEFT JOIN LATERAL (
+            SELECT AVG(fcf_margin) as avg_fcf_margin,
+                   AVG(debt_to_equity) as avg_de,
+                   AVG(revenue_growth_1y) as avg_rev_growth
+            FROM fundamentals f2
+            WHERE f2.sector = f.sector AND f2.date = f.date AND f2.symbol != f.symbol
+        ) s ON true
+        WHERE f.symbol = $1 ORDER BY f.date DESC LIMIT 1""",
         symbol,
     )
     dcf = await _query_one(

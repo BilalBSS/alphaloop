@@ -63,8 +63,8 @@ def _fetch_insider_trades_sync(
                     continue
 
                 # / extract transactions
-                owner_name = _safe_get(form4, "owner_name", "Unknown")
-                owner_title = _safe_get(form4, "owner_title", "")
+                owner_name = _safe_get(form4, "insider_name", "Unknown")
+                owner_title = _safe_get(form4, "position", "")
 
                 for txn in _get_transactions(form4):
                     trades.append({
@@ -103,38 +103,55 @@ def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
         return default
 
 
+def _to_float(val: Any) -> float:
+    try:
+        return float(val) if val is not None else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _code_to_type(code: str) -> str:
+    c = code.upper()
+    if c == "P":
+        return "buy"
+    if c == "S":
+        return "sell"
+    if c == "M":
+        return "option_exercise"
+    return code or "unknown"
+
+
 def _get_transactions(form4: Any) -> list[dict[str, Any]]:
-    # / extract buy/sell transactions from form4 object
+    # / extract buy/sell transactions from edgartools v5 form4 object
     txns: list[dict[str, Any]] = []
 
-    # / edgartools form4 may expose transactions differently across versions
-    for attr in ("non_derivative_transactions", "transactions", "derivative_transactions"):
-        items = getattr(form4, attr, None)
-        if items is None:
-            continue
-
-        try:
-            for item in items:
-                txn_code = _safe_get(item, "transaction_code", "")
-                shares = _safe_get(item, "shares", 0) or _safe_get(item, "transaction_shares", 0)
-                price = _safe_get(item, "price_per_share", 0) or _safe_get(item, "transaction_price_per_share", 0)
-
-                if txn_code in ("P", "p"):
-                    txn_type = "buy"
-                elif txn_code in ("S", "s"):
-                    txn_type = "sell"
-                elif txn_code in ("M", "m"):
-                    txn_type = "option_exercise"
-                else:
-                    txn_type = txn_code or "unknown"
-
+    # / v5: market_trades is a dataframe of open market buys/sells
+    try:
+        trades_df = getattr(form4, "market_trades", None)
+        if trades_df is not None and not trades_df.empty:
+            for _, row in trades_df.iterrows():
                 txns.append({
-                    "type": txn_type,
-                    "shares": float(shares) if shares else 0,
-                    "price": float(price) if price else 0,
+                    "type": _code_to_type(str(row.get("Code", ""))),
+                    "shares": _to_float(row.get("Shares", 0)),
+                    "price": _to_float(row.get("Price", 0)),
                 })
-        except Exception:
-            continue
+    except Exception:
+        pass
+
+    # / v5: non-derivative table for option exercises, gifts, etc
+    try:
+        ndt = getattr(form4, "non_derivative_table", None)
+        if ndt is not None and getattr(ndt, "has_transactions", False):
+            df = ndt.transactions.data
+            non_market = df[~df["Code"].isin(["P", "S", "p", "s"])]
+            for _, row in non_market.iterrows():
+                txns.append({
+                    "type": _code_to_type(str(row.get("Code", ""))),
+                    "shares": _to_float(row.get("Shares", 0)),
+                    "price": _to_float(row.get("Price", 0)),
+                })
+    except Exception:
+        pass
 
     return txns
 
