@@ -15,7 +15,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 # / signal thresholds
-SURPRISE_THRESHOLD = 0.05  # 5% beat/miss is significant
+SURPRISE_THRESHOLD = 0.02  # 2% beat/miss is significant
 CONSECUTIVE_BEATS_BULLISH = 3  # 3+ consecutive beats = strong signal
 REVISION_THRESHOLD = 0.03  # 3% revision is meaningful
 
