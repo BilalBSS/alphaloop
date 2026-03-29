@@ -72,15 +72,15 @@ async def _query_one(sql: str, *args) -> dict | None:
 async def get_portfolio():
     # / current portfolio value, P&L, positions count
     positions = await _query(
-        """SELECT symbol, side, qty, entry_price, current_price
-        FROM trade_log WHERE exit_price IS NULL"""
+        """SELECT symbol, side, qty, price, strategy_id, created_at
+        FROM trade_log ORDER BY created_at DESC LIMIT 50"""
     )
     trades_today = await _query(
         """SELECT * FROM trade_log
         WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
     )
     return {
-        "positions_count": len(positions),
+        "positions_count": 0,
         "positions": _serialize(positions),
         "trades_today": _serialize(trades_today),
     }
@@ -208,7 +208,7 @@ async def get_symbols():
 async def get_strategies():
     rows = await _query(
         """SELECT * FROM strategy_scores
-        ORDER BY composite_score DESC NULLS LAST"""
+        ORDER BY sharpe_ratio DESC NULLS LAST"""
     )
     return _serialize(rows)
 

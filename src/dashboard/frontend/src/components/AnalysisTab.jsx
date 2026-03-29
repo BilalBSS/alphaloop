@@ -953,7 +953,7 @@ export default function AnalysisTab() {
       <Panel title="Daily Synthesis">
         <SynthesisPanel onSelect={setSelectedSymbol} />
       </Panel>
-      <Panel title="Strategy Evaluation" collapsible defaultOpen={false}>
+      <Panel title="Strategy Evaluation">
         <StrategyEvalPanel onSelect={setSelectedSymbol} />
       </Panel>
       <Panel title="Symbol Analysis">
