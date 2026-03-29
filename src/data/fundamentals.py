@@ -292,19 +292,33 @@ def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
 
 async def fetch_fundamentals(symbol: str) -> dict[str, Any] | None:
     # / try edgar first (authoritative, quarterly filings)
+    edgar_result = None
     async with _edgar_semaphore:
         await asyncio.sleep(_edgar_delay)
         try:
-            result = await asyncio.to_thread(_fetch_edgar_sync, symbol)
-            if result:
-                return result
+            edgar_result = await asyncio.to_thread(_fetch_edgar_sync, symbol)
         except Exception as exc:
             logger.info("edgar_fundamentals_error", symbol=symbol, error=str(exc)[:100])
 
-    # / try finnhub (fast, real-time ratios)
-    result = await _fetch_finnhub(symbol)
-    if result:
-        return result
+    # / always fetch finnhub for price ratios (P/E, P/S, PEG) + sector
+    finnhub_result = await _fetch_finnhub(symbol)
+
+    if edgar_result and finnhub_result:
+        # / merge: edgar financials + finnhub price ratios
+        for key in ("pe_ratio", "pe_forward", "ps_ratio", "peg_ratio", "sector",
+                     "revenue_growth_1y", "debt_to_equity"):
+            if edgar_result.get(key) is None and finnhub_result.get(key) is not None:
+                edgar_result[key] = finnhub_result[key]
+        # / prefer finnhub shares if edgar didn't get them
+        if edgar_result.get("shares_outstanding") is None:
+            edgar_result["shares_outstanding"] = finnhub_result.get("shares_outstanding")
+        return edgar_result
+
+    if edgar_result:
+        return edgar_result
+
+    if finnhub_result:
+        return finnhub_result
 
     # / yfinance last resort
     try:
