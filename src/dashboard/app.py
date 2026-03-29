@@ -435,14 +435,28 @@ async def get_synthesis_history(days: int = 7):
 
 
 @app.get("/api/indicators/{symbol}")
-async def get_indicators(symbol: str, limit: int = 60):
+async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
     limit = max(1, min(limit, 250))
     rows = await _query(
         """SELECT date, rsi14, macd, macd_signal, macd_histogram,
-        adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr
+        adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr, timeframe
         FROM computed_indicators
-        WHERE symbol = $1 ORDER BY date DESC LIMIT $2""",
-        symbol, limit,
+        WHERE symbol = $1 AND timeframe = $2 ORDER BY date DESC LIMIT $3""",
+        symbol, timeframe, limit,
+    )
+    return _serialize(rows)
+
+
+@app.get("/api/intraday/{symbol}")
+async def get_intraday(symbol: str, days: int = 10, timeframe: str = "2Hour"):
+    days = max(1, min(days, 60))
+    rows = await _query(
+        """SELECT timestamp, open, high, low, close, volume, vwap
+        FROM market_data_intraday
+        WHERE symbol = $1 AND timeframe = $2
+            AND timestamp > NOW() - ($3 || ' days')::INTERVAL
+        ORDER BY timestamp ASC""",
+        symbol, timeframe, str(days),
     )
     return _serialize(rows)
 

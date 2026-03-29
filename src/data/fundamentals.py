@@ -86,18 +86,46 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         current_assets = _fin_val(financials.get_current_assets())
         total_cash = current_assets  # / best available proxy, no dedicated cash getter
 
-        # / xbrl fallback for shares_outstanding when standardized getter returns None
-        if shares is None:
+        # / xbrl fallback for fields where standardized getters return None
+        facts = None
+        needs_xbrl = (shares is None or total_cash is None or operating_cf is None
+                      or total_liabilities is None or total_equity is None)
+        if needs_xbrl:
             try:
                 facts = company.get_facts()
-                for concept in ("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding", "CommonStockSharesIssued"):
-                    fact = facts.get(f"us-gaap:{concept}") if facts else None
-                    if fact is not None:
-                        shares = _fin_val(fact)
-                        if shares:
-                            break
             except Exception:
                 pass
+
+        if shares is None:
+            shares = _xbrl_fact(facts, [
+                "EntityCommonStockSharesOutstanding",
+                "CommonStockSharesOutstanding",
+                "CommonStockSharesIssued",
+            ])
+
+        # / real cash instead of current_assets proxy
+        xbrl_cash = _xbrl_fact(facts, [
+            "CashAndCashEquivalentsAtCarryingValue",
+            "CashCashEquivalentsAndShortTermInvestments",
+        ])
+        if xbrl_cash is not None:
+            total_cash = xbrl_cash
+        # / current_assets is already set as fallback from line above
+
+        # / real debt instead of liabilities - equity estimate
+        xbrl_debt = _xbrl_sum(facts, [
+            ["LongTermDebt", "ShortTermBorrowings"],
+            ["LongTermDebtNoncurrent", "DebtCurrent"],
+        ])
+        if xbrl_debt is None:
+            xbrl_debt = _xbrl_fact(facts, ["LongTermDebt", "LongTermDebtNoncurrent"])
+
+        # / ocf xbrl fallback
+        if operating_cf is None:
+            operating_cf = _xbrl_fact(facts, [
+                "NetCashProvidedByOperatingActivities",
+                "NetCashProvidedByOperatingActivitiesContinuingOperations",
+            ])
 
         # / compute derived fields
         if fcf_val is None and operating_cf is not None and capex is not None:
@@ -107,8 +135,10 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         fcf_margin = fcf_val / revenue if (fcf_val is not None and revenue > 0) else None
         rev_growth = (revenue - prev_revenue) / abs(prev_revenue) if (prev_revenue and abs(prev_revenue) > 0) else None
 
-        # / estimate debt from liabilities - equity (no dedicated getter for total debt)
-        total_debt_est = (total_liabilities - total_equity) if (total_liabilities and total_equity) else None
+        # / prefer xbrl debt, fallback to liabilities - equity estimate
+        total_debt_est = xbrl_debt if xbrl_debt is not None else (
+            (total_liabilities - total_equity) if (total_liabilities and total_equity) else None
+        )
         # / net debt = total debt - cash
         net_debt_val = (total_debt_est - total_cash) if (total_debt_est is not None and total_cash is not None) else total_debt_est
 
@@ -154,6 +184,33 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
     except Exception as exc:
         logger.info("edgar_fetch_failed", symbol=symbol, error=str(exc)[:150])
         return None
+
+
+def _xbrl_fact(facts: Any, concepts: list[str]) -> float | None:
+    # / try multiple xbrl concepts in order, return first valid value
+    if facts is None:
+        return None
+    for concept in concepts:
+        try:
+            fact = facts.get(f"us-gaap:{concept}")
+            if fact is not None:
+                val = _fin_val(fact)
+                if val is not None:
+                    return val
+        except Exception:
+            continue
+    return None
+
+
+def _xbrl_sum(facts: Any, concept_groups: list[list[str]]) -> float | None:
+    # / try groups of xbrl concepts, sum each group, return first valid sum
+    if facts is None:
+        return None
+    for group in concept_groups:
+        vals = [_xbrl_fact(facts, [c]) for c in group]
+        if all(v is not None for v in vals):
+            return sum(vals)
+    return None
 
 
 def _fin_val(metric: Any) -> float | None:

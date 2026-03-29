@@ -255,6 +255,88 @@ async def store_bars(pool, bars: list[dict[str, Any]]) -> int:
         return inserted
 
 
+async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str = "2Hour") -> int:
+    # / validate and insert intraday bars, handle duplicates via upsert
+    if not bars:
+        return 0
+
+    async with pool.acquire() as conn:
+        inserted = 0
+        for bar in bars:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO market_data_intraday (symbol, timestamp, timeframe, open, high, low, close, volume, vwap)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT (symbol, timestamp, timeframe) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        vwap = EXCLUDED.vwap
+                    """,
+                    bar["symbol"],
+                    bar["timestamp"],
+                    timeframe,
+                    bar["open"],
+                    bar["high"],
+                    bar["low"],
+                    bar["close"],
+                    bar["volume"],
+                    bar.get("vwap"),
+                )
+                inserted += 1
+            except Exception as exc:
+                logger.warning(
+                    "intraday_bar_insert_failed",
+                    symbol=bar["symbol"],
+                    error=str(exc),
+                )
+
+        logger.info("stored_intraday_bars", count=inserted, timeframe=timeframe)
+        return inserted
+
+
+async def backfill_intraday(
+    pool,
+    symbols: list[str],
+    days: int = 30,
+    timeframe: str = "2Hour",
+) -> dict[str, int]:
+    # / backfill intraday bars, incremental from last stored timestamp
+    end = date.today()
+    start = end - timedelta(days=days)
+    results: dict[str, int] = {}
+
+    for symbol in symbols:
+        try:
+            # / check last stored timestamp for incremental fetch
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT MAX(timestamp) as max_ts FROM market_data_intraday
+                    WHERE symbol = $1 AND timeframe = $2""",
+                    symbol, timeframe,
+                )
+                if row and row["max_ts"]:
+                    fetch_start = row["max_ts"].date()
+                    if fetch_start >= end:
+                        results[symbol] = 0
+                        continue
+                else:
+                    fetch_start = start
+
+            bars = await fetch_bars_alpaca(symbol, fetch_start, end, timeframe=timeframe)
+            count = await store_intraday_bars(pool, bars, timeframe=timeframe)
+            results[symbol] = count
+            logger.info("intraday_backfill_complete", symbol=symbol, bars=count)
+        except Exception as exc:
+            logger.warning("intraday_backfill_failed", symbol=symbol, error=str(exc))
+            results[symbol] = 0
+
+    return results
+
+
 async def backfill(
     pool,
     symbols: list[str],
@@ -301,7 +383,8 @@ def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any]:
     # / normalize alpaca bar response to our format
     timestamp = bar.get("t", "")
     if isinstance(timestamp, str) and "T" in timestamp:
-        bar_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date()
+        bar_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        bar_date = bar_dt.date()
     else:
         logger.warning("unparseable_bar_timestamp", symbol=symbol, timestamp=timestamp)
         return None
@@ -309,6 +392,7 @@ def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "date": bar_date,
+        "timestamp": bar_dt,  # / full datetime for intraday storage
         "open": Decimal(str(bar["o"])),
         "high": Decimal(str(bar["h"])),
         "low": Decimal(str(bar["l"])),

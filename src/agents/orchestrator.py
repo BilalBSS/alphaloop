@@ -31,6 +31,7 @@ ANALYST_OFF_HOURS = 1800         # / 30 minutes (crypto trades 24/7)
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
 DEEPSEEK_INTERVAL = 3600         # / 1 hour
+INTRADAY_INTERVAL = 7200         # / 2 hours
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
 
@@ -96,6 +97,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
+            asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
         ]
 
         try:
@@ -387,3 +389,25 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("crypto_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "crypto_backfill")
+
+    async def _intraday_backfill_loop(self) -> None:
+        # / fetch 2h intraday bars every 2 hours during market hours
+        while not self._stop_event.is_set():
+            if not self._is_market_hours():
+                # / skip during off-hours for equities, wait and check again
+                if await self._wait_or_stop(INTRADAY_INTERVAL):
+                    break
+                continue
+
+            try:
+                from src.data.market_data import backfill_intraday
+                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                results = await backfill_intraday(self._pool, symbols, days=10, timeframe="2Hour")
+                total = sum(results.values())
+                logger.info("intraday_backfill_complete", symbols=len(symbols), bars=total)
+            except Exception as exc:
+                logger.error("intraday_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "intraday_backfill")
+
+            if await self._wait_or_stop(INTRADAY_INTERVAL):
+                break

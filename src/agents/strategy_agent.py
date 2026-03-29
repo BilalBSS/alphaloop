@@ -29,6 +29,7 @@ class StrategyAgent:
     def __init__(self):
         self._filters: dict[str, ParticleFilter] = {}
         self._df_cache: dict[str, pd.DataFrame | None] = {}
+        self._intraday_cache: dict[str, pd.DataFrame | None] = {}
         self._indicators_stored: set[str] = set()  # / track which symbols had indicators stored this cycle
 
     async def _fetch_market_df(
@@ -70,6 +71,7 @@ class StrategyAgent:
         # / evaluate all active strategies against all symbols
         # / returns list of generated signal dicts
         self._df_cache.clear()  # / reset per-cycle cache
+        self._intraday_cache.clear()
         self._indicators_stored.clear()
         signals: list[dict] = []
         stats: dict[str, Any] = {
@@ -264,6 +266,43 @@ class StrategyAgent:
             "strength": smoothed_strength,
         }
 
+    async def _fetch_intraday_df(
+        self, pool, symbol: str, min_bars: int = 20,
+    ) -> pd.DataFrame | None:
+        # / fetch 2h intraday bars, cached per cycle
+        if symbol in self._intraday_cache:
+            return self._intraday_cache[symbol]
+
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT timestamp, open, high, low, close, volume
+                    FROM market_data_intraday WHERE symbol = $1 AND timeframe = '2Hour'
+                    ORDER BY timestamp DESC LIMIT 100""",
+                    symbol,
+                )
+        except Exception:
+            self._intraday_cache[symbol] = None
+            return None
+
+        if len(rows) < min_bars:
+            self._intraday_cache[symbol] = None
+            return None
+
+        rows = list(reversed(rows))
+        df = pd.DataFrame(
+            [{
+                "open": float(r["open"]) if r["open"] else 0,
+                "high": float(r["high"]) if r["high"] else 0,
+                "low": float(r["low"]) if r["low"] else 0,
+                "close": float(r["close"]) if r["close"] else 0,
+                "volume": int(r["volume"]) if r["volume"] else 0,
+            } for r in rows],
+            index=pd.DatetimeIndex([r["timestamp"] for r in rows]),
+        )
+        self._intraday_cache[symbol] = df
+        return df
+
     async def _store_indicators(self, pool, symbol: str, df: pd.DataFrame) -> None:
         # / compute and store latest indicator values, once per symbol per cycle
         if symbol in self._indicators_stored or len(df) < 50:
@@ -297,6 +336,36 @@ class StrategyAgent:
             # / filter NaN
             indicators = {k: (v if v == v else None) for k, v in indicators.items()}
             await tools.store_computed_indicators(pool, symbol, indicators)
+
+            # / compute and store 2h intraday indicators
+            intraday_df = await self._fetch_intraday_df(pool, symbol)
+            if intraday_df is not None and len(intraday_df) >= 20:
+                try:
+                    ic = intraday_df["close"]
+                    ih, il = intraday_df["high"], intraday_df["low"]
+                    intraday_ind = {
+                        "rsi14": float(rsi(ic, 14).iloc[-1]) if len(ic) >= 14 else None,
+                        "macd": None, "macd_signal": None, "macd_histogram": None,
+                        "adx": float(adx(ih, il, ic, 14).iloc[-1]) if len(ic) >= 14 else None,
+                        "sma20": float(sma(ic, 20).iloc[-1]) if len(ic) >= 20 else None,
+                        "sma50": None,
+                        "bb_upper": None, "bb_middle": None, "bb_lower": None,
+                        "atr": float(atr(ih, il, ic, 14).iloc[-1]) if len(ic) >= 14 else None,
+                    }
+                    if len(ic) >= 26:
+                        m = macd(ic, 12, 26, 9)
+                        intraday_ind["macd"] = float(m.macd_line.iloc[-1]) if not m.macd_line.empty else None
+                        intraday_ind["macd_signal"] = float(m.signal_line.iloc[-1]) if not m.signal_line.empty else None
+                        intraday_ind["macd_histogram"] = float(m.histogram.iloc[-1]) if not m.histogram.empty else None
+                    if len(ic) >= 20:
+                        bb_2h = bollinger_bands(ic, 20, 2.0)
+                        intraday_ind["bb_upper"] = float(bb_2h.upper.iloc[-1]) if not bb_2h.upper.empty else None
+                        intraday_ind["bb_middle"] = float(bb_2h.middle.iloc[-1]) if not bb_2h.middle.empty else None
+                        intraday_ind["bb_lower"] = float(bb_2h.lower.iloc[-1]) if not bb_2h.lower.empty else None
+                    intraday_ind = {k: (v if v == v else None) for k, v in intraday_ind.items()}
+                    await tools.store_computed_indicators(pool, symbol, intraday_ind, timeframe="2Hour")
+                except Exception as exc2:
+                    logger.debug("intraday_indicator_compute_failed", symbol=symbol, error=str(exc2))
         except Exception as exc:
             logger.debug("indicator_compute_failed", symbol=symbol, error=str(exc))
 
