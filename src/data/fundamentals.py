@@ -34,6 +34,16 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _pct_to_dec(value: Any) -> float | None:
+    # / finnhub returns some metrics as percentages (18.5 = 18.5%), convert to decimal (0.185)
+    if value is None:
+        return None
+    try:
+        return float(value) / 100.0
+    except (ValueError, TypeError):
+        return None
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -246,16 +256,20 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
             "pe_forward": _safe_decimal(metrics.get("peAnnual")),
             "ps_ratio": _safe_decimal(metrics.get("psTTM")),
             "peg_ratio": _safe_decimal(metrics.get("pegAnnual")),
-            "revenue_growth_1y": _safe_decimal(metrics.get("revenueGrowthQuarterlyYoy")),
-            "revenue_growth_3y": _safe_decimal(metrics.get("revenueGrowth3Y")),
-            "fcf_margin": _safe_decimal(metrics.get("fcfMarginTTM")),
+            # / finnhub returns growth as percentages (18.5 = 18.5%), normalize to decimal (0.185)
+            "revenue_growth_1y": _safe_decimal(_pct_to_dec(metrics.get("revenueGrowthQuarterlyYoy"))),
+            "revenue_growth_3y": _safe_decimal(_pct_to_dec(metrics.get("revenueGrowth3Y"))),
+            "fcf_margin": _safe_decimal(_pct_to_dec(metrics.get("fcfMarginTTM"))),
             "debt_to_equity": _safe_decimal(metrics.get("totalDebt/totalEquityQuarterly")),
             "sector": profile.get("finnhubIndustry", "Unknown"),
             "sector_pe_avg": None,
             "sector_ps_avg": None,
             "total_revenue": _safe_decimal(total_rev),
             "shares_outstanding": shares_int,
-            "net_debt": _safe_decimal(metrics.get("netDebtAnnual")),
+            "net_debt": _safe_decimal(
+                metrics.get("netDebtAnnual") or metrics.get("netDebt") or
+                ((metrics.get("totalDebtMRQ") or 0) - (metrics.get("currentRatioQuarterly") or 0) if metrics.get("totalDebtMRQ") else None)
+            ),
             "data_source": "finnhub",
         }
         logger.info("finnhub_fundamentals_fetched", symbol=symbol)
