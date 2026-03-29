@@ -44,7 +44,8 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
         items = data.get("results", [])
         if not items:
             logger.info("apewisdom_empty_results", filter=filter_type,
-                        keys=list(data.keys())[:5], count=data.get("count", 0))
+                        keys=list(data.keys())[:5], count=data.get("count", 0),
+                        status=resp.status_code, body_len=len(resp.text))
             return result
 
         max_mentions = max((r.get("mentions", 1) for r in items), default=1)
@@ -67,7 +68,7 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
 
         logger.info("apewisdom_fetched", filter=filter_type, count=len(result))
     except Exception as exc:
-        logger.debug("apewisdom_fetch_failed", filter=filter_type, error=str(exc))
+        logger.warning("apewisdom_fetch_failed", filter=filter_type, error=str(exc)[:200])
     return result
 
 

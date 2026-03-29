@@ -7,7 +7,7 @@ import { SkeletonTable, SkeletonChart } from './Skeleton'
 // / tooltip style shared across charts
 const TIP = { background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }
 
-// / format large numbers to human-readable
+// / format large numbers to human-readable (currency)
 function fmtLargeNum(v) {
   const n = parseFloat(v)
   if (isNaN(n)) return '--'
@@ -18,6 +18,19 @@ function fmtLargeNum(v) {
   if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
   if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`
   return `${sign}$${abs.toFixed(2)}`
+}
+
+// / format large counts without dollar sign (shares, units)
+function fmtCount(v) {
+  const n = parseFloat(v)
+  if (isNaN(n)) return '--'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(2)}T`
+  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(2)}B`
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(2)}M`
+  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}K`
+  return `${sign}${abs.toLocaleString()}`
 }
 
 // / color helpers
@@ -376,15 +389,13 @@ function FundamentalsPanel({ fundamentals, score }) {
   const src = fundamentals || {}
   const dataSource = src.data_source || details.data_source
   const edgarRows = [
-    { label: 'Revenue', val: src.revenue || details.revenue },
+    { label: 'Revenue', val: src.total_revenue || src.revenue || details.revenue },
     { label: 'Net Income', val: src.net_income || details.net_income },
     { label: 'Free Cash Flow', val: src.free_cash_flow || details.free_cash_flow },
     { label: 'Total Cash', val: src.total_cash || details.total_cash },
     { label: 'Total Debt', val: src.total_debt || details.total_debt },
     { label: 'Net Debt', val: src.net_debt || details.net_debt },
-    { label: 'Shares Outstanding', val: src.shares_outstanding || details.shares_outstanding },
-    { label: 'Enterprise Value', val: src.enterprise_value || details.enterprise_value },
-    { label: 'Market Cap', val: src.market_cap || details.market_cap },
+    { label: 'Shares Outstanding', val: src.shares_outstanding || details.shares_outstanding, isCount: true },
   ].filter(r => r.val != null)
 
   return (
@@ -423,7 +434,7 @@ function FundamentalsPanel({ fundamentals, score }) {
               {edgarRows.map(r => (
                 <tr key={r.label} className="border-t border-border first:border-t-0" style={{ height: 26 }}>
                   <td className="px-2 py-0.5 text-text-secondary">{r.label}</td>
-                  <td className="px-2 py-0.5 text-right font-mono">{fmtLargeNum(r.val)}</td>
+                  <td className="px-2 py-0.5 text-right font-mono">{r.isCount ? fmtCount(r.val) : fmtLargeNum(r.val)}</td>
                 </tr>
               ))}
             </tbody>
@@ -514,7 +525,11 @@ function InsiderPanel({ insiderTrades, score, symbol }) {
   const netBuy = buyTotal > sellTotal
   const insiderStrength = details.insider_score_100
 
-  const fmtVal = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${(v / 1e3).toFixed(0)}K`
+  const fmtVal = v => {
+    const n = parseFloat(v)
+    if (v == null || isNaN(n) || n === 0) return '--'
+    return n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : `$${(n / 1e3).toFixed(0)}K`
+  }
 
   return (
     <div className="space-y-2">
@@ -623,9 +638,9 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
       {/* fear/greed + vix + social detail rows */}
       {(fng != null || vix != null || mentions > 0) && (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
-          {fng != null && (
+          {isCrypto && fng != null && (
             <div className="bg-bg-primary border border-border p-2">
-              <div className="text-[10px] uppercase text-text-muted">{isCrypto ? 'Crypto F&G' : 'Fear & Greed'}</div>
+              <div className="text-[10px] uppercase text-text-muted">Crypto F&G</div>
               <div className={`text-lg font-mono font-bold ${fngColor(fng)}`}>{parseFloat(fng).toFixed(0)}</div>
               <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>{fngLabel(fng)}</div>
             </div>

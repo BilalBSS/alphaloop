@@ -111,14 +111,22 @@ def _to_float(val: Any) -> float:
 
 
 def _code_to_type(code: str) -> str:
-    c = code.upper()
-    if c == "P":
-        return "buy"
-    if c == "S":
-        return "sell"
-    if c == "M":
-        return "option_exercise"
-    return code or "unknown"
+    # / sec form 4 transaction codes
+    _MAP = {
+        "P": "buy",
+        "S": "sell",
+        "M": "option_exercise",
+        "A": "grant",
+        "C": "conversion",
+        "D": "disposition",
+        "F": "tax_payment",
+        "G": "gift",
+        "I": "discretionary",
+        "J": "other",
+        "W": "will_exercise",
+        "X": "exercise",
+    }
+    return _MAP.get((code or "").upper(), "other")
 
 
 def _get_transactions(form4: Any) -> list[dict[str, Any]]:

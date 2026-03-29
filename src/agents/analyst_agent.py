@@ -171,20 +171,26 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
 
-        # / compute crypto composite: sentiment 0.2, mcap/vol 0.2, funding 0.2, AI 0.4
+        # / compute crypto composite: sentiment 0.15, nvt 0.15, funding 0.15, momentum 0.15, AI 0.4
         components: list[tuple[float, float]] = []
         if sentiment_score is not None and sentiment_score != 0.0:
             sent_100 = max(0.0, min(100.0, (sentiment_score + 1.0) * 50.0))
-            components.append((sent_100, 0.2))
+            components.append((sent_100, 0.15))
         if nvt is not None:
-            # / mcap/vol ratio (uses exchange volume, not on-chain tx volume)
-            # / typical range 1-20: low = high liquidity (bullish), high = low liquidity
             mvr_score = max(0.0, min(100.0, (15.0 - nvt) / 15.0 * 80.0 + 10.0))
-            components.append((mvr_score, 0.2))
+            components.append((mvr_score, 0.15))
         if funding_rate is not None:
-            # / funding rate: negative = bullish (shorts paying), positive = bearish
             fr_score = max(0.0, min(100.0, (0.01 - funding_rate) / 0.02 * 100.0))
-            components.append((fr_score, 0.2))
+            components.append((fr_score, 0.15))
+        # / price momentum: 24h and 7d changes (already fetched, previously unused in scoring)
+        if coin_data:
+            pct_24h = coin_data.get("price_change_24h_pct")
+            pct_7d = coin_data.get("price_change_7d_pct")
+            if pct_24h is not None or pct_7d is not None:
+                # / blend: 60% 7d + 40% 24h, map [-30%, +30%] to [0, 100]
+                avg_pct = ((pct_7d or 0) * 0.6 + (pct_24h or 0) * 0.4)
+                momentum_score = max(0.0, min(100.0, (avg_pct + 30.0) / 60.0 * 100.0))
+                components.append((momentum_score, 0.15))
         if ai_signal:
             signal_map = {"bullish": 80.0, "neutral": 50.0, "bearish": 20.0}
             components.append((signal_map.get(ai_signal, 50.0), 0.4))

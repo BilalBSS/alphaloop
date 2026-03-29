@@ -13,6 +13,7 @@ from typing import Any
 
 import asyncpg
 import structlog
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +22,23 @@ from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
 
-app = FastAPI(title="Quant Trading Dashboard", docs_url="/api/docs")
+_pool: asyncpg.Pool | None = None
+_ws_clients: set[WebSocket] = set()
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _pool
+    _pool = await init_db()
+    if STATIC_DIR.exists():
+        app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    yield
+    await close_db()
+
+
+app = FastAPI(title="Quant Trading Dashboard", docs_url="/api/docs", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,25 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-_pool: asyncpg.Pool | None = None
-_ws_clients: set[WebSocket] = set()
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-
-@app.on_event("startup")
-async def startup():
-    global _pool
-    _pool = await init_db()
-    # / mount react build if it exists
-    if STATIC_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await close_db()
 
 
 async def _query(sql: str, *args) -> list[dict]:
@@ -255,7 +253,8 @@ async def get_health():
         "SELECT created_at FROM evolution_log ORDER BY created_at DESC LIMIT 1"
     )
     last_analysis = await _query_one(
-        "SELECT date FROM analysis_scores ORDER BY date DESC LIMIT 1"
+        """SELECT timestamp FROM system_events
+        WHERE source = 'analyst' ORDER BY timestamp DESC LIMIT 1"""
     )
     last_synthesis = await _query_one(
         "SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"
@@ -380,7 +379,7 @@ async def get_health():
             "cache_hit_ratio": cache_ratio,
         },
         "cycles": {
-            "last_analysis": str(last_analysis["date"]) if last_analysis else None,
+            "last_analysis": str(last_analysis["timestamp"]) if last_analysis else None,
             "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
             "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
             "last_trade": str(last_trade["created_at"]) if last_trade else None,
