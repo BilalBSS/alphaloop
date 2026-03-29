@@ -7,6 +7,19 @@ import { SkeletonTable, SkeletonChart } from './Skeleton'
 // / tooltip style shared across charts
 const TIP = { background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }
 
+// / format large numbers to human-readable
+function fmtLargeNum(v) {
+  const n = parseFloat(v)
+  if (isNaN(n)) return '--'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`
+  return `${sign}$${abs.toFixed(2)}`
+}
+
 // / color helpers
 function scoreColor(v) {
   const n = parseFloat(v || 0)
@@ -346,8 +359,8 @@ function IndicatorsPanel({ symbol }) {
   )
 }
 
-// / fundamentals table with sector comparison
-function FundamentalsPanel({ fundamentals }) {
+// / fundamentals table with sector comparison + edgar raw financials
+function FundamentalsPanel({ fundamentals, score }) {
   if (!fundamentals) return <div className="text-text-muted text-sm py-2">No fundamentals data</div>
   const rows = [
     { label: 'P/E', val: fundamentals.pe_ratio, sector: fundamentals.sector_pe_avg, lower: true },
@@ -357,34 +370,72 @@ function FundamentalsPanel({ fundamentals }) {
     { label: 'D/E', val: fundamentals.debt_to_equity, sector: fundamentals.sector_de_avg, lower: true },
     { label: 'Rev Growth 1Y', val: fundamentals.revenue_growth_1y, sector: fundamentals.sector_rev_growth_avg, lower: false, pct: true },
   ]
+
+  // / edgar raw financials from score details or fundamentals
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
+  const src = fundamentals || {}
+  const dataSource = src.data_source || details.data_source
+  const edgarRows = [
+    { label: 'Revenue', val: src.revenue || details.revenue },
+    { label: 'Net Income', val: src.net_income || details.net_income },
+    { label: 'Free Cash Flow', val: src.free_cash_flow || details.free_cash_flow },
+    { label: 'Total Cash', val: src.total_cash || details.total_cash },
+    { label: 'Total Debt', val: src.total_debt || details.total_debt },
+    { label: 'Net Debt', val: src.net_debt || details.net_debt },
+    { label: 'Shares Outstanding', val: src.shares_outstanding || details.shares_outstanding },
+    { label: 'Enterprise Value', val: src.enterprise_value || details.enterprise_value },
+    { label: 'Market Cap', val: src.market_cap || details.market_cap },
+  ].filter(r => r.val != null)
+
   return (
-    <table className="w-full text-xs">
-      <thead>
-        <tr className="text-text-secondary text-[11px] uppercase">
-          <th className="text-left px-2 py-1">Metric</th>
-          <th className="text-right px-2 py-1">Value</th>
-          <th className="text-right px-2 py-1">Sector</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(r => {
-          const v = parseFloat(r.val || 0)
-          const s = r.sector ? parseFloat(r.sector) : null
-          const better = s !== null ? (r.lower ? v < s : v > s) : null
-          return (
-            <tr key={r.label} className="border-t border-border" style={{ height: 32 }}>
-              <td className="px-2 py-1 text-text-secondary">{r.label}</td>
-              <td className={`px-2 py-1 text-right font-mono ${better === true ? 'text-profit' : better === false ? 'text-loss' : ''}`}>
-                {r.pct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)}
-              </td>
-              <td className="px-2 py-1 text-right font-mono text-text-muted">
-                {s !== null ? (r.pct ? `${(s * 100).toFixed(1)}%` : s.toFixed(2)) : '--'}
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-secondary text-[11px] uppercase">
+            <th className="text-left px-2 py-1">Metric</th>
+            <th className="text-right px-2 py-1">Value</th>
+            <th className="text-right px-2 py-1">Sector</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            const v = parseFloat(r.val || 0)
+            const s = r.sector ? parseFloat(r.sector) : null
+            const better = s !== null ? (r.lower ? v < s : v > s) : null
+            return (
+              <tr key={r.label} className="border-t border-border" style={{ height: 32 }}>
+                <td className="px-2 py-1 text-text-secondary">{r.label}</td>
+                <td className={`px-2 py-1 text-right font-mono ${better === true ? 'text-profit' : better === false ? 'text-loss' : ''}`}>
+                  {r.pct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)}
+                </td>
+                <td className="px-2 py-1 text-right font-mono text-text-muted">
+                  {s !== null ? (r.pct ? `${(s * 100).toFixed(1)}%` : s.toFixed(2)) : '--'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      {edgarRows.length > 0 && (
+        <div className="border-t border-border mt-2 pt-2">
+          <table className="w-full text-[11px]">
+            <tbody>
+              {edgarRows.map(r => (
+                <tr key={r.label} className="border-t border-border first:border-t-0" style={{ height: 26 }}>
+                  <td className="px-2 py-0.5 text-text-secondary">{r.label}</td>
+                  <td className="px-2 py-0.5 text-right font-mono">{fmtLargeNum(r.val)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {dataSource && (
+            <div className="text-[10px] uppercase text-text-muted px-2 pt-1">
+              data source: {dataSource}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -431,10 +482,14 @@ function DcfPanel({ dcf }) {
   )
 }
 
-// / insider activity table with aggregate summary
-function InsiderPanel({ insiderTrades, score }) {
+// / insider activity table with aggregate summary + detailed trades
+function InsiderPanel({ insiderTrades, score, symbol }) {
   const details = (score?.details && typeof score.details === 'object') ? score.details : {}
-  const hasTradeRows = insiderTrades && insiderTrades.length > 0
+  // / fetch richer trades from dedicated endpoint
+  const { data: apiTrades } = useApi(`/api/insider/${symbol}`, 60000)
+  // / prefer api trades, fall back to analysis data
+  const trades = (apiTrades && apiTrades.length > 0) ? apiTrades : insiderTrades
+  const hasTradeRows = trades && trades.length > 0
 
   if (!hasTradeRows) {
     const sig = details.insider_signal
@@ -451,11 +506,9 @@ function InsiderPanel({ insiderTrades, score }) {
     )
   }
 
-  const typeColor = { buy: 'text-profit', sell: 'text-loss', option_exercise: 'text-warning' }
-
   // / compute aggregates from trades
-  const buys = insiderTrades.filter(t => t.transaction_type === 'buy')
-  const sells = insiderTrades.filter(t => t.transaction_type === 'sell')
+  const buys = trades.filter(t => t.transaction_type === 'buy')
+  const sells = trades.filter(t => t.transaction_type === 'sell')
   const buyTotal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
   const sellTotal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
   const netBuy = buyTotal > sellTotal
@@ -481,40 +534,57 @@ function InsiderPanel({ insiderTrades, score }) {
           </div>
         </div>
       )}
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-text-secondary text-[11px] uppercase">
-            <th className="text-left px-2 py-1">Date</th>
-            <th className="text-left px-2 py-1">Name</th>
-            <th className="text-left px-2 py-1">Type</th>
-            <th className="text-right px-2 py-1">Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          {insiderTrades.slice(0, 10).map((t, i) => (
-            <tr key={i} className="border-t border-border" style={{ height: 32 }}>
-              <td className="px-2 py-1 text-text-muted">{t.filing_date?.split('T')[0] || '--'}</td>
-              <td className="px-2 py-1 truncate max-w-[100px]" title={`${t.insider_name} (${t.insider_title})`}>
-                {t.insider_name}
-              </td>
-              <td className={`px-2 py-1 uppercase ${typeColor[t.transaction_type] || ''}`}>
-                {t.transaction_type}
-              </td>
-              <td className="px-2 py-1 text-right font-mono">
-                ${parseFloat(t.total_value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              </td>
+      {/* detailed trades table */}
+      <div style={{ maxHeight: 288, overflowY: 'auto' }}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-text-secondary text-[11px] uppercase">
+              <th className="text-left px-2 py-1">Date</th>
+              <th className="text-left px-2 py-1">Name</th>
+              <th className="text-left px-2 py-1">Title</th>
+              <th className="text-left px-2 py-1">Type</th>
+              <th className="text-right px-2 py-1">Shares</th>
+              <th className="text-right px-2 py-1">Value</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {trades.map((t, i) => {
+              const isBuy = t.transaction_type === 'buy'
+              return (
+                <tr key={i} className={`border-t border-border border-l-2 ${isBuy ? 'border-l-profit' : 'border-l-loss'}`} style={{ height: 32 }}>
+                  <td className="px-2 py-1 text-text-muted whitespace-nowrap">
+                    {t.filing_date?.split('T')[0] || '--'}
+                  </td>
+                  <td className="px-2 py-1 truncate max-w-[100px]" title={t.insider_name}>
+                    {t.insider_name || '--'}
+                  </td>
+                  <td className="px-2 py-1 text-text-muted truncate max-w-[80px]" title={t.insider_title}>
+                    {t.insider_title || '--'}
+                  </td>
+                  <td className={`px-2 py-1 uppercase font-semibold ${isBuy ? 'text-profit' : 'text-loss'}`}>
+                    {t.transaction_type || '--'}
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono">
+                    {parseInt(t.shares || 0).toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono">
+                    {fmtVal(parseFloat(t.total_value || 0))}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-// / sentiment panel: news bar chart + social summary with bullish/bearish bars
-function SentimentPanel({ sentiment, socialSentiment, isCrypto }) {
+// / sentiment panel: news chart + fear/greed + vix + social detail
+function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
   const hasNews = sentiment && sentiment.length > 0
   const latestSocial = socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null
+  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
 
   const chartData = hasNews
     ? sentiment.slice().reverse().map(s => ({
@@ -527,8 +597,64 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto }) {
   const bearPct = latestSocial ? parseFloat(latestSocial.bearish_pct || 0) : 0
   const mentions = latestSocial ? parseInt(latestSocial.volume || 0) : 0
 
+  // / fear/greed + vix from score details
+  const fng = details.fear_greed_index || details.fear_greed || latestSocial?.raw_score
+  const vix = details.vix || details.vix_level
+
+  const fngLabel = v => {
+    const n = parseFloat(v)
+    if (isNaN(n)) return '--'
+    if (n <= 20) return 'Extreme Fear'
+    if (n <= 40) return 'Fear'
+    if (n <= 60) return 'Neutral'
+    if (n <= 80) return 'Greed'
+    return 'Extreme Greed'
+  }
+  const fngColor = v => {
+    const n = parseFloat(v)
+    if (isNaN(n)) return ''
+    if (n <= 30) return 'text-loss'
+    if (n <= 60) return 'text-warning'
+    return 'text-profit'
+  }
+
   return (
     <div className="space-y-3">
+      {/* fear/greed + vix + social detail rows */}
+      {(fng != null || vix != null || mentions > 0) && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+          {fng != null && (
+            <div className="bg-bg-primary border border-border p-2">
+              <div className="text-[10px] uppercase text-text-muted">{isCrypto ? 'Crypto F&G' : 'Fear & Greed'}</div>
+              <div className={`text-lg font-mono font-bold ${fngColor(fng)}`}>{parseFloat(fng).toFixed(0)}</div>
+              <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>{fngLabel(fng)}</div>
+            </div>
+          )}
+          {vix != null && (
+            <div className="bg-bg-primary border border-border p-2">
+              <div className="text-[10px] uppercase text-text-muted">VIX</div>
+              <div className={`text-lg font-mono font-bold ${parseFloat(vix) > 25 ? 'text-loss' : parseFloat(vix) > 18 ? 'text-warning' : 'text-profit'}`}>
+                {parseFloat(vix).toFixed(1)}
+              </div>
+              <div className="text-[10px] text-text-muted">
+                {parseFloat(vix) > 25 ? 'High Vol' : parseFloat(vix) > 18 ? 'Elevated' : 'Low Vol'}
+              </div>
+            </div>
+          )}
+          {mentions > 0 && (
+            <div className="bg-bg-primary border border-border p-2">
+              <div className="text-[10px] uppercase text-text-muted">{latestSocial?.source || 'Social'} Mentions</div>
+              <div className="text-lg font-mono font-bold text-text-primary">{mentions.toLocaleString()}</div>
+              {(bullPct > 0 || bearPct > 0) && (
+                <div className="text-[10px] font-mono">
+                  <span className="text-profit">{(bullPct * 100).toFixed(0)}%</span>
+                  <span className="text-text-muted"> bull</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {hasNews ? (
         <>
           <div className="text-[10px] uppercase text-text-muted px-1">
@@ -841,243 +967,8 @@ function SignalsPanel({ signals }) {
   )
 }
 
-// / edgar fundamentals: raw financial data from analysis details
-function EdgarFundamentalsPanel({ score, fundamentals }) {
-  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
 
-  // / pull raw data from details or fundamentals
-  const src = fundamentals || {}
-  const dataSource = src.data_source || details.data_source || '--'
 
-  const rows = [
-    { label: 'Revenue', val: src.revenue || details.revenue, fmt: v => fmtLargeNum(v) },
-    { label: 'Free Cash Flow', val: src.free_cash_flow || details.free_cash_flow, fmt: v => fmtLargeNum(v) },
-    { label: 'Shares Outstanding', val: src.shares_outstanding || details.shares_outstanding, fmt: v => fmtLargeNum(v) },
-    { label: 'Net Debt', val: src.net_debt || details.net_debt, fmt: v => fmtLargeNum(v) },
-    { label: 'Total Debt', val: src.total_debt || details.total_debt, fmt: v => fmtLargeNum(v) },
-    { label: 'Total Cash', val: src.total_cash || details.total_cash, fmt: v => fmtLargeNum(v) },
-    { label: 'Market Cap', val: src.market_cap || details.market_cap, fmt: v => fmtLargeNum(v) },
-    { label: 'Enterprise Value', val: src.enterprise_value || details.enterprise_value, fmt: v => fmtLargeNum(v) },
-  ]
-
-  const hasData = rows.some(r => r.val != null)
-  if (!hasData) return <div className="text-text-muted text-sm py-2">No EDGAR/fundamental data available</div>
-
-  return (
-    <div className="space-y-2">
-      <div className="text-[10px] uppercase text-text-muted px-1">
-        Source: <span className="font-semibold">{dataSource}</span>
-      </div>
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-text-secondary text-[11px] uppercase">
-            <th className="text-left px-2 py-1">Metric</th>
-            <th className="text-right px-2 py-1">Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(r => {
-            if (r.val == null) return null
-            return (
-              <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
-                <td className="px-2 py-1 text-text-secondary">{r.label}</td>
-                <td className="px-2 py-1 text-right font-mono">{r.fmt(r.val)}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// / format large numbers to human-readable
-function fmtLargeNum(v) {
-  const n = parseFloat(v)
-  if (isNaN(n)) return '--'
-  const abs = Math.abs(n)
-  const sign = n < 0 ? '-' : ''
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
-  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`
-  return `${sign}$${abs.toFixed(2)}`
-}
-
-// / insider trades panel: fetches from /api/insider/{symbol}
-function InsiderTradesPanel({ symbol }) {
-  const { data, loading } = useApi(`/api/insider/${symbol}`, 60000)
-
-  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
-
-  if (!data || data.length === 0) {
-    return <div className="text-text-muted text-sm py-2">No insider trades in last 90 days</div>
-  }
-
-  const fmtVal = v => {
-    const n = parseFloat(v || 0)
-    if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`
-    if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`
-    return `$${n.toFixed(0)}`
-  }
-
-  // / aggregate stats
-  const buys = data.filter(t => t.transaction_type === 'buy')
-  const sells = data.filter(t => t.transaction_type === 'sell')
-  const buyVal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
-  const sellVal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
-
-  return (
-    <div className="space-y-2">
-      {/* aggregate summary */}
-      <div className="flex gap-4 text-xs px-1">
-        <span className="text-profit font-mono">{buys.length} buys ({fmtVal(buyVal)})</span>
-        <span className="text-loss font-mono">{sells.length} sells ({fmtVal(sellVal)})</span>
-      </div>
-      <div style={{ maxHeight: 280, overflowY: 'auto' }}>
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-text-secondary text-[11px] uppercase">
-              <th className="text-left px-2 py-1">Date</th>
-              <th className="text-left px-2 py-1">Name</th>
-              <th className="text-left px-2 py-1">Title</th>
-              <th className="text-left px-2 py-1">Type</th>
-              <th className="text-right px-2 py-1">Shares</th>
-              <th className="text-right px-2 py-1">Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((t, i) => {
-              const isBuy = t.transaction_type === 'buy'
-              const rowColor = isBuy ? 'border-l-profit' : 'border-l-loss'
-              return (
-                <tr key={i} className={`border-t border-border border-l-2 ${rowColor}`} style={{ height: 32 }}>
-                  <td className="px-2 py-1 text-text-muted whitespace-nowrap">
-                    {t.filing_date?.split('T')[0] || '--'}
-                  </td>
-                  <td className="px-2 py-1 truncate max-w-[120px]" title={t.insider_name}>
-                    {t.insider_name || '--'}
-                  </td>
-                  <td className="px-2 py-1 text-text-muted truncate max-w-[100px]" title={t.insider_title}>
-                    {t.insider_title || '--'}
-                  </td>
-                  <td className={`px-2 py-1 uppercase font-semibold ${isBuy ? 'text-profit' : 'text-loss'}`}>
-                    {t.transaction_type || '--'}
-                  </td>
-                  <td className="px-2 py-1 text-right font-mono">
-                    {parseInt(t.shares || 0).toLocaleString()}
-                  </td>
-                  <td className="px-2 py-1 text-right font-mono">
-                    {fmtVal(t.total_value)}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// / sentiment detail: fear/greed, vix, social mentions breakdown
-function SentimentDetailPanel({ score, socialSentiment, isCrypto }) {
-  const details = (score?.details && typeof score.details === 'object') ? score.details : {}
-  const latestSocial = socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null
-
-  const fng = details.fear_greed_index || details.fear_greed || latestSocial?.raw_score
-  const vix = details.vix || details.vix_level
-  const mentions = latestSocial ? parseInt(latestSocial.volume || 0) : 0
-  const bullPct = latestSocial ? parseFloat(latestSocial.bullish_pct || 0) : 0
-  const bearPct = latestSocial ? parseFloat(latestSocial.bearish_pct || 0) : 0
-  const source = latestSocial?.source || 'social'
-
-  // / fear/greed label
-  function fngLabel(v) {
-    const n = parseFloat(v)
-    if (isNaN(n)) return '--'
-    if (n <= 20) return 'Extreme Fear'
-    if (n <= 40) return 'Fear'
-    if (n <= 60) return 'Neutral'
-    if (n <= 80) return 'Greed'
-    return 'Extreme Greed'
-  }
-
-  function fngColor(v) {
-    const n = parseFloat(v)
-    if (isNaN(n)) return ''
-    if (n <= 30) return 'text-loss'
-    if (n <= 60) return 'text-warning'
-    return 'text-profit'
-  }
-
-  const hasAnyData = fng != null || vix != null || mentions > 0 || bullPct > 0
-
-  if (!hasAnyData) {
-    return <div className="text-text-muted text-sm py-2">No sentiment detail available</div>
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {/* fear & greed */}
-        {fng != null && (
-          <div className="bg-bg-primary border border-border p-3">
-            <div className="text-[10px] uppercase text-text-muted mb-1">
-              {isCrypto ? 'Crypto F&G' : 'Fear & Greed'}
-            </div>
-            <div className={`text-xl font-mono font-bold ${fngColor(fng)}`}>
-              {parseFloat(fng).toFixed(0)}
-            </div>
-            <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>
-              {fngLabel(fng)}
-            </div>
-          </div>
-        )}
-
-        {/* vix */}
-        {vix != null && (
-          <div className="bg-bg-primary border border-border p-3">
-            <div className="text-[10px] uppercase text-text-muted mb-1">VIX</div>
-            <div className={`text-xl font-mono font-bold ${parseFloat(vix) > 25 ? 'text-loss' : parseFloat(vix) > 18 ? 'text-warning' : 'text-profit'}`}>
-              {parseFloat(vix).toFixed(1)}
-            </div>
-            <div className="text-[10px] text-text-muted">
-              {parseFloat(vix) > 25 ? 'High Vol' : parseFloat(vix) > 18 ? 'Elevated' : 'Low Vol'}
-            </div>
-          </div>
-        )}
-
-        {/* social mentions */}
-        {mentions > 0 && (
-          <div className="bg-bg-primary border border-border p-3">
-            <div className="text-[10px] uppercase text-text-muted mb-1">
-              {source} Mentions
-            </div>
-            <div className="text-xl font-mono font-bold text-text-primary">
-              {mentions.toLocaleString()}
-            </div>
-          </div>
-        )}
-
-        {/* bullish pct */}
-        {(bullPct > 0 || bearPct > 0) && (
-          <div className="bg-bg-primary border border-border p-3">
-            <div className="text-[10px] uppercase text-text-muted mb-1">Bullish %</div>
-            <div className={`text-xl font-mono font-bold ${bullPct > bearPct ? 'text-profit' : 'text-loss'}`}>
-              {(bullPct * 100).toFixed(0)}%
-            </div>
-            <div className="flex h-1.5 w-full overflow-hidden rounded mt-1">
-              <div className="bg-profit" style={{ width: `${bullPct * 100}%` }} />
-              <div className="bg-loss" style={{ width: `${bearPct * 100}%` }} />
-              <div className="bg-bg-primary flex-1" />
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // / detail view: fetches its own data, keyed on symbol for clean remount
 function SymbolDetail({ symbol, onBack }) {
@@ -1125,7 +1016,7 @@ function SymbolDetail({ symbol, onBack }) {
           <IndicatorsPanel symbol={symbol} />
         </Panel>
         <Panel title="Fundamentals">
-          <FundamentalsPanel fundamentals={d.fundamentals} />
+          <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />
         </Panel>
         <Panel title="DCF Valuation">
           <DcfPanel dcf={d.dcf} />
@@ -1136,46 +1027,29 @@ function SymbolDetail({ symbol, onBack }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Sentiment">
           <SentimentPanel sentiment={d.sentiment} socialSentiment={d.social_sentiment}
-            isCrypto={symbol.includes('-USD') || symbol.includes('/')} />
+            isCrypto={symbol.includes('-USD') || symbol.includes('/')} score={d.score} />
         </Panel>
         <Panel title="Insider Activity">
-          <InsiderPanel insiderTrades={d.insider_trades} score={d.score} />
+          <InsiderPanel insiderTrades={d.insider_trades} score={d.score} symbol={symbol} />
         </Panel>
       </div>
 
-      {/* row 5: edgar + insider trades + sentiment detail (collapsible) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <Panel title="EDGAR Fundamentals" collapsible defaultOpen={false}>
-          <EdgarFundamentalsPanel score={d.score} fundamentals={d.fundamentals} />
-        </Panel>
-        <Panel title="Insider Trades (90d)" collapsible defaultOpen={false}>
-          <InsiderTradesPanel symbol={symbol} />
-        </Panel>
-        <Panel title="Sentiment Detail" collapsible defaultOpen={false}>
-          <SentimentDetailPanel
-            score={d.score}
-            socialSentiment={d.social_sentiment}
-            isCrypto={symbol.includes('-USD') || symbol.includes('/')}
-          />
-        </Panel>
-      </div>
-
-      {/* row 6: ai analysis — stacked vertical */}
+      {/* row 5: ai analysis — stacked vertical */}
       <Panel title="AI Analysis">
         <AiAnalysisPanel score={d.score} />
       </Panel>
 
-      {/* row 7: quant metrics */}
+      {/* row 6: quant metrics */}
       <Panel title="Quant Metrics">
         <QuantMetricsPanel symbol={symbol} />
       </Panel>
 
-      {/* row 8: evolution history */}
+      {/* row 7: evolution history */}
       <Panel title="Evolution History">
         <EvolutionPanel evolution={d.evolution} />
       </Panel>
 
-      {/* row 9: trades + signals */}
+      {/* row 8: trades + signals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Trade History">
           <TradeHistoryPanel trades={d.trades} />
