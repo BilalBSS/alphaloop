@@ -324,49 +324,110 @@ function PriceChart({ priceHistory }) {
   )
 }
 
-// / technical indicators panel
+// / price panel with daily/2h toggle
+function PricePanel({ symbol, priceHistory }) {
+  const [tf, setTf] = useState('daily')
+  return (
+    <Panel title={
+      <div className="flex items-center gap-3">
+        <span>Price History</span>
+        <div className="flex gap-1">
+          {['daily', '2h'].map(t => (
+            <button key={t} onClick={() => setTf(t)}
+              className={`px-2 py-0.5 text-[11px] uppercase font-semibold border ${
+                tf === t ? 'border-accent text-accent' : 'border-border text-text-muted hover:text-text-primary'
+              }`}>{t}</button>
+          ))}
+        </div>
+      </div>
+    }>
+      {tf === 'daily'
+        ? <PriceChart priceHistory={priceHistory} />
+        : <IntradayChart symbol={symbol} />}
+    </Panel>
+  )
+}
+
+
+// / 2h intraday price chart
+function IntradayChart({ symbol }) {
+  const { data, loading } = useApi(`/api/intraday/${symbol}?days=10&timeframe=2Hour`, 60000)
+
+  if (loading && !data) return <div className="flex items-center justify-center h-48 text-text-muted text-sm">Loading intraday...</div>
+  if (!data || data.length === 0) {
+    return <div className="flex items-center justify-center h-48 text-text-muted text-sm">No intraday data yet</div>
+  }
+  const chartData = data.map(d => ({
+    time: (d.timestamp || '').replace('T', ' ').slice(0, 16),
+    close: parseFloat(d.close || 0),
+    volume: parseInt(d.volume || 0),
+  }))
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={chartData}>
+        <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
+        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10, fill: '#8888a0' }} width={60}
+          tickFormatter={v => `$${v}`} />
+        <Tooltip contentStyle={TIP} labelStyle={{ color: '#8888a0' }}
+          formatter={v => [`$${v.toFixed(2)}`, 'Close']} />
+        <Line type="monotone" dataKey="close" stroke="#f59e0b" strokeWidth={2} dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
+  )
+}
+
+
+// / technical indicators panel with daily + 2h
 function IndicatorsPanel({ symbol }) {
   const { data, loading } = useApi(`/api/indicators/${symbol}?limit=1`, 60000)
+  const { data: data2h } = useApi(`/api/indicators/${symbol}?limit=1&timeframe=2Hour`, 60000)
 
   if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
 
   const latest = Array.isArray(data) && data.length > 0 ? data[0] : null
+  const latest2h = Array.isArray(data2h) && data2h.length > 0 ? data2h[0] : null
   if (!latest) return <div className="text-text-muted text-sm py-2">No indicator data yet</div>
 
-  const rows = [
-    { label: 'RSI (14)', val: latest.rsi14, fmt: v => v?.toFixed(1), color: v => v > 70 ? 'text-loss' : v < 30 ? 'text-profit' : '' },
-    { label: 'MACD', val: latest.macd, fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
-    { label: 'MACD Signal', val: latest.macd_signal, fmt: v => v?.toFixed(4) },
-    { label: 'MACD Hist', val: latest.macd_histogram, fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
-    { label: 'ADX', val: latest.adx, fmt: v => v?.toFixed(1), color: v => v > 25 ? 'text-profit' : 'text-text-muted' },
-    { label: 'SMA 20', val: latest.sma20, fmt: v => `$${v?.toFixed(2)}` },
-    { label: 'SMA 50', val: latest.sma50, fmt: v => `$${v?.toFixed(2)}` },
-    { label: 'BB Upper', val: latest.bb_upper, fmt: v => `$${v?.toFixed(2)}` },
-    { label: 'BB Middle', val: latest.bb_middle, fmt: v => `$${v?.toFixed(2)}` },
-    { label: 'BB Lower', val: latest.bb_lower, fmt: v => `$${v?.toFixed(2)}` },
-    { label: 'ATR (14)', val: latest.atr, fmt: v => v?.toFixed(4) },
+  const indRows = [
+    { label: 'RSI (14)', key: 'rsi14', fmt: v => v?.toFixed(1), color: v => v > 70 ? 'text-loss' : v < 30 ? 'text-profit' : '' },
+    { label: 'MACD', key: 'macd', fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
+    { label: 'MACD Hist', key: 'macd_histogram', fmt: v => v?.toFixed(4), color: v => v > 0 ? 'text-profit' : 'text-loss' },
+    { label: 'ADX', key: 'adx', fmt: v => v?.toFixed(1), color: v => v > 25 ? 'text-profit' : 'text-text-muted' },
+    { label: 'SMA 20', key: 'sma20', fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'BB Upper', key: 'bb_upper', fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'BB Lower', key: 'bb_lower', fmt: v => `$${v?.toFixed(2)}` },
+    { label: 'ATR (14)', key: 'atr', fmt: v => v?.toFixed(4) },
   ]
+
+  function renderVal(src, r) {
+    if (!src) return '--'
+    const v = parseFloat(src[r.key])
+    if (isNaN(v)) return '--'
+    return r.fmt(v)
+  }
+  function renderCls(src, r) {
+    if (!src || !r.color) return ''
+    const v = parseFloat(src[r.key])
+    return isNaN(v) ? '' : r.color(v)
+  }
 
   return (
     <table className="w-full text-xs">
       <thead>
         <tr className="text-text-secondary text-[11px] uppercase">
           <th className="text-left px-2 py-1">Indicator</th>
-          <th className="text-right px-2 py-1">Value</th>
+          <th className="text-right px-2 py-1">Daily</th>
+          {latest2h && <th className="text-right px-2 py-1 text-warning">2h</th>}
         </tr>
       </thead>
       <tbody>
-        {rows.map(r => {
-          const v = parseFloat(r.val)
-          const display = isNaN(v) ? '--' : r.fmt(v)
-          const cls = r.color && !isNaN(v) ? r.color(v) : ''
-          return (
-            <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
-              <td className="px-2 py-1">{r.label}</td>
-              <td className={`px-2 py-1 text-right font-mono ${cls}`}>{display}</td>
-            </tr>
-          )
-        })}
+        {indRows.map(r => (
+          <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
+            <td className="px-2 py-1">{r.label}</td>
+            <td className={`px-2 py-1 text-right font-mono ${renderCls(latest, r)}`}>{renderVal(latest, r)}</td>
+            {latest2h && <td className={`px-2 py-1 text-right font-mono ${renderCls(latest2h, r)}`}>{renderVal(latest2h, r)}</td>}
+          </tr>
+        ))}
       </tbody>
     </table>
   )
@@ -1020,10 +1081,8 @@ function SymbolDetail({ symbol, onBack }) {
         <ScoreOverview score={d.score} />
       </Panel>
 
-      {/* row 2: price chart */}
-      <Panel title="Price History (60d)">
-        <PriceChart priceHistory={d.price_history} />
-      </Panel>
+      {/* row 2: price chart with timeframe toggle */}
+      <PricePanel symbol={symbol} priceHistory={d.price_history} />
 
       {/* row 3: indicators + fundamentals + dcf */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">

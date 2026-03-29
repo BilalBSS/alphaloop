@@ -84,6 +84,40 @@ async def fetch_coin_market_chart(
     }
 
 
+@with_retry(source="coingecko", max_retries=2, base_delay=3.0)
+async def fetch_coin_ohlc(
+    symbol: str, days: int = 30,
+) -> list[dict[str, Any]] | None:
+    # / fetch ohlcv candles from coingecko (4h granularity for 1-30 days)
+    cg_id = _cg_id(symbol)
+    if not cg_id:
+        return None
+
+    url = f"{COINGECKO_BASE}/coins/{cg_id}/ohlc"
+    params = {"vs_currency": "usd", "days": str(days)}
+    resp = await api_get(url, params=params, source="coingecko")
+    data = resp.json()
+
+    if not isinstance(data, list):
+        return None
+
+    candles = []
+    for row in data:
+        # / coingecko returns [timestamp_ms, open, high, low, close]
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        candles.append({
+            "timestamp": row[0],  # / ms since epoch
+            "open": row[1],
+            "high": row[2],
+            "low": row[3],
+            "close": row[4],
+        })
+
+    logger.info("fetched_coin_ohlc", symbol=symbol, candles=len(candles))
+    return candles
+
+
 @with_retry(source="defillama", max_retries=2, base_delay=1.0)
 async def fetch_defi_tvl(protocol: str | None = None) -> dict[str, Any]:
     # / fetch total value locked — all protocols or specific one

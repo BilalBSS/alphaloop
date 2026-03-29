@@ -24,12 +24,20 @@ def vwap(
     low: pd.Series,
     close: pd.Series,
     volume: pd.Series,
+    dates: pd.Series | None = None,
 ) -> pd.Series:
     # / volume-weighted average price (cumulative within session)
-    # / for daily bars this gives a running vwap across the period
+    # / dates param: pass bar dates to reset cumsum at each session boundary
+    # / without dates: running vwap across entire series (daily bars)
     tp = (high + low + close) / 3
-    cum_tp_vol = (tp * volume).cumsum()
-    cum_vol = volume.cumsum()
+    tp_vol = tp * volume
+    if dates is not None:
+        # / group by date, cumsum within each session
+        cum_tp_vol = tp_vol.groupby(dates).cumsum()
+        cum_vol = volume.groupby(dates).cumsum()
+    else:
+        cum_tp_vol = tp_vol.cumsum()
+        cum_vol = volume.cumsum()
     return cum_tp_vol / cum_vol.replace(0, np.nan)
 
 
