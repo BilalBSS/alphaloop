@@ -83,7 +83,8 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         total_equity = _fin_val(financials.get_stockholders_equity())
         total_liabilities = _fin_val(financials.get_total_liabilities())
         net_income = _fin_val(financials.get_net_income())
-        total_cash = _fin_val(financials.get_cash_and_equivalents())
+        current_assets = _fin_val(financials.get_current_assets())
+        total_cash = current_assets  # / best available proxy, no dedicated cash getter
 
         # / xbrl fallback for shares_outstanding when standardized getter returns None
         if shares is None:
@@ -101,6 +102,8 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         # / compute derived fields
         if fcf_val is None and operating_cf is not None and capex is not None:
             fcf_val = operating_cf - abs(capex)
+        if fcf_val is None and net_income is not None and capex is not None:
+            fcf_val = net_income - abs(capex)
         fcf_margin = fcf_val / revenue if (fcf_val is not None and revenue > 0) else None
         rev_growth = (revenue - prev_revenue) / abs(prev_revenue) if (prev_revenue and abs(prev_revenue) > 0) else None
 
