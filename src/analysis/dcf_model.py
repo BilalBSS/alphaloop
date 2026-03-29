@@ -204,30 +204,45 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
         logger.warning("no_fundamentals_for_dcf", symbol=symbol)
         return None
 
-    # / estimate revenue from pe and price (pe = price / eps, revenue ~ eps * shares * ps)
-    # / use fcf_margin directly, estimate revenue from price * ps if available
     fcf_margin = float(fund_row["fcf_margin"]) if fund_row["fcf_margin"] else 0.10
     revenue_growth = float(fund_row["revenue_growth_1y"]) if fund_row["revenue_growth_1y"] else 0.05
-    de = float(fund_row["debt_to_equity"]) if fund_row["debt_to_equity"] else 0.0
-
     price = float(price_row["close"]) if price_row else 0.0
-    ps = float(fund_row["ps_ratio"]) if fund_row["ps_ratio"] else None
 
-    # / rough revenue estimate: market_cap / ps_ratio
-    # / market_cap ~ price * shares, but we don't have shares
-    # / use ps_ratio inversely: revenue_per_share = price / ps
-    if ps and ps > 0 and price > 0:
-        revenue_per_share = price / ps
-        revenue = revenue_per_share  # per-share basis
+    # / use real shares_outstanding and total_revenue from edgar/finnhub when available
+    shares = float(fund_row["shares_outstanding"]) if fund_row.get("shares_outstanding") else None
+    total_rev = float(fund_row["total_revenue"]) if fund_row.get("total_revenue") else None
+    net_debt_val = float(fund_row["net_debt"]) if fund_row.get("net_debt") else 0.0
+
+    if total_rev and shares and shares > 0:
+        # / real revenue and shares available — compute total DCF
+        revenue = total_rev
+        shares_out = shares
     else:
-        revenue = price * 0.3 if price > 0 else 100.0  # rough fallback
+        # / fallback: per-share basis using P/S ratio
+        ps = float(fund_row["ps_ratio"]) if fund_row["ps_ratio"] else None
+        if ps and ps > 0 and price > 0:
+            revenue = price / ps  # revenue per share
+        else:
+            revenue = price * 0.3 if price > 0 else 100.0
+        shares_out = 1.0
+        net_debt_val = 0.0  # / can't use total net debt with per-share revenue
+
+    # / margin expansion: high-growth companies with thin margins will likely expand
+    target_margin = 0.15
+    if fcf_margin < target_margin and revenue_growth > 0.08:
+        margin_expansion = (target_margin - fcf_margin) * 0.5
+        fcf_margin = fcf_margin + margin_expansion
+        margin_std = 0.05
+    else:
+        margin_std = 0.03
 
     return DCFAssumptions(
         revenue=revenue,
         fcf_margin=fcf_margin,
         revenue_growth=revenue_growth,
-        net_debt=0.0,  # simplified — would need balance sheet data
-        shares_outstanding=1.0,  # per-share basis
+        margin_std=margin_std,
+        net_debt=net_debt_val,
+        shares_outstanding=shares_out,
     )
 
 

@@ -11,6 +11,14 @@
   "promotion_min_sharpe": 0.8,
   "promotion_min_win_rate": 0.45,
 
+  "evolution": {
+    "tier2_spawn_trades": 20,
+    "tier2_kill_trades": 20,
+    "tier3_graduate_trades": 100,
+    "tier3_sharpe_delta": 0.2,
+    "tier2_param_freedom": 0.20
+  },
+
   "tracks": {
     "fundamental_gated": {
       "max_position_pct": 0.08,

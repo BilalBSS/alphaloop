@@ -1,0 +1,127 @@
+# / executor agent — places orders for approved trades
+# / logs results to trade_log, updates approved_trades status
+# / guards against double execution
+
+from __future__ import annotations
+
+from typing import Any
+
+import structlog
+
+from src.agents import tools
+from src.brokers.base import BrokerInterface
+from src.notifications.notifier import notify_trade_executed, notify_trade_error
+
+logger = structlog.get_logger(__name__)
+
+
+class ExecutorAgent:
+
+    async def execute_trade(
+        self, pool, trade_id: int, broker: BrokerInterface,
+    ) -> dict:
+        # / place order for one approved trade
+        # / fetch approved trade
+        async with pool.acquire() as conn:
+            trade = await conn.fetchrow(
+                "SELECT * FROM approved_trades WHERE id = $1", trade_id,
+            )
+        if not trade:
+            return {"status": "error", "reason": "trade_not_found"}
+
+        trade = dict(trade)
+
+        # / atomic guard against double execution — WHERE status = 'pending'
+        # / prevents toctou race between check and update
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE approved_trades SET status = 'executing' WHERE id = $1 AND status = 'pending'",
+                trade_id,
+            )
+        if result != "UPDATE 1":
+            logger.warning(
+                "executor_skip_non_pending",
+                trade_id=trade_id, status=trade["status"],
+            )
+            return {"status": "skipped", "reason": f"status_is_{trade['status']}"}
+
+        symbol = trade["symbol"]
+        side = trade["side"]
+        qty = float(trade["qty"])
+        order_type = trade.get("order_type", "market")
+        strategy_id = trade.get("strategy_id")
+
+        try:
+            order = await broker.place_order(
+                symbol=symbol, qty=qty, side=side, order_type=order_type,
+            )
+        except Exception as exc:
+            logger.error(
+                "executor_order_failed",
+                trade_id=trade_id, symbol=symbol, error=str(exc),
+            )
+            await tools.update_trade_status(pool, "approved_trades", trade_id, "error")
+            notify_trade_error(symbol, side, str(exc))
+            return {"status": "error", "reason": str(exc)}
+
+        if order.status == "filled":
+            # / fetch regime for logging
+            regime = None
+            try:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """SELECT regime FROM regime_history
+                        WHERE market = 'equity' ORDER BY date DESC LIMIT 1"""
+                    )
+                    if row:
+                        regime = row["regime"]
+            except Exception:
+                pass
+
+            log_id = await tools.store_trade_log(
+                pool,
+                trade_id=trade_id,
+                symbol=symbol,
+                side=side,
+                qty=order.filled_qty,
+                price=order.filled_price or 0.0,
+                order_id=order.order_id,
+                broker=type(broker).__name__,
+                regime=regime,
+                pnl=None,  # / computed at exit time
+                strategy_id=strategy_id,
+                details={
+                    "order_status": order.status,
+                    "order_type": order_type,
+                },
+            )
+            await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
+
+            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id)
+            logger.info(
+                "trade_executed",
+                trade_id=trade_id, log_id=log_id,
+                symbol=symbol, side=side,
+                qty=order.filled_qty, price=order.filled_price,
+            )
+            return {
+                "status": "filled",
+                "log_id": log_id,
+                "order_id": order.order_id,
+                "qty": order.filled_qty,
+                "price": order.filled_price,
+            }
+
+        elif order.status in ("rejected", "cancelled"):
+            await tools.update_trade_status(pool, "approved_trades", trade_id, "failed")
+            logger.warning(
+                "trade_rejected_by_broker",
+                trade_id=trade_id, symbol=symbol,
+                broker_status=order.status, details=order.details,
+            )
+            return {"status": "failed", "reason": order.status, "details": order.details}
+
+        else:
+            # / pending or partial — update status
+            await tools.update_trade_status(pool, "approved_trades", trade_id, order.status)
+            return {"status": order.status}

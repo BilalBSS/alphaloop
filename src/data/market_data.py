@@ -122,6 +122,9 @@ async def fetch_bars_yfinance(
         bars = []
         for idx, row in df.iterrows():
             bar_date = idx.date() if hasattr(idx, "date") else idx
+            import math
+            if any(math.isnan(row.get(f, 0) or 0) for f in ("Open", "High", "Low", "Close")):
+                continue
             bars.append({
                 "symbol": symbol,
                 "date": bar_date,

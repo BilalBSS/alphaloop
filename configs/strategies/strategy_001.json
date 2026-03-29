@@ -7,39 +7,61 @@
   "description": "Buy when Bollinger bands show oversold AND P/E is below sector average with volume confirmation",
   "asset_class": "stocks",
   "universe": "all_stocks",
-
   "fundamental_filters": {
     "pe_ratio_max": 40,
     "pe_vs_sector": "below_average",
     "revenue_growth_min": 0.01,
-    "fcf_margin_min": 0.10,
+    "fcf_margin_min": 0.1,
     "debt_to_equity_max": 2.0,
     "dcf_upside_min": 0.05
   },
-
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      {"indicator": "bollinger_bands", "condition": "price_below_lower", "lookback": 20, "std_dev": 2.0},
-      {"indicator": "rsi", "condition": "below", "threshold": 35, "period": 14},
-      {"indicator": "volume", "condition": "above_average", "multiplier": 1.3, "period": 20}
+      {
+        "indicator": "bollinger_bands",
+        "condition": "price_below_lower",
+        "lookback": 20,
+        "std_dev": 2.0
+      },
+      {
+        "indicator": "rsi",
+        "condition": "below",
+        "threshold": 35,
+        "period": 14
+      },
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 1.3,
+        "period": 20
+      }
     ]
   },
-
   "exit_conditions": {
-    "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_middle"},
-    "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 14},
-    "time_exit": {"max_holding_days": 30}
+    "take_profit": {
+      "indicator": "bollinger_bands",
+      "condition": "price_above_middle"
+    },
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 2.0,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 30
+    }
   },
-
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.08,
     "kelly_fraction": 0.25
   },
-
   "metadata": {
     "generation": 1,
-    "status": "backtest_pending"
-  }
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
 }

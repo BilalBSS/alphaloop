@@ -22,12 +22,12 @@ class ValidationResult:
 
 # / bounds: (min, max) inclusive. none = no bound.
 PRICE_BOUNDS = (Decimal("0.0001"), Decimal("999999"))
-VOLUME_BOUNDS = (0, 100_000_000_000)
+VOLUME_BOUNDS = (0, 1_000_000_000_000)
 PE_BOUNDS = (Decimal("-1000"), Decimal("10000"))
 PS_BOUNDS = (Decimal("0"), Decimal("10000"))
 PEG_BOUNDS = (Decimal("-100"), Decimal("1000"))
 GROWTH_BOUNDS = (Decimal("-1.0"), Decimal("100.0"))
-FCF_MARGIN_BOUNDS = (Decimal("-10.0"), Decimal("1.0"))
+FCF_MARGIN_BOUNDS = (Decimal("-50.0"), Decimal("5.0"))
 DEBT_EQUITY_BOUNDS = (Decimal("0"), Decimal("1000"))
 SENTIMENT_BOUNDS = (Decimal("-1.0"), Decimal("1.0"))
 

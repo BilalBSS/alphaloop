@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0a0a0f;
+  --color-bg-surface: #12121a;
+  --color-bg-hover: #1a1a25;
+  --color-border: #1e1e2a;
+  --color-text-primary: #e8e8ec;
+  --color-text-secondary: #8888a0;
+  --color-text-muted: #555570;
+  --color-profit: #00dc82;
+  --color-loss: #ff4757;
+  --color-accent: #3b82f6;
+  --color-warning: #f59e0b;
+  --color-critical: #ef4444;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* skeleton loading animation */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+.skeleton {
+  background: var(--color-bg-hover);
+  animation: pulse 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* market pulse dot */
+@keyframes market-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.market-pulse {
+  animation: market-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .market-pulse {
+    animation: none;
+  }
+}
