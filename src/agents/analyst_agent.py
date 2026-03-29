@@ -420,10 +420,14 @@ class AnalystAgent:
             components.append((dcf_score, 0.25))
 
         if earnings and earnings.strength is not None:
-            components.append((earnings.strength, 0.20))
+            # / invert score for bearish signals: strong bearish = low score
+            e_score = earnings.strength if earnings.signal == "bullish" else (100.0 - earnings.strength)
+            components.append((e_score, 0.20))
 
         if insider and insider.strength is not None:
-            components.append((insider.strength, 0.20))
+            # / invert score for bearish signals: strong selling = low score
+            i_score = insider.strength if insider.signal == "bullish" else (100.0 - insider.strength)
+            components.append((i_score, 0.20))
 
         if not components:
             return None

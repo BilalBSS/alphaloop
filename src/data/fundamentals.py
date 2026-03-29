@@ -1,10 +1,12 @@
-# / yfinance fundamentals: p/e, p/s, revenue growth, fcf margin, sector averages
-# / sync library wrapped in asyncio.to_thread for async compat
+# / fundamentals: edgar (primary) → finnhub (fallback) → yfinance (last resort)
+# / edgar provides authoritative financial data from sec 10-K/10-Q filings
+# / finnhub fills gaps with real-time ratios, yfinance as final fallback
 # / graceful: returns partial data when fields missing, warns but doesn't crash
 
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -14,6 +16,9 @@ import structlog
 from .validators import validate_fundamentals
 
 logger = structlog.get_logger(__name__)
+
+# / reuse sec_filings semaphore for edgar rate limiting
+from .sec_filings import _edgar_semaphore, _edgar_delay
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
@@ -28,6 +33,249 @@ def _safe_decimal(value: Any) -> Decimal | None:
     except (InvalidOperation, ValueError, TypeError):
         return None
 
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+# / --- edgar fetcher (primary) ---
+
+def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
+    # / sync edgartools fetch of 10-K financial data
+    try:
+        from edgar import Company
+    except ImportError:
+        logger.warning("edgartools_not_installed")
+        return None
+
+    try:
+        os.environ.setdefault("EDGAR_IDENTITY", os.environ.get("SEC_EDGAR_USER_AGENT", "QuantTrader quant@example.com"))
+        company = Company(symbol)
+
+        # / get latest 10-K filing
+        filings = company.get_filings(form="10-K")
+        if filings is None or len(filings) == 0:
+            logger.info("no_10k_filings", symbol=symbol)
+            return None
+
+        filing = filings[0]
+        filing_date = filing.filing_date
+        if hasattr(filing_date, "date"):
+            filing_date = filing_date.date()
+
+        # / parse financial data from filing
+        xbrl = None
+        try:
+            xbrl = filing.xbrl()
+        except Exception:
+            pass
+
+        revenue = None
+        operating_cf = None
+        capex = None
+        total_debt_val = None
+        total_cash_val = None
+        shares = None
+        total_equity = None
+
+        if xbrl:
+            # / try common xbrl tags for each field
+            revenue = _xbrl_get(xbrl, [
+                "Revenues",
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "SalesRevenueNet",
+                "RevenueFromContractWithCustomerIncludingAssessedTax",
+            ])
+            operating_cf = _xbrl_get(xbrl, [
+                "NetCashProvidedByOperatingActivities",
+                "CashProvidedByOperatingActivities",
+            ])
+            capex = _xbrl_get(xbrl, [
+                "PaymentsToAcquirePropertyPlantAndEquipment",
+                "CapitalExpenditures",
+            ])
+            total_debt_val = _xbrl_get(xbrl, [
+                "LongTermDebt",
+                "LongTermDebtNoncurrent",
+            ])
+            short_term = _xbrl_get(xbrl, [
+                "ShortTermBorrowings",
+                "CurrentPortionOfLongTermDebt",
+            ])
+            if total_debt_val and short_term:
+                total_debt_val = total_debt_val + short_term
+            total_cash_val = _xbrl_get(xbrl, [
+                "CashAndCashEquivalentsAtCarryingValue",
+                "Cash",
+            ])
+            shares = _xbrl_get(xbrl, [
+                "CommonStockSharesOutstanding",
+                "EntityCommonStockSharesOutstanding",
+            ])
+            total_equity = _xbrl_get(xbrl, [
+                "StockholdersEquity",
+                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            ])
+
+        # / also try company-level attributes as fallback
+        if shares is None:
+            shares = _safe_float(getattr(company, "shares_outstanding", None))
+
+        if not revenue:
+            logger.info("edgar_no_revenue", symbol=symbol)
+            return None
+
+        # / compute derived fields
+        fcf = (operating_cf - capex) if (operating_cf is not None and capex is not None) else None
+        fcf_margin = _safe_decimal(fcf / revenue) if (fcf is not None and revenue > 0) else None
+        net_debt = (total_debt_val - total_cash_val) if (total_debt_val is not None and total_cash_val is not None) else None
+        de_ratio = (total_debt_val / total_equity) if (total_debt_val is not None and total_equity and total_equity > 0) else None
+        rev_growth = None  # / would need prior year filing to compute
+
+        # / get sector from company info
+        sector = getattr(company, "sic_description", None) or getattr(company, "industry", None) or "Unknown"
+        # / simplify sec sector descriptions
+        sector_lower = sector.lower() if sector else ""
+        if "software" in sector_lower or "computer" in sector_lower or "semiconductor" in sector_lower:
+            sector = "Technology"
+        elif "pharma" in sector_lower or "biotech" in sector_lower or "medical" in sector_lower:
+            sector = "Healthcare"
+        elif "retail" in sector_lower or "consumer" in sector_lower:
+            sector = "Consumer Cyclical"
+
+        result = {
+            "symbol": symbol,
+            "date": date.today(),
+            "pe_ratio": None,  # / needs current price, computed downstream
+            "pe_forward": None,
+            "ps_ratio": None,  # / needs current price + revenue
+            "peg_ratio": None,
+            "revenue_growth_1y": _safe_decimal(rev_growth),
+            "revenue_growth_3y": None,
+            "fcf_margin": fcf_margin,
+            "debt_to_equity": _safe_decimal(de_ratio),
+            "sector": sector,
+            "sector_pe_avg": None,
+            "sector_ps_avg": None,
+            "total_revenue": _safe_decimal(revenue),
+            "free_cash_flow": _safe_decimal(fcf),
+            "total_debt": _safe_decimal(total_debt_val),
+            "total_cash": _safe_decimal(total_cash_val),
+            "shares_outstanding": int(shares) if shares else None,
+            "net_debt": _safe_decimal(net_debt),
+            "data_source": "edgar",
+        }
+        logger.info("edgar_fundamentals_fetched", symbol=symbol, revenue=revenue, shares=shares)
+        return result
+
+    except Exception as exc:
+        logger.info("edgar_fetch_failed", symbol=symbol, error=str(exc)[:100])
+        return None
+
+
+def _xbrl_get(xbrl: Any, tags: list[str]) -> float | None:
+    # / try multiple xbrl tag names, return first non-none value
+    for tag in tags:
+        try:
+            val = xbrl.get_fact(f"us-gaap:{tag}")
+            if val is not None:
+                v = getattr(val, "value", val)
+                return float(v) if v is not None else None
+        except Exception:
+            pass
+        try:
+            val = xbrl.get_fact(f"dei:{tag}")
+            if val is not None:
+                v = getattr(val, "value", val)
+                return float(v) if v is not None else None
+        except Exception:
+            pass
+    return None
+
+
+# / --- finnhub fetcher (fallback) ---
+
+async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
+    # / finnhub basic-financials + company profile
+    key = os.environ.get("FINNHUB_API_KEY")
+    if not key:
+        return None
+
+    try:
+        import httpx
+        headers = {"X-Finnhub-Token": key}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # / basic financials
+            resp = await client.get(
+                f"https://finnhub.io/api/v1/stock/metric",
+                params={"symbol": symbol, "metric": "all"},
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                return None
+            metrics = resp.json().get("metric", {})
+
+            # / company profile for sector + shares
+            resp2 = await client.get(
+                f"https://finnhub.io/api/v1/stock/profile2",
+                params={"symbol": symbol},
+                headers=headers,
+            )
+            profile = resp2.json() if resp2.status_code == 200 else {}
+
+        if not metrics:
+            return None
+
+        shares = profile.get("shareOutstanding")
+        # / finnhub returns shares in millions
+        shares_int = int(shares * 1_000_000) if shares else None
+        mcap = profile.get("marketCapitalization")
+        mcap_val = mcap * 1_000_000 if mcap else None
+
+        # / compute revenue from P/S if available
+        ps = _safe_float(metrics.get("psTTM"))
+        total_rev = (mcap_val / ps) if (mcap_val and ps and ps > 0) else None
+
+        result = {
+            "symbol": symbol,
+            "date": date.today(),
+            "pe_ratio": _safe_decimal(metrics.get("peTTM")),
+            "pe_forward": _safe_decimal(metrics.get("peAnnual")),
+            "ps_ratio": _safe_decimal(metrics.get("psTTM")),
+            "peg_ratio": _safe_decimal(metrics.get("pegAnnual")),
+            "revenue_growth_1y": _safe_decimal(metrics.get("revenueGrowthQuarterlyYoy")),
+            "revenue_growth_3y": _safe_decimal(metrics.get("revenueGrowth3Y")),
+            "fcf_margin": _safe_decimal(metrics.get("fcfMarginTTM")),
+            "debt_to_equity": _safe_decimal(metrics.get("totalDebt/totalEquityQuarterly")),
+            "sector": profile.get("finnhubIndustry", "Unknown"),
+            "sector_pe_avg": None,
+            "sector_ps_avg": None,
+            "total_revenue": _safe_decimal(total_rev),
+            "shares_outstanding": shares_int,
+            "net_debt": _safe_decimal(metrics.get("netDebtAnnual")),
+            "data_source": "finnhub",
+        }
+        logger.info("finnhub_fundamentals_fetched", symbol=symbol)
+        return result
+
+    except Exception as exc:
+        logger.info("finnhub_fundamentals_failed", symbol=symbol, error=str(exc)[:100])
+        return None
+
+
+def _compute_fcf_margin(info: dict) -> Decimal | None:
+    # / fcf margin = free cash flow / total revenue
+    fcf = info.get("freeCashflow")
+    revenue = info.get("totalRevenue")
+    if fcf is not None and revenue and revenue != 0:
+        return _safe_decimal(fcf / revenue)
+    return None
+
+
+# / --- yfinance fetcher (last resort) ---
 
 def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
     # / sync yfinance fetch — run via asyncio.to_thread
@@ -45,6 +293,13 @@ def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
             logger.warning("yfinance_no_data", symbol=symbol)
             return None
 
+        fcf = info.get("freeCashflow")
+        revenue = info.get("totalRevenue")
+        fcf_margin = _compute_fcf_margin(info)
+        total_debt = _safe_float(info.get("totalDebt"))
+        total_cash = _safe_float(info.get("totalCash"))
+        shares = info.get("sharesOutstanding")
+
         return {
             "symbol": symbol,
             "date": date.today(),
@@ -53,33 +308,48 @@ def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
             "ps_ratio": _safe_decimal(info.get("priceToSalesTrailing12Months")),
             "peg_ratio": _safe_decimal(info.get("pegRatio")),
             "revenue_growth_1y": _safe_decimal(info.get("revenueGrowth")),
-            "revenue_growth_3y": None,  # yfinance doesn't provide multi-year directly
-            "fcf_margin": _compute_fcf_margin(info),
+            "revenue_growth_3y": None,
+            "fcf_margin": fcf_margin,
             "debt_to_equity": _safe_decimal(info.get("debtToEquity")),
             "sector": info.get("sector", "Unknown"),
-            "sector_pe_avg": None,  # computed across universe, not per-ticker
+            "sector_pe_avg": None,
             "sector_ps_avg": None,
+            "total_revenue": _safe_decimal(revenue),
+            "free_cash_flow": _safe_decimal(fcf),
+            "total_debt": _safe_decimal(total_debt),
+            "total_cash": _safe_decimal(total_cash),
+            "shares_outstanding": int(shares) if shares else None,
+            "net_debt": _safe_decimal(total_debt - total_cash) if (total_debt is not None and total_cash is not None) else None,
+            "data_source": "yfinance",
         }
     except Exception as exc:
         logger.warning("yfinance_fetch_error", symbol=symbol, error=str(exc))
         return None
 
 
-def _compute_fcf_margin(info: dict) -> Decimal | None:
-    # / fcf margin = free cash flow / total revenue
-    fcf = info.get("freeCashflow")
-    revenue = info.get("totalRevenue")
-    if fcf is not None and revenue and revenue != 0:
-        return _safe_decimal(fcf / revenue)
-    return None
-
+# / --- fetch chain: edgar → finnhub → yfinance ---
 
 async def fetch_fundamentals(symbol: str) -> dict[str, Any] | None:
-    # / async wrapper for yfinance fundamentals fetch
+    # / try edgar first (authoritative, quarterly filings)
+    async with _edgar_semaphore:
+        await asyncio.sleep(_edgar_delay)
+        try:
+            result = await asyncio.to_thread(_fetch_edgar_sync, symbol)
+            if result:
+                return result
+        except Exception as exc:
+            logger.info("edgar_fundamentals_error", symbol=symbol, error=str(exc)[:100])
+
+    # / try finnhub (fast, real-time ratios)
+    result = await _fetch_finnhub(symbol)
+    if result:
+        return result
+
+    # / yfinance last resort
     try:
         result = await asyncio.to_thread(_fetch_yfinance, symbol)
         if result:
-            logger.info("fetched_fundamentals", symbol=symbol)
+            logger.info("fetched_fundamentals_yfinance", symbol=symbol)
         return result
     except Exception as exc:
         logger.warning("fundamentals_fetch_failed", symbol=symbol, error=str(exc))
@@ -96,8 +366,7 @@ async def fetch_all_fundamentals(
         data = await fetch_fundamentals(symbol)
         if data:
             results.append(data)
-        # / 1 req/sec rate limit for yfinance
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.5)
 
     # / compute sector averages
     if results:
@@ -107,7 +376,7 @@ async def fetch_all_fundamentals(
 
 
 def _compute_sector_averages(data: list[dict[str, Any]]) -> None:
-    # / fill in sector_pe_avg and sector_ps_avg across the universe
+    # / fill in sector averages across the universe
     sectors: dict[str, list[dict[str, Any]]] = {}
     for d in data:
         sector = d.get("sector", "Unknown")
@@ -165,8 +434,10 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                         symbol, date, pe_ratio, pe_forward, ps_ratio, peg_ratio,
                         revenue_growth_1y, revenue_growth_3y, fcf_margin,
                         debt_to_equity, sector, sector_pe_avg, sector_ps_avg,
-                        sector_fcf_margin_avg, sector_de_avg, sector_rev_growth_avg
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                        sector_fcf_margin_avg, sector_de_avg, sector_rev_growth_avg,
+                        shares_outstanding, net_debt, total_revenue, free_cash_flow,
+                        total_debt, total_cash, data_source
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
                     ON CONFLICT (symbol, date) DO UPDATE SET
                         pe_ratio = EXCLUDED.pe_ratio,
                         pe_forward = EXCLUDED.pe_forward,
@@ -181,7 +452,14 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                         sector_ps_avg = EXCLUDED.sector_ps_avg,
                         sector_fcf_margin_avg = EXCLUDED.sector_fcf_margin_avg,
                         sector_de_avg = EXCLUDED.sector_de_avg,
-                        sector_rev_growth_avg = EXCLUDED.sector_rev_growth_avg
+                        sector_rev_growth_avg = EXCLUDED.sector_rev_growth_avg,
+                        shares_outstanding = EXCLUDED.shares_outstanding,
+                        net_debt = EXCLUDED.net_debt,
+                        total_revenue = EXCLUDED.total_revenue,
+                        free_cash_flow = EXCLUDED.free_cash_flow,
+                        total_debt = EXCLUDED.total_debt,
+                        total_cash = EXCLUDED.total_cash,
+                        data_source = EXCLUDED.data_source
                     """,
                     d["symbol"], d["date"], d.get("pe_ratio"), d.get("pe_forward"),
                     d.get("ps_ratio"), d.get("peg_ratio"), d.get("revenue_growth_1y"),
@@ -190,6 +468,10 @@ async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
                     d.get("sector_pe_avg"), d.get("sector_ps_avg"),
                     d.get("sector_fcf_margin_avg"), d.get("sector_de_avg"),
                     d.get("sector_rev_growth_avg"),
+                    d.get("shares_outstanding"), d.get("net_debt"),
+                    d.get("total_revenue"), d.get("free_cash_flow"),
+                    d.get("total_debt"), d.get("total_cash"),
+                    d.get("data_source"),
                 )
                 inserted += 1
             except Exception as exc:

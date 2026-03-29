@@ -85,6 +85,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._executor_poll_loop(), name="executor"),
             asyncio.create_task(self._evolution_loop(), name="evolution"),
             asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
+            asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
         ]
 
         try:
@@ -319,3 +320,28 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("insider_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "insider_backfill")
+
+    async def _fundamentals_backfill_loop(self) -> None:
+        # / refresh fundamentals from edgar/finnhub/yfinance daily at 7am et
+        while not self._stop_event.is_set():
+            et = timezone(timedelta(hours=-5))
+            now = datetime.now(et)
+            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+
+            logger.info("fundamentals_backfill_waiting", next_run=str(target))
+
+            if await self._wait_or_stop((target - now).total_seconds()):
+                break
+
+            try:
+                from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                data = await fetch_all_fundamentals(symbols)
+                if data:
+                    await store_fundamentals(self._pool, data)
+                    logger.info("fundamentals_backfill_complete", count=len(data))
+            except Exception as exc:
+                logger.error("fundamentals_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "fundamentals_backfill")

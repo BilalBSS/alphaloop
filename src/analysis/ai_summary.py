@@ -86,12 +86,17 @@ def _build_prompt(
         parts.append(f"  Consecutive beats: {earnings.consecutive_beats}")
 
     if insider:
-        parts.append(f"\nInsider activity:")
-        parts.append(f"  Signal: {insider.signal} (strength: {insider.strength})")
-        parts.append(f"  Net buy ratio: {insider.net_buy_ratio:.2f}")
-        parts.append(f"  Buys: {insider.total_buys}, Sells: {insider.total_sells}")
+        parts.append(f"\nInsider activity (SEC Form 4 filings, last 90 days):")
+        parts.append(f"  Signal: {insider.signal} (strength: {insider.strength}/100)")
+        parts.append(f"  {insider.total_buys} buys, {insider.total_sells} sells (net buy ratio: {insider.net_buy_ratio:.2f})")
         if insider.cluster_detected:
-            parts.append(f"  Cluster buying detected")
+            parts.append(f"  Cluster buying detected — multiple insiders buying within 30 days")
+        if insider.details:
+            # / include top trades by value for llm context
+            weighted_buy = insider.details.get("weighted_buy_value", 0)
+            weighted_sell = insider.details.get("weighted_sell_value", 0)
+            if weighted_buy > 0 or weighted_sell > 0:
+                parts.append(f"  Buy volume: ${weighted_buy:,.0f}, Sell volume: ${weighted_sell:,.0f}")
 
     if indicators:
         parts.append(f"\nTechnical indicators:")

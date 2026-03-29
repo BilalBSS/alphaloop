@@ -378,7 +378,7 @@ function FundamentalsPanel({ fundamentals }) {
                 {r.pct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)}
               </td>
               <td className="px-2 py-1 text-right font-mono text-text-muted">
-                {s !== null ? s.toFixed(2) : '--'}
+                {s !== null ? (r.pct ? `${(s * 100).toFixed(1)}%` : s.toFixed(2)) : '--'}
               </td>
             </tr>
           )
@@ -472,12 +472,12 @@ function InsiderPanel({ insiderTrades, score }) {
       {insiderStrength != null && (
         <div className="px-2">
           <div className="flex items-center gap-2 text-[10px] text-text-secondary">
-            <span>Signal</span>
+            <span className={netBuy ? 'text-profit' : 'text-loss'}>{netBuy ? 'Bullish' : 'Bearish'}</span>
             <div className="flex-1 h-1.5 bg-bg-primary rounded overflow-hidden">
               <div className={`h-full ${netBuy ? 'bg-profit' : 'bg-loss'}`}
                 style={{ width: `${Math.min(100, parseFloat(insiderStrength))}%` }} />
             </div>
-            <span className="font-mono">{parseFloat(insiderStrength).toFixed(0)}</span>
+            <span className={`font-mono ${netBuy ? 'text-profit' : 'text-loss'}`}>{netBuy ? '+' : '-'}{parseFloat(insiderStrength).toFixed(0)}</span>
           </div>
         </div>
       )}
