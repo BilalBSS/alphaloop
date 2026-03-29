@@ -64,11 +64,11 @@ def _build_prompt(
         parts.append(f"\nValuation (ratio score 0-100, measures value vs sector peers):")
         parts.append(f"  Overall ratio score: {ratio.composite_score}/100")
         if ratio.details.get("pe_ratio") is not None:
-            parts.append(f"  P/E ratio: {ratio.details['pe_ratio']:.1f} (sector avg: {ratio.details.get('sector_pe_avg', 'N/A')})")
+            parts.append(f"  P/E ratio: {float(ratio.details['pe_ratio']):.1f} (sector avg: {ratio.details.get('sector_pe_avg', 'N/A')})")
         if ratio.details.get("fcf_margin") is not None:
-            parts.append(f"  FCF margin: {ratio.details['fcf_margin']:.1%}")
+            parts.append(f"  FCF margin: {float(ratio.details['fcf_margin']):.1%}")
         if ratio.details.get("debt_to_equity") is not None:
-            parts.append(f"  Debt/Equity: {ratio.details['debt_to_equity']:.1f}")
+            parts.append(f"  Debt/Equity: {float(ratio.details['debt_to_equity']):.1f}")
 
     if dcf:
         parts.append(f"\nDCF valuation:")
@@ -82,7 +82,7 @@ def _build_prompt(
         parts.append(f"\nEarnings signals:")
         parts.append(f"  Signal: {earnings.signal} (strength: {earnings.strength})")
         if earnings.surprise_pct is not None:
-            parts.append(f"  Latest surprise: {earnings.surprise_pct:.1%}")
+            parts.append(f"  Latest surprise: {float(earnings.surprise_pct):.1%}")
         parts.append(f"  Consecutive beats: {earnings.consecutive_beats}")
 
     if insider:
@@ -92,8 +92,8 @@ def _build_prompt(
         if insider.cluster_detected:
             parts.append(f"  Cluster buying detected — multiple insiders buying within 30 days")
         if insider.details:
-            weighted_buy = insider.details.get("weighted_buy_value", 0)
-            weighted_sell = insider.details.get("weighted_sell_value", 0)
+            weighted_buy = float(insider.details.get("weighted_buy_value", 0))
+            weighted_sell = float(insider.details.get("weighted_sell_value", 0))
             if weighted_buy > 0 or weighted_sell > 0:
                 parts.append(f"  Buy volume: ${weighted_buy:,.0f}, Sell volume: ${weighted_sell:,.0f}")
         # / individual trades for llm to reference specific insiders
@@ -102,25 +102,31 @@ def _build_prompt(
             for t in insider.top_trades:
                 title = f" ({t['title']})" if t.get("title") else ""
                 action = "bought" if t["type"] == "buy" else "sold"
-                parts.append(f"    {t['name']}{title} — {action} {t['shares']:,} shares (${t['value']:,.0f}) on {t['date']}")
+                shares = int(float(t.get("shares", 0)))
+                value = float(t.get("value", 0))
+                parts.append(f"    {t['name']}{title} — {action} {shares:,} shares (${value:,.0f}) on {t['date']}")
 
     if indicators:
         parts.append(f"\nTechnical indicators:")
         rsi = indicators.get("rsi14")
         if rsi is not None:
+            rsi = float(rsi)
             label = "overbought" if rsi > 70 else "oversold" if rsi < 30 else "neutral"
             parts.append(f"  RSI(14): {rsi:.1f} ({label})")
         macd_h = indicators.get("macd_histogram")
         if macd_h is not None:
+            macd_h = float(macd_h)
             parts.append(f"  MACD histogram: {macd_h:.4f} ({'bullish' if macd_h > 0 else 'bearish'})")
         adx = indicators.get("adx")
         if adx is not None:
+            adx = float(adx)
             parts.append(f"  ADX: {adx:.1f} ({'strong' if adx > 25 else 'weak'} trend)")
 
     if sentiment:
         parts.append(f"\nSentiment:")
         news_score = sentiment.get("news_score")
         if news_score is not None:
+            news_score = float(news_score)
             label = "bullish" if news_score > 0.1 else "bearish" if news_score < -0.1 else "neutral"
             parts.append(f"  News: {news_score:.2f} ({label})")
         social = sentiment.get("social")
@@ -130,7 +136,7 @@ def _build_prompt(
             if vol or bull is not None:
                 s = f"  Social: {vol} mentions" if vol else "  Social:"
                 if bull is not None:
-                    s += f", {bull:.0%} bullish"
+                    s += f", {float(bull):.0%} bullish"
                 parts.append(s)
 
     parts.append("\nKeep the summary under 150 words. Focus on actionable insight.")
