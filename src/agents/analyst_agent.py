@@ -248,10 +248,13 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("analyst_earnings_failed", symbol=symbol, error=str(exc))
 
-        try:
-            insider_signal = await analyze_insider_activity(pool, symbol)
-        except Exception as exc:
-            logger.warning("analyst_insider_failed", symbol=symbol, error=str(exc))
+        # / skip insider analysis for etfs — no form 4 filings
+        from src.data.symbols import get_sector
+        if get_sector(symbol) != "etfs":
+            try:
+                insider_signal = await analyze_insider_activity(pool, symbol)
+            except Exception as exc:
+                logger.warning("analyst_insider_failed", symbol=symbol, error=str(exc))
 
         # / news sentiment (phase 8)
         sentiment_score: float | None = None

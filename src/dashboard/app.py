@@ -206,11 +206,15 @@ async def get_analysis(symbol: str):
 
 @app.get("/api/symbols")
 async def get_symbols():
-    # / list all tracked symbols with latest score
+    # / list tracked symbols with latest score — filter to active universe only
+    from src.data.symbols import FULL_UNIVERSE
     rows = await _query(
         """SELECT DISTINCT ON (symbol) symbol, date, composite_score, regime,
             details->>'ai_consensus' as ai_consensus
-        FROM analysis_scores ORDER BY symbol, date DESC"""
+        FROM analysis_scores
+        WHERE symbol = ANY($1)
+        ORDER BY symbol, date DESC""",
+        FULL_UNIVERSE,
     )
     return _serialize(rows)
 

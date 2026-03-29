@@ -307,7 +307,8 @@ class AgentOrchestrator:
 
             try:
                 from src.data.sec_filings import fetch_insider_trades, store_insider_trades
-                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                from src.data.symbols import get_sector
+                symbols = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
                 for symbol in symbols:
                     try:
                         trades = await fetch_insider_trades(symbol)

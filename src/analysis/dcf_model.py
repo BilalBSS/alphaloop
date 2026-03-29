@@ -222,10 +222,22 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
     else:
         revenue = price * 0.3 if price > 0 else 100.0  # rough fallback
 
+    # / margin expansion: high-growth companies with thin margins will likely expand
+    # / target margin based on sector maturity (15% is reasonable for most tech)
+    target_margin = 0.15
+    if fcf_margin < target_margin and revenue_growth > 0.08:
+        # / blend toward target over projection period
+        margin_expansion = (target_margin - fcf_margin) * 0.5
+        fcf_margin = fcf_margin + margin_expansion
+        margin_std = 0.05  # wider uncertainty for expansion assumption
+    else:
+        margin_std = 0.03
+
     return DCFAssumptions(
         revenue=revenue,
         fcf_margin=fcf_margin,
         revenue_growth=revenue_growth,
+        margin_std=margin_std,
         net_debt=0.0,  # simplified — would need balance sheet data
         shares_outstanding=1.0,  # per-share basis
     )
