@@ -56,6 +56,15 @@
     "generation": 1,
     "status": "paper_trading"
   },
+  "bear_market_overrides": {
+    "fundamental_filters": {
+      "pe_ratio_max": 55,
+      "revenue_growth_min": -0.05,
+      "fcf_margin_min": 0.05,
+      "debt_to_equity_max": 2.5,
+      "dcf_upside_min": 0.0
+    }
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

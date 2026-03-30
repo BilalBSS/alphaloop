@@ -129,32 +129,29 @@ class AnalystAgent:
         # / 30-min cycle: groq only, hourly cycle: groq + deepseek
         ai_signal: str | None = None
         ai_summary_text: str | None = None
-        crypto_context = regime or "unknown"
-        if nvt is not None:
-            crypto_context += f" | mcap/vol ratio: {nvt:.1f}"
-        if funding_rate is not None:
-            crypto_context += f" | funding rate: {funding_rate:+.6f}"
-        if coin_data:
-            ch24 = coin_data.get("price_change_24h_pct")
-            ch7d = coin_data.get("price_change_7d_pct")
-            if ch24 is not None:
-                crypto_context += f" | 24h: {ch24:+.1f}%"
-            if ch7d is not None:
-                crypto_context += f" | 7d: {ch7d:+.1f}%"
-            mcap = coin_data.get("market_cap")
-            if mcap:
-                crypto_context += f" | mcap: ${mcap / 1e9:.1f}B"
-        if sentiment_score is not None:
-            crypto_context += f" | sentiment: {sentiment_score:+.2f}"
+        crypto_data = {
+            "symbol": symbol,
+            "nvt": nvt,
+            "funding_rate": funding_rate,
+            "oi_rank": oi_rank,
+            "price_change_24h": coin_data.get("price_change_24h_pct") if coin_data else None,
+            "price_change_7d": coin_data.get("price_change_7d_pct") if coin_data else None,
+            "market_cap": coin_data.get("market_cap") if coin_data else None,
+            "fear_greed": None,  # TODO: fetch from social_sentiment
+            "sentiment_score": sentiment_score,
+            "regime": regime,
+        }
 
         deepseek_text: str | None = None
+        ai_confidence: float = 0.0
         if getattr(self, "_run_deepseek", True):
             # / hourly: dual-llm (groq + deepseek), same as equities
             try:
                 dual = await generate_dual_analysis(
-                    symbol, ratio=None, dcf=None, earnings=None, insider=None, regime=crypto_context,
+                    symbol, crypto_data=crypto_data,
                 )
                 ai_signal = dual.consensus
+                ai_confidence = dual.consensus_confidence
                 ai_summary_text = dual.groq.summary if dual.groq else None
                 deepseek_text = dual.deepseek.summary if dual.deepseek else None
             except Exception as exc:
@@ -163,11 +160,12 @@ class AnalystAgent:
             # / 30-min: groq only
             try:
                 summary = await generate_summary(
-                    symbol, ratio=None, dcf=None, earnings=None, insider=None, regime=crypto_context,
+                    symbol, crypto_data=crypto_data,
                 )
                 if summary:
                     ai_signal = summary.signal
                     ai_summary_text = summary.summary
+                    ai_confidence = summary.confidence
             except Exception as exc:
                 logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
 
@@ -205,7 +203,9 @@ class AnalystAgent:
             "funding_rate": funding_rate,
             "oi_rank": oi_rank,
             "ai_consensus": ai_signal,
+            "ai_consensus_confidence": ai_confidence,
             "news_sentiment_score": sentiment_score,
+            "regime": regime,
         }
         if coin_data:
             details["price_change_24h"] = coin_data.get("price_change_24h_pct")
@@ -300,6 +300,27 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
 
+        # / compute per-symbol trend for consensus gate
+        symbol_trend = "unknown"
+        df = None
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT close FROM market_data
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 50""",
+                    symbol,
+                )
+                if rows and len(rows) >= 50:
+                    import pandas as pd
+                    close_series = pd.Series([float(r["close"]) for r in reversed(rows)])
+                    sma50 = close_series.rolling(window=50, min_periods=50).mean().iloc[-1]
+                    if sma50 is not None and not (hasattr(sma50, '__class__') and str(sma50) == 'nan'):
+                        import math
+                        if not math.isnan(float(sma50)):
+                            symbol_trend = "up" if float(close_series.iloc[-1]) > float(sma50) else "down"
+        except Exception:
+            pass
+
         # / fetch indicators + sentiment from db for llm prompt enrichment
         indicator_data: dict | None = None
         sentiment_data: dict | None = None
@@ -337,27 +358,30 @@ class AnalystAgent:
             pass
 
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
+        regime_with_trend = regime
+        if symbol_trend != "unknown":
+            regime_with_trend = f"{regime} | This stock's trend: {symbol_trend} (close vs SMA50)"
         try:
             if getattr(self, "_run_deepseek", True):
                 dual = await generate_dual_analysis(
                     symbol, ratio=ratio_score, dcf=dcf_result,
-                    earnings=earnings_signal, insider=insider_signal, regime=regime,
+                    earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
                 )
             else:
                 # / groq only, skip deepseek call
                 groq_only = await generate_summary(
                     symbol, ratio=ratio_score, dcf=dcf_result,
-                    earnings=earnings_signal, insider=insider_signal, regime=regime,
+                    earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
                 )
                 from src.analysis.ai_summary import DualAnalysis
-                dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal)
+                dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal, consensus_confidence=groq_only.confidence)
         except Exception as exc:
             logger.warning("analyst_llm_failed", symbol=symbol, error=str(exc))
             from src.analysis.ai_summary import DualAnalysis, _build_fallback_summary
             fallback = _build_fallback_summary(symbol, ratio_score, dcf_result, earnings_signal, insider_signal)
-            dual = DualAnalysis(groq=fallback, deepseek=None, consensus=fallback.signal)
+            dual = DualAnalysis(groq=fallback, deepseek=None, consensus=fallback.signal, consensus_confidence=fallback.confidence)
 
         # / compute fundamental score as weighted average of available components
         fundamental_score = self._compute_fundamental_score(
@@ -379,11 +403,14 @@ class AnalystAgent:
             details["insider_score_100"] = insider_signal.strength
         # / add dual-llm fields
         details["ai_consensus"] = dual.consensus
+        details["ai_consensus_confidence"] = dual.consensus_confidence if hasattr(dual, 'consensus_confidence') else 0.0
+        details["symbol_trend"] = symbol_trend
         details["llm_analysis_groq"] = dual.groq.summary
         details["llm_signal_groq"] = dual.groq.signal
         if dual.deepseek:
             details["llm_analysis_deepseek"] = dual.deepseek.summary
             details["llm_signal_deepseek"] = dual.deepseek.signal
+        details["regime"] = regime
 
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None

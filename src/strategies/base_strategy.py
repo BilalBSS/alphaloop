@@ -57,6 +57,7 @@ class AnalysisData:
     exchange_flow_ratio: float | None = None
     news_sentiment_score: float | None = None
     ai_consensus: str | None = None  # bullish, bearish, neutral, disagree
+    regime: str | None = None
 
 
 class StrategyInterface(ABC):
@@ -133,6 +134,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         self._entry_conditions = config.get("entry_conditions", {})
         self._exit_conditions = config.get("exit_conditions", {})
         self._position_sizing = config.get("position_sizing", {})
+        self._bear_market_overrides = config.get("bear_market_overrides", {})
         self._requires_fundamentals = bool(self._fundamental_filters)
 
     @property
@@ -173,6 +175,29 @@ class ConfigDrivenStrategy(StrategyInterface):
     def requires_fundamentals(self) -> bool:
         return self._requires_fundamentals
 
+    def _get_active_filters(self, analysis) -> dict:
+        # / merge bear market overrides when regime is bear
+        filters = dict(self._fundamental_filters)
+        if (
+            analysis is not None
+            and getattr(analysis, "regime", None) == "bear"
+            and self._bear_market_overrides
+        ):
+            override_ff = self._bear_market_overrides.get("fundamental_filters", {})
+            for key, value in override_ff.items():
+                if key in filters and value is not None:
+                    filters[key] = value
+        return filters
+
+    def get_effective_bypass_consensus(self, regime: str | None = None) -> bool:
+        # / check if consensus should be bypassed, with bear override
+        base = self._config.get("bypass_consensus", False)
+        if regime == "bear" and self._bear_market_overrides:
+            override = self._bear_market_overrides.get("bypass_consensus")
+            if override is not None:
+                return override
+        return base
+
     def should_enter(
         self,
         symbol: str,
@@ -186,7 +211,8 @@ class ConfigDrivenStrategy(StrategyInterface):
         if self._requires_fundamentals:
             if analysis is None:
                 return EntrySignal(should_enter=False, reasons=["no fundamental data"])
-            passed, fundamental_reasons = self._check_fundamentals(analysis)
+            active_filters = self._get_active_filters(analysis)
+            passed, fundamental_reasons = self._check_fundamentals(analysis, active_filters)
             if not passed:
                 return EntrySignal(should_enter=False, reasons=fundamental_reasons)
 
@@ -281,10 +307,10 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         return PositionSizeResult(qty=qty, pct_of_portfolio=actual_pct, method=method)
 
-    def _check_fundamentals(self, analysis: AnalysisData) -> tuple[bool, list[str]]:
+    def _check_fundamentals(self, analysis: AnalysisData, filters=None) -> tuple[bool, list[str]]:
         # / evaluate fundamental filters from config against analysis data
         # / if a filter is configured but the data is unavailable, reject (not silently pass)
-        filters = self._fundamental_filters
+        filters = filters or self._fundamental_filters
         reasons: list[str] = []
 
         # / pe ratio max

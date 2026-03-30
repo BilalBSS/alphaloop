@@ -102,6 +102,31 @@ class FundamentalFiltersConfig(BaseModel):
     news_sentiment_min: float | None = None
 
 
+class BearMarketOverridesConfig(BaseModel):
+    fundamental_filters: FundamentalFiltersConfig | None = None
+    bypass_consensus: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_override_keys(cls, values):
+        ff = values.get("fundamental_filters")
+        if ff and isinstance(ff, dict):
+            valid_keys = set(FundamentalFiltersConfig.model_fields.keys())
+            unknown = set(ff.keys()) - valid_keys
+            if unknown:
+                raise ValueError(
+                    f"bear_market_overrides.fundamental_filters contains unknown keys: {unknown}. "
+                    f"Valid keys: {sorted(valid_keys)}"
+                )
+        return values
+
+    @model_validator(mode="after")
+    def validate_not_empty(self):
+        if self.fundamental_filters is None and self.bypass_consensus is None:
+            raise ValueError("bear_market_overrides must specify at least one override")
+        return self
+
+
 class StrategyMetadata(BaseModel):
     generation: int = 1
     status: str = "backtest_pending"
@@ -138,6 +163,7 @@ class StrategyConfig(BaseModel):
     exit_conditions: ExitConditionsConfig
     position_sizing: PositionSizingConfig = PositionSizingConfig()
     metadata: StrategyMetadata = StrategyMetadata()
+    bear_market_overrides: BearMarketOverridesConfig | None = None
     bypass_consensus: bool = False           # / skip ai consensus gate (for pipeline testing)
     signal_threshold_override: float | None = None  # / override SIGNAL_THRESHOLD per-strategy
 

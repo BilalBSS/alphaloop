@@ -52,6 +52,9 @@
     "generation": 1,
     "status": "paper_trading"
   },
+  "bear_market_overrides": {
+    "bypass_consensus": true
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null
