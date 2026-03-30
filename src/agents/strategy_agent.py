@@ -22,7 +22,7 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / minimum smoothed strength to generate a signal
-SIGNAL_THRESHOLD = 0.3
+SIGNAL_THRESHOLD = 0.20
 
 
 class StrategyAgent:
@@ -197,23 +197,48 @@ class StrategyAgent:
                 stats["no_entry"] += 1
             return None
 
-        # / ai consensus filter: dual-llm agreement gates signal strength
-        bypass_consensus = strategy.config.get("bypass_consensus", False)
+        # / classify symbol's own trend from price data
+        symbol_trend = self._classify_symbol_trend(df)
+
+        # / ai consensus filter: softened with per-symbol trend overlay
+        regime = analysis_data.regime if analysis_data else None
+        bypass_consensus = strategy.get_effective_bypass_consensus(regime)
         consensus = analysis_data.ai_consensus if analysis_data else None
         if consensus == "bearish" and not bypass_consensus:
-            logger.debug("signal_blocked_ai_bearish", symbol=symbol)
-            if stats is not None:
-                stats["blocked_consensus"] += 1
-                stats["near_misses"].append({
-                    "symbol": symbol, "raw_strength": entry_signal.strength,
-                    "block_reason": "bearish consensus",
-                })
-            return None
+            if symbol_trend == "up":
+                # / stock bucking the bearish market, allow through with penalty
+                entry_signal = EntrySignal(
+                    should_enter=True,
+                    strength=entry_signal.strength * 0.5,
+                    reasons=entry_signal.reasons + [
+                        "ai_consensus: bearish, but symbol uptrend, halved",
+                    ],
+                )
+                logger.debug(
+                    "signal_softened_bearish_uptrend",
+                    symbol=symbol, symbol_trend=symbol_trend,
+                    adjusted_strength=entry_signal.strength,
+                )
+            else:
+                # / symbol_trend is down or unknown, block as before
+                logger.debug(
+                    "signal_blocked_ai_bearish",
+                    symbol=symbol, symbol_trend=symbol_trend,
+                )
+                if stats is not None:
+                    stats["blocked_consensus"] += 1
+                    stats["near_misses"].append({
+                        "symbol": symbol,
+                        "raw_strength": entry_signal.strength,
+                        "block_reason": f"bearish consensus (trend={symbol_trend})",
+                        "symbol_trend": symbol_trend,
+                    })
+                return None
         if consensus == "disagree" and not bypass_consensus:
             entry_signal = EntrySignal(
                 should_enter=True,
-                strength=entry_signal.strength * 0.5,
-                reasons=entry_signal.reasons + ["ai_consensus: disagree, halved"],
+                strength=entry_signal.strength * 0.7,
+                reasons=entry_signal.reasons + ["ai_consensus: disagree, reduced 0.7x"],
             )
 
         # / smooth with particle filter
@@ -373,13 +398,28 @@ class StrategyAgent:
         # / use particle filter to smooth noisy entry signals
         if symbol not in self._filters:
             self._filters[symbol] = ParticleFilter(
-                n_particles=500, process_noise=0.05, observation_noise=0.3,
+                n_particles=500, process_noise=0.05, observation_noise=0.15,
             )
 
         pf = self._filters[symbol]
         pf.predict()
         pf.update(raw_strength)
         return pf.estimate()
+
+    @staticmethod
+    def _classify_symbol_trend(df) -> str:
+        # / classify individual symbol trend from price vs sma50
+        if df is None or len(df) < 50:
+            return "unknown"
+        close = df["close"]
+        sma50_series = close.rolling(window=50, min_periods=50).mean()
+        latest_close = close.iloc[-1]
+        latest_sma50 = sma50_series.iloc[-1]
+        if pd.isna(latest_sma50):
+            return "unknown"
+        if float(latest_close) > float(latest_sma50):
+            return "up"
+        return "down"
 
     async def _check_exits(
         self, pool, strategy_pool: StrategyPool, broker,

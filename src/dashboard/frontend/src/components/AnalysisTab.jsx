@@ -324,21 +324,27 @@ function PriceChart({ priceHistory }) {
   )
 }
 
+// / timeframe toggle bar (shared between chart + indicators)
+function TimeframeToggle({ tf, setTf }) {
+  return (
+    <div className="flex gap-1">
+      {['daily', '2h'].map(t => (
+        <button key={t} onClick={() => setTf(t)}
+          className={`px-2 py-0.5 text-[11px] uppercase font-semibold border ${
+            tf === t ? 'border-accent text-accent' : 'border-border text-text-muted hover:text-text-primary'
+          }`}>{t}</button>
+      ))}
+    </div>
+  )
+}
+
 // / price panel with daily/2h toggle
-function PricePanel({ symbol, priceHistory }) {
-  const [tf, setTf] = useState('daily')
+function PricePanel({ symbol, priceHistory, tf, setTf }) {
   return (
     <Panel title={
       <div className="flex items-center gap-3">
         <span>Price History</span>
-        <div className="flex gap-1">
-          {['daily', '2h'].map(t => (
-            <button key={t} onClick={() => setTf(t)}
-              className={`px-2 py-0.5 text-[11px] uppercase font-semibold border ${
-                tf === t ? 'border-accent text-accent' : 'border-border text-text-muted hover:text-text-primary'
-              }`}>{t}</button>
-          ))}
-        </div>
+        <TimeframeToggle tf={tf} setTf={setTf} />
       </div>
     }>
       {tf === 'daily'
@@ -377,16 +383,15 @@ function IntradayChart({ symbol }) {
 }
 
 
-// / technical indicators panel with daily + 2h
-function IndicatorsPanel({ symbol }) {
-  const { data, loading } = useApi(`/api/indicators/${symbol}?limit=1`, 60000)
-  const { data: data2h } = useApi(`/api/indicators/${symbol}?limit=1&timeframe=2Hour`, 60000)
+// / technical indicators panel — shows whichever timeframe is selected
+function IndicatorsPanel({ symbol, tf }) {
+  const tfParam = tf === '2h' ? '2Hour' : '1Day'
+  const { data, loading } = useApi(`/api/indicators/${symbol}?limit=1&timeframe=${tfParam}`, 60000)
 
   if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
 
   const latest = Array.isArray(data) && data.length > 0 ? data[0] : null
-  const latest2h = Array.isArray(data2h) && data2h.length > 0 ? data2h[0] : null
-  if (!latest) return <div className="text-text-muted text-sm py-2">No indicator data yet</div>
+  if (!latest) return <div className="text-text-muted text-sm py-2">No {tf} indicator data yet</div>
 
   const indRows = [
     { label: 'RSI (14)', key: 'rsi14', fmt: v => v?.toFixed(1), color: v => v > 70 ? 'text-loss' : v < 30 ? 'text-profit' : '' },
@@ -399,35 +404,26 @@ function IndicatorsPanel({ symbol }) {
     { label: 'ATR (14)', key: 'atr', fmt: v => v?.toFixed(4) },
   ]
 
-  function renderVal(src, r) {
-    if (!src) return '--'
-    const v = parseFloat(src[r.key])
-    if (isNaN(v)) return '--'
-    return r.fmt(v)
-  }
-  function renderCls(src, r) {
-    if (!src || !r.color) return ''
-    const v = parseFloat(src[r.key])
-    return isNaN(v) ? '' : r.color(v)
-  }
-
   return (
     <table className="w-full text-xs">
       <thead>
         <tr className="text-text-secondary text-[11px] uppercase">
           <th className="text-left px-2 py-1">Indicator</th>
-          <th className="text-right px-2 py-1">Daily</th>
-          {latest2h && <th className="text-right px-2 py-1 text-warning">2h</th>}
+          <th className="text-right px-2 py-1">{tf}</th>
         </tr>
       </thead>
       <tbody>
-        {indRows.map(r => (
-          <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
-            <td className="px-2 py-1">{r.label}</td>
-            <td className={`px-2 py-1 text-right font-mono ${renderCls(latest, r)}`}>{renderVal(latest, r)}</td>
-            {latest2h && <td className={`px-2 py-1 text-right font-mono ${renderCls(latest2h, r)}`}>{renderVal(latest2h, r)}</td>}
-          </tr>
-        ))}
+        {indRows.map(r => {
+          const v = latest ? parseFloat(latest[r.key]) : NaN
+          const display = isNaN(v) ? '--' : r.fmt(v)
+          const cls = r.color && !isNaN(v) ? r.color(v) : ''
+          return (
+            <tr key={r.label} className="border-t border-border" style={{ height: 28 }}>
+              <td className="px-2 py-1">{r.label}</td>
+              <td className={`px-2 py-1 text-right font-mono ${cls}`}>{display}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )
@@ -1048,6 +1044,7 @@ function SignalsPanel({ signals }) {
 
 // / detail view: fetches its own data, keyed on symbol for clean remount
 function SymbolDetail({ symbol, onBack }) {
+  const [tf, setTf] = useState('daily')
   const { data, loading, error } = useApi(`/api/analysis/${symbol}`, 30000)
 
   if (loading && !data) {
@@ -1082,12 +1079,12 @@ function SymbolDetail({ symbol, onBack }) {
       </Panel>
 
       {/* row 2: price chart with timeframe toggle */}
-      <PricePanel symbol={symbol} priceHistory={d.price_history} />
+      <PricePanel symbol={symbol} priceHistory={d.price_history} tf={tf} setTf={setTf} />
 
       {/* row 3: indicators + fundamentals + dcf */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <Panel title="Technical Indicators">
-          <IndicatorsPanel symbol={symbol} />
+        <Panel title={`Technical Indicators (${tf})`}>
+          <IndicatorsPanel symbol={symbol} tf={tf} />
         </Panel>
         <Panel title="Fundamentals">
           <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />

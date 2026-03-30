@@ -22,6 +22,57 @@ DEFAULT_TERMINAL_GROWTH = 0.025  # 2.5% perpetuity growth
 DEFAULT_DISCOUNT_RATE = 0.10    # 10% wacc
 DEFAULT_NUM_SIMULATIONS = 10_000
 
+# / growth-rate-to-terminal-multiple anchor points for piecewise-linear interpolation
+# / based on empirical EV/FCF multiples from sell-side equity research
+TERMINAL_MULTIPLE_TIERS: list[tuple[float, float]] = [
+    (-0.20, 6.0),   # severe decline: distressed
+    (-0.10, 8.0),   # moderate decline
+    (0.00, 10.0),   # zero growth: mature, bond-like
+    (0.05, 12.0),   # low growth: utilities, staples
+    (0.10, 15.0),   # moderate growth: established tech
+    (0.15, 18.0),   # solid growth: mid-cap tech
+    (0.20, 21.0),   # high growth: growth SaaS
+    (0.30, 27.0),   # very high growth: scaling platforms
+    (0.50, 33.0),   # hyper growth: category creators
+    (0.75, 38.0),   # extreme growth: early dominance
+    (1.00, 40.0),   # cap: no multiple above 40x
+]
+
+# / fcf margin adjustment: premium for high-margin, discount for low-margin
+FCF_MARGIN_BASELINE = 0.15
+FCF_MARGIN_WEIGHT = 0.5
+FCF_MARGIN_FLOOR = 0.70
+FCF_MARGIN_CAP = 1.30
+
+# / uncertainty scales with base multiple
+TERMINAL_MULTIPLE_CV = 0.18
+
+
+def compute_terminal_multiple(
+    revenue_growth: float,
+    fcf_margin: float | None = None,
+) -> float:
+    # / piecewise-linear interpolation of growth rate to terminal multiple
+    # / with optional fcf margin adjustment
+    if revenue_growth is None or np.isnan(revenue_growth):
+        return 15.0  # safe default
+
+    growth_rates = [t[0] for t in TERMINAL_MULTIPLE_TIERS]
+    multiples = [t[1] for t in TERMINAL_MULTIPLE_TIERS]
+    base = float(np.interp(revenue_growth, growth_rates, multiples))
+
+    if fcf_margin is not None and not np.isnan(fcf_margin):
+        adjustment = 1.0 + FCF_MARGIN_WEIGHT * (fcf_margin - FCF_MARGIN_BASELINE)
+        adjustment = max(FCF_MARGIN_FLOOR, min(FCF_MARGIN_CAP, adjustment))
+        base *= adjustment
+
+    return round(base, 1)
+
+
+def compute_terminal_multiple_std(base_multiple: float) -> float:
+    # / uncertainty proportional to base multiple
+    return round(base_multiple * TERMINAL_MULTIPLE_CV, 1)
+
 
 @dataclass
 class DCFAssumptions:
@@ -80,6 +131,17 @@ def run_dcf_simulation(
         assumptions.revenue_growth + assumptions.growth_std * z_growth,
         assumptions.revenue_growth + assumptions.growth_std * (-z_growth),
     ])[:n]
+    growth_rates = np.clip(growth_rates, -0.50, 1.0)
+
+    # / mean-revert growth rates toward long-term average over projection period
+    long_term_growth = 0.05
+    reversion_speed = 0.1
+    for year in range(1, years):
+        growth_rates[:, year] = (
+            (1 - reversion_speed) * growth_rates[:, year - 1]
+            + reversion_speed * long_term_growth
+            + assumptions.growth_std * 0.3 * rng.standard_normal(n)
+        )
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
     margins = np.vstack([
@@ -152,6 +214,12 @@ def compute_dcf(
         confidence = "medium"
     else:
         confidence = "low"
+
+    # / sanity: extreme divergence from market price -> low confidence
+    if current_price > 0:
+        price_ratio = median / current_price
+        if price_ratio > 5.0 or price_ratio < 0.1:
+            confidence = "low"
 
     return DCFResult(
         symbol=symbol,
@@ -233,11 +301,18 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
     else:
         margin_std = 0.03
 
+    tm = compute_terminal_multiple(revenue_growth, fcf_margin)
+    tm_std = compute_terminal_multiple_std(tm)
+    projection_years = 7 if revenue_growth > 0.15 else 5
+
     return DCFAssumptions(
         revenue=revenue,
         fcf_margin=fcf_margin,
         revenue_growth=revenue_growth,
         margin_std=margin_std,
+        terminal_multiple=tm,
+        terminal_multiple_std=tm_std,
+        projection_years=projection_years,
         net_debt=net_debt_val,
         shares_outstanding=shares_out,
     )

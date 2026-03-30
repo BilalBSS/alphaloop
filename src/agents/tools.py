@@ -259,6 +259,7 @@ def analysis_data_to_dict(data: AnalysisData) -> dict:
         "exchange_flow_ratio": data.exchange_flow_ratio,
         "news_sentiment_score": data.news_sentiment_score,
         "ai_consensus": data.ai_consensus,
+        "regime": data.regime,
     }
 
 
@@ -284,6 +285,7 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         exchange_flow_ratio=d.get("exchange_flow_ratio"),
         news_sentiment_score=d.get("news_sentiment_score"),
         ai_consensus=d.get("ai_consensus"),
+        regime=d.get("regime"),
     )
 
 

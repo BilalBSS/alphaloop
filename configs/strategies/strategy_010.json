@@ -42,6 +42,9 @@
     "generation": 1,
     "status": "backtest_pending"
   },
+  "bear_market_overrides": {
+    "bypass_consensus": true
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

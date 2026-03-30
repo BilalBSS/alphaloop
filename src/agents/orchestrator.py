@@ -26,8 +26,8 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
-ANALYST_MARKET_HOURS = 1800      # / 30 minutes
-ANALYST_OFF_HOURS = 1800         # / 30 minutes (crypto trades 24/7)
+ANALYST_MARKET_HOURS = 3600      # / 60 minutes (data refreshes every 2h)
+ANALYST_OFF_HOURS = 3600         # / 60 minutes
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
 DEEPSEEK_INTERVAL = 3600         # / 1 hour
@@ -173,6 +173,13 @@ class AgentOrchestrator:
             try:
                 symbols = self._get_symbols()
                 await self._analyst.run(self._pool, symbols, run_deepseek=False)
+                # / broadcast analysis update (fire-and-forget)
+                try:
+                    from src.dashboard.app import broadcast, _ws_clients
+                    if _ws_clients:
+                        asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
+                except Exception:
+                    pass  # dashboard may not be running
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -244,6 +251,13 @@ class AgentOrchestrator:
                 await self._strategy.run(
                     self._pool, self._strategy_pool, broker,
                 )
+                # / broadcast strategy evaluation (fire-and-forget)
+                try:
+                    from src.dashboard.app import broadcast, _ws_clients
+                    if _ws_clients:
+                        asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
+                except Exception:
+                    pass
             except Exception as exc:
                 logger.error("strategy_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_loop")

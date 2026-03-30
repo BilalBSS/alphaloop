@@ -23,6 +23,8 @@ EQUITY_UNIVERSE = [
     "HIMS", "LLY", "MRNA", "ENPH", "FSLR", "ON",
     # / space
     "ASTS", "RKLB", "LUNR",
+    # / commodities
+    "GLD", "SLV",
 ]
 CRYPTO_UNIVERSE = [
     "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD",
@@ -38,6 +40,7 @@ SECTORS: dict[str, list[str]] = {
     "consumer":      ["ABNB", "UBER", "DASH", "DUOL"],
     "health_energy": ["HIMS", "LLY", "MRNA", "ENPH", "FSLR", "ON"],
     "space":         ["ASTS", "RKLB", "LUNR"],
+    "commodities":   ["GLD", "SLV"],
     "large_crypto":  ["BTC-USD", "ETH-USD"],
     "alt_crypto":    ["SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD"],
     "etfs":          ["SPY", "QQQ", "SPUS"],
