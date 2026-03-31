@@ -62,7 +62,13 @@ def compute_terminal_multiple(
     base = float(np.interp(revenue_growth, growth_rates, multiples))
 
     if fcf_margin is not None and not np.isnan(fcf_margin):
-        adjustment = 1.0 + FCF_MARGIN_WEIGHT * (fcf_margin - FCF_MARGIN_BASELINE)
+        # / reduce margin premium for high-growth stocks (growth already in base multiple)
+        effective_weight = FCF_MARGIN_WEIGHT
+        if revenue_growth > 0.30:
+            effective_weight *= 0.5  # halve margin premium for hyper-growth
+        elif revenue_growth > 0.15:
+            effective_weight *= 0.75
+        adjustment = 1.0 + effective_weight * (fcf_margin - FCF_MARGIN_BASELINE)
         adjustment = max(FCF_MARGIN_FLOOR, min(FCF_MARGIN_CAP, adjustment))
         base *= adjustment
 
@@ -139,7 +145,17 @@ def run_dcf_simulation(
     # / mean-revert growth rates toward long-term average over projection period
     long_term_growth = assumptions.terminal_growth
     # / higher growth = faster decay (NVDA at 65% should decay faster than AAPL at 8%)
-    reversion_speed = min(0.3, 0.1 + abs(assumptions.revenue_growth) * 0.3)
+    # / revenue size also accelerates reversion — law of large numbers
+    base_reversion = min(0.35, 0.12 + abs(assumptions.revenue_growth) * 0.5)
+    if assumptions.revenue > 200_000_000_000:  # >$200B: extreme reversion
+        size_reversion_boost = 0.15
+    elif assumptions.revenue > 100_000_000_000:  # >$100B
+        size_reversion_boost = 0.08
+    elif assumptions.revenue > 50_000_000_000:  # >$50B
+        size_reversion_boost = 0.04
+    else:
+        size_reversion_boost = 0.0
+    reversion_speed = min(0.55, base_reversion + size_reversion_boost)
     for year in range(1, years):
         growth_rates[:, year] = (
             (1 - reversion_speed) * growth_rates[:, year - 1]
@@ -149,12 +165,19 @@ def run_dcf_simulation(
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
     # / dampen growth for large-revenue companies (law of large numbers)
-    if assumptions.revenue > 100_000_000_000:  # >$100B
+    # / stronger damping tiers: mega-caps face much harder growth scaling
+    if assumptions.revenue > 200_000_000_000:  # >$200B: mega-cap
+        size_factor = min(1.0, 200_000_000_000 / assumptions.revenue)
+        growth_rates *= size_factor ** 0.5
+        # / additional absolute cap: no mega-cap sustains >30% yoy
+        growth_rates = np.clip(growth_rates, -0.50, 0.30)
+    elif assumptions.revenue > 100_000_000_000:  # >$100B
         size_factor = min(1.0, 100_000_000_000 / assumptions.revenue)
-        growth_rates *= size_factor ** 0.3  # gentle damping, not a cliff
+        growth_rates *= size_factor ** 0.4
+        growth_rates = np.clip(growth_rates, -0.50, 0.45)
     elif assumptions.revenue > 50_000_000_000:  # >$50B
         size_factor = min(1.0, 50_000_000_000 / assumptions.revenue)
-        growth_rates *= size_factor ** 0.15
+        growth_rates *= size_factor ** 0.2
 
     margins = np.vstack([
         assumptions.fcf_margin + assumptions.margin_std * z_margins,
@@ -211,6 +234,19 @@ def compute_dcf(
     as_of = as_of or date.today()
 
     fair_values = run_dcf_simulation(assumptions, num_simulations, rng)
+
+    # / mega-cap sanity cap: market is rarely that wrong on liquid large-caps
+    # / only applies to companies with real revenue (>$10B)
+    if current_price > 0 and assumptions.revenue > 10_000_000_000:
+        if assumptions.revenue > 200_000_000_000:
+            max_fv = current_price * 2.5
+        elif assumptions.revenue > 100_000_000_000:
+            max_fv = current_price * 3.0
+        elif assumptions.revenue > 50_000_000_000:
+            max_fv = current_price * 4.0
+        else:
+            max_fv = current_price * 5.0
+        fair_values = np.minimum(fair_values, max_fv)
 
     median = float(np.median(fair_values))
     p10 = float(np.percentile(fair_values, 10))
@@ -316,11 +352,38 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
     tm = compute_terminal_multiple(revenue_growth, fcf_margin)
 
     # / quality floor: high-FCF, net-cash companies deserve premium multiples
-    if fcf_margin > 0.20 and net_debt_val < 0:
-        tm = max(tm, 18.0)
+    # / mega-cap cash cows (AAPL, MSFT) trade at 30-40x EV/FCF due to
+    # / buybacks, recurring revenue, ecosystem moat — model must reflect this
+    is_mega_cap = revenue > 100_000_000_000
+    if fcf_margin > 0.25 and net_debt_val < 0:
+        if is_mega_cap:
+            # / scale floor with margin: 25% -> 34x, 35% -> 37x, 50%+ -> 40x
+            margin_bonus = min(6.0, (fcf_margin - 0.25) * 24.0)
+            tm = max(tm, 34.0 + margin_bonus)
+        else:
+            tm = max(tm, 25.0)
+    elif fcf_margin > 0.20 and net_debt_val < 0:
+        if is_mega_cap:
+            tm = max(tm, 27.0)
+        else:
+            tm = max(tm, 21.0)
+
+    # / buyback + capital return premium
+    if net_debt_val < 0 and revenue > 0 and fcf_margin > 0.20:
+        cash_to_rev = abs(net_debt_val) / revenue
+        if cash_to_rev > 0.2:
+            tm *= 1.08  # significant cash hoard + returns
+        elif cash_to_rev > 0.08:
+            tm *= 1.05  # moderate capital return capacity
 
     tm_std = compute_terminal_multiple_std(tm)
-    projection_years = 7 if revenue_growth > 0.15 else 5
+    # / projection years: shorter for mega-caps (growth can't compound as long)
+    if revenue > 200_000_000_000:
+        projection_years = 5  # mega-cap: 5yr max regardless of growth
+    elif revenue > 100_000_000_000:
+        projection_years = 6 if revenue_growth > 0.15 else 5
+    else:
+        projection_years = 7 if revenue_growth > 0.15 else 5
 
     return DCFAssumptions(
         revenue=revenue,

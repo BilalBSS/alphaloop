@@ -35,13 +35,29 @@ class RiskAgent:
         strategy_pool=None,
     ) -> dict:
         # / evaluate one trade signal, approve or reject
+        try:
+            return await self._process_signal_inner(pool, signal_id, broker, strategy_pool)
+        except Exception as exc:
+            # / catch-all: mark signal as error so it doesn't retry forever
+            logger.error("risk_process_signal_error", signal_id=signal_id, error=str(exc))
+            try:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "error")
+            except Exception:
+                pass
+            return {"status": "error", "reason": str(exc)}
+
+    async def _process_signal_inner(
+        self, pool, signal_id: int, broker: BrokerInterface,
+        strategy_pool=None,
+    ) -> dict:
         # / fetch signal
         async with pool.acquire() as conn:
             signal = await conn.fetchrow(
-                "SELECT * FROM trade_signals WHERE id = $1", signal_id,
+                "SELECT * FROM trade_signals WHERE id = $1 AND status = 'pending'",
+                signal_id,
             )
         if not signal:
-            return {"status": "error", "reason": "signal_not_found"}
+            return {"status": "skipped", "reason": "signal_not_found_or_not_pending"}
 
         signal = dict(signal)
         symbol = signal["symbol"]

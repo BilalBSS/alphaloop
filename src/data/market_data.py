@@ -304,8 +304,10 @@ async def backfill_intraday(
     timeframe: str = "2Hour",
 ) -> dict[str, int]:
     # / backfill intraday bars, incremental from last stored timestamp
-    end = date.today()
-    start = end - timedelta(days=days)
+    # / end = tomorrow so alpaca returns today's intraday bars (end is exclusive)
+    today = date.today()
+    end = today + timedelta(days=1)
+    start = today - timedelta(days=days)
     results: dict[str, int] = {}
 
     for symbol in symbols:
@@ -318,10 +320,8 @@ async def backfill_intraday(
                     symbol, timeframe,
                 )
                 if row and row["max_ts"]:
+                    # / for intraday, re-fetch from last bar's date to get newer bars
                     fetch_start = row["max_ts"].date()
-                    if fetch_start >= end:
-                        results[symbol] = 0
-                        continue
                 else:
                     fetch_start = start
 
