@@ -70,6 +70,9 @@ _error_flush_task: asyncio.Task | None = None
 
 
 def _throttle_key(event: NotificationEvent) -> str:
+    # / trade notifications: key per message so each trade notifies independently
+    if event.channel == "trades":
+        return f"{event.severity.value}:{event.title}:{event.message}"
     return f"{event.severity.value}:{event.title}"
 
 
