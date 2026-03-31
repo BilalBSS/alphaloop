@@ -96,6 +96,38 @@ async def get_portfolio():
         return {"positions_count": 0, "positions": _serialize(positions), "trades_today": []}
 
 
+@app.get("/api/equity-history")
+async def get_equity_history(period: str = "1D", timeframe: str = "5Min"):
+    # / pull portfolio history from alpaca for equity curve
+    import os, httpx
+    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    headers = {
+        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
+        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{base}/v2/account/portfolio/history",
+                headers=headers,
+                params={"period": period, "timeframe": timeframe, "intraday_reporting": "market_hours", "pnl_reset": "per_day"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            timestamps = data.get("timestamp", [])
+            equity = data.get("equity", [])
+            profit_loss = data.get("profit_loss", [])
+            return {
+                "timestamps": timestamps,
+                "equity": equity,
+                "profit_loss": profit_loss,
+                "base_value": data.get("base_value", 100000),
+            }
+    except Exception as exc:
+        logger.debug("equity_history_failed", error=str(exc))
+        return {"timestamps": [], "equity": [], "profit_loss": [], "base_value": 100000}
+
+
 @app.get("/api/positions")
 async def get_positions():
     # / pull live positions from alpaca

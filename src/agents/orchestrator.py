@@ -356,6 +356,15 @@ class AgentOrchestrator:
                 break
 
             try:
+                # / gate: only evolve if 5+ strategies have at least 1 trade each
+                async with self._pool.acquire() as conn:
+                    active = await conn.fetchval(
+                        """SELECT COUNT(DISTINCT strategy_id) FROM trade_log
+                        WHERE strategy_id IS NOT NULL"""
+                    )
+                if active < 5:
+                    logger.info("evolution_skipped_insufficient_data", strategies_with_trades=active, required=5)
+                    continue
                 await self._evolution.run(self._pool, self._strategy_pool)
             except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
