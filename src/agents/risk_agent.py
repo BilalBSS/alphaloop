@@ -65,18 +65,27 @@ class RiskAgent:
         # / clamp to [0, 1] to prevent oversized positions from malformed data
         strength = max(0.0, min(1.0, float(signal["strength"]) if signal["strength"] else 0.5))
 
-        # / long-only guard: reject naked sells (shorts)
+        # / long-only guard: reject sells that would create a short
         long_only = os.environ.get("LONG_ONLY", "true").lower() in ("true", "1", "yes")
         if long_only and side == "sell":
             positions_check = await broker.get_positions()
-            has_position = any(
-                (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol
-                for p in positions_check
+            held = next(
+                (p for p in positions_check
+                 if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol),
+                None,
             )
-            if not has_position:
+            if not held:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                 logger.info("long_only_rejected", symbol=symbol, signal_id=signal_id)
                 return {"status": "rejected", "reason": "long_only_no_position"}
+            # / cap sell qty to actual alpaca position — never go short
+            held_qty = held.qty if hasattr(held, "qty") else float(held.get("qty", 0))
+            signal_qty = float(signal.get("details", {}).get("qty", 0)) if signal.get("details") else 0
+            if signal_qty > held_qty:
+                signal["details"] = signal.get("details") or {}
+                signal["details"]["qty"] = held_qty
+                signal["details"]["qty_capped"] = True
+                logger.info("sell_qty_capped", symbol=symbol, requested=signal_qty, capped_to=held_qty)
 
         # / get account state
         balance = await broker.get_account_balance()
@@ -111,9 +120,18 @@ class RiskAgent:
             return {"status": "rejected", "reason": "no_price"}
 
         # / compute position size
-        max_pct = self.max_position_pct
-        qty = (balance.equity * max_pct * strength) / price
-        qty = max(0, int(qty))  # / whole shares
+        if side == "sell":
+            # / sells use the strategy's actual held qty, not computed size
+            signal_details = signal.get("details") or {}
+            qty = int(float(signal_details.get("qty", 0)))
+            if qty <= 0:
+                # / fallback: sell entire strategy position
+                strat_pos = await tools.get_strategy_positions(pool, strategy_id=signal.get("strategy_id"), symbol=symbol)
+                qty = int(strat_pos[0]["qty"]) if strat_pos else 0
+        else:
+            max_pct = self.max_position_pct
+            qty = (balance.equity * max_pct * strength) / price
+            qty = max(0, int(qty))  # / whole shares
 
         if qty <= 0:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
