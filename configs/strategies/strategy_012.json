@@ -1,0 +1,51 @@
+{
+    "id": "strategy_012",
+    "name": "FVG_Fibonacci_Reversal",
+    "version": 1,
+    "created_by": "human",
+    "description": "Buy on bullish fair value gap near fibonacci 0.618 retracement with RSI oversold confirmation",
+    "asset_class": "stocks",
+    "universe": "all_stocks",
+
+    "fundamental_filters": {
+        "pe_ratio_max": 50,
+        "revenue_growth_min": 0.0,
+        "fcf_margin_min": 0.05,
+        "debt_to_equity_max": 2.5,
+        "dcf_upside_min": -0.05
+    },
+
+    "entry_conditions": {
+        "operator": "AND",
+        "signals": [
+            {"indicator": "fair_value_gap", "condition": "bullish"},
+            {"indicator": "fibonacci", "condition": "near_level", "level": 0.618, "lookback": 50},
+            {"indicator": "rsi", "condition": "below", "threshold": 40, "period": 14}
+        ]
+    },
+
+    "exit_conditions": {
+        "take_profit": {"indicator": "fibonacci", "condition": "near_level", "level": 0.236, "lookback": 50},
+        "stop_loss": {"type": "atr_trailing", "multiplier": 2.5, "period": 14},
+        "time_exit": {"max_holding_days": 21}
+    },
+
+    "position_sizing": {
+        "method": "kelly_fraction",
+        "max_position_pct": 0.06,
+        "kelly_fraction": 0.25
+    },
+
+    "metadata": {
+        "status": "paper_trading",
+        "generation": 1
+    },
+
+    "bear_market_overrides": {
+        "fundamental_filters": {
+            "pe_ratio_max": 60,
+            "revenue_growth_min": -0.10,
+            "dcf_upside_min": -0.15
+        }
+    }
+}

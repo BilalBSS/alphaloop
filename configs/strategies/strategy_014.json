@@ -1,0 +1,51 @@
+{
+    "id": "strategy_014",
+    "name": "Structure_Break_FVG_Entry",
+    "version": 1,
+    "created_by": "human",
+    "description": "Buy on bullish structure break confirmed by fair value gap and volume spike, classic ICT smart money entry",
+    "asset_class": "stocks",
+    "universe": "all_stocks",
+    "bypass_consensus": true,
+
+    "fundamental_filters": {
+        "pe_ratio_max": 60,
+        "revenue_growth_min": -0.05,
+        "fcf_margin_min": 0.0,
+        "debt_to_equity_max": 3.0,
+        "dcf_upside_min": -0.10
+    },
+
+    "entry_conditions": {
+        "operator": "AND",
+        "signals": [
+            {"indicator": "structure_break", "condition": "bullish", "lookback": 5},
+            {"indicator": "fair_value_gap", "condition": "bullish"},
+            {"indicator": "volume", "condition": "above_average", "multiplier": 1.5, "period": 20}
+        ]
+    },
+
+    "exit_conditions": {
+        "take_profit": {"indicator": "structure_break", "condition": "bearish", "lookback": 5},
+        "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 14},
+        "time_exit": {"max_holding_days": 10}
+    },
+
+    "position_sizing": {
+        "method": "fixed_pct",
+        "max_position_pct": 0.06
+    },
+
+    "metadata": {
+        "status": "paper_trading",
+        "generation": 1
+    },
+
+    "bear_market_overrides": {
+        "fundamental_filters": {
+            "pe_ratio_max": 70,
+            "revenue_growth_min": -0.15,
+            "dcf_upside_min": -0.20
+        }
+    }
+}
