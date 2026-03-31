@@ -432,17 +432,11 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "crypto_backfill")
 
     async def _intraday_backfill_loop(self) -> None:
-        # / fetch 2h intraday bars every 2 hours during market hours
+        # / fetch 2h intraday bars for all symbols (crypto trades 24/7)
         while not self._stop_event.is_set():
-            if not self._is_market_hours():
-                # / skip during off-hours for equities, wait and check again
-                if await self._wait_or_stop(INTRADAY_INTERVAL):
-                    break
-                continue
-
             try:
                 from src.data.market_data import backfill_intraday
-                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                symbols = self._get_symbols()
                 results = await backfill_intraday(self._pool, symbols, days=10, timeframe="2Hour")
                 total = sum(results.values())
                 logger.info("intraday_backfill_complete", symbols=len(symbols), bars=total)
