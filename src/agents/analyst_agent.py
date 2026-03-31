@@ -432,9 +432,11 @@ class AnalystAgent:
         details["symbol_trend"] = symbol_trend
         details["llm_analysis_groq"] = dual.groq.summary
         details["llm_signal_groq"] = dual.groq.signal
+        details["llm_model_groq"] = dual.groq.model_used
         if dual.deepseek:
             details["llm_analysis_deepseek"] = dual.deepseek.summary
             details["llm_signal_deepseek"] = dual.deepseek.signal
+            details["llm_model_deepseek"] = dual.deepseek.model_used
         details["regime"] = regime
         if vix_level is not None:
             details["vix"] = vix_level

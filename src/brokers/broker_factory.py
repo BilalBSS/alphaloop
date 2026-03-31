@@ -16,21 +16,20 @@ logger = structlog.get_logger(__name__)
 
 
 class BrokerFactory:
-    VALID_MODES = ("paper", "live")
+    VALID_MODES = ("paper", "live", "backtest")
 
     def __init__(self, mode: str = "paper", initial_cash: float = 100_000.0):
-        # / mode: "paper" for simulated, "live" for real orders
+        # / mode: "paper" = alpaca paper api, "live" = alpaca live api, "backtest" = in-memory sim
         if mode not in self.VALID_MODES:
             raise ValueError(f"invalid broker mode: {mode!r}, must be one of {self.VALID_MODES}")
         self._mode = mode
-        self._paper = PaperBroker(initial_cash=initial_cash) if mode == "paper" else None
-        self._alpaca = AlpacaBroker() if mode == "live" else None
+        self._paper = PaperBroker(initial_cash=initial_cash) if mode == "backtest" else None
+        self._alpaca = AlpacaBroker() if mode in ("paper", "live") else None
 
     def get_broker(self, symbol: str | None = None) -> BrokerInterface:
-        # / returns the appropriate broker for the given symbol
-        # / in paper mode, always returns paper broker
-        # / in live mode, returns alpaca (stocks + crypto both go through alpaca)
-        if self._mode == "paper":
+        # / paper + live both use alpaca (base_url determines paper vs live)
+        # / backtest uses in-memory paper broker for simulation
+        if self._mode == "backtest":
             return self._paper  # type: ignore[return-value]
         return self._alpaca  # type: ignore[return-value]
 

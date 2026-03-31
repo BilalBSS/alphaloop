@@ -849,6 +849,8 @@ function AiAnalysisPanel({ score }) {
   const deepseekSignal = details.llm_signal_deepseek
   const groqText = details.llm_analysis_groq
   const deepseekText = details.llm_analysis_deepseek
+  const groqModel = details.llm_model_groq
+  const deepseekModel = details.llm_model_deepseek
 
   const signalColor = s => s === 'bullish' ? 'text-profit' : s === 'bearish' ? 'text-loss' : 'text-warning'
 
@@ -862,7 +864,7 @@ function AiAnalysisPanel({ score }) {
       <div className="space-y-3">
         <div className="bg-bg-primary p-4 border border-border">
           <div className="text-[11px] uppercase text-text-secondary mb-2">
-            Groq (Llama 3.1 8b)
+            Groq ({groqModel || 'llama-3.1-8b-instant'})
             {groqSignal && <span className={`ml-2 font-semibold ${signalColor(groqSignal)}`}>{groqSignal}</span>}
           </div>
           {groqText
@@ -872,7 +874,7 @@ function AiAnalysisPanel({ score }) {
         </div>
         <div className="bg-bg-primary p-4 border border-border">
           <div className="text-[11px] uppercase text-text-secondary mb-2">
-            DeepSeek V3.2
+            DeepSeek ({deepseekModel || 'deepseek-chat'})
             {deepseekSignal && <span className={`ml-2 font-semibold ${signalColor(deepseekSignal)}`}>{deepseekSignal}</span>}
           </div>
           {deepseekText
