@@ -36,9 +36,31 @@ class PaperBroker(BrokerInterface):
 
     async def get_price(self, symbol: str) -> float:
         price = self.prices.get(symbol)
-        if price is None:
-            raise ValueError(f"no price available for {symbol}")
-        return price
+        if price is not None:
+            return price
+        # / fallback: fetch latest close from market_data db
+        price = await self._fetch_price_from_db(symbol)
+        if price is not None:
+            self.prices[symbol] = price
+            return price
+        raise ValueError(f"no price available for {symbol}")
+
+    async def _fetch_price_from_db(self, symbol: str) -> float | None:
+        # / get latest close price from market_data table
+        try:
+            from src.data.db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT close FROM market_data
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                    symbol,
+                )
+                if row and row["close"] is not None:
+                    return float(row["close"])
+        except Exception:
+            logger.debug("paper_broker_db_price_fallback_failed", symbol=symbol)
+        return None
 
     async def place_order(
         self,
@@ -61,7 +83,11 @@ class PaperBroker(BrokerInterface):
         async with self._order_lock:
             price = self.prices.get(symbol)
             if price is None:
-                # / reject if no price available
+                # / try db fallback before rejecting
+                price = await self._fetch_price_from_db(symbol)
+                if price is not None:
+                    self.prices[symbol] = price
+            if price is None:
                 order = Order(
                     order_id=order_id, symbol=symbol, side=side, qty=qty,
                     order_type=order_type, status="rejected",
