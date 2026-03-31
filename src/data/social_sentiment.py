@@ -144,7 +144,7 @@ async def fetch_fear_greed_index() -> dict[str, Any] | None:
 # / vix (equity fear gauge)
 # ---------------------------------------------------------------------------
 
-def _fetch_vix_sync() -> float | None:
+def _fetch_vix_sync() -> dict[str, float] | None:
     # / yfinance is sync, runs in thread pool
     try:
         import yfinance as yf
@@ -154,17 +154,18 @@ def _fetch_vix_sync() -> float | None:
             return None
         vix = float(hist["Close"].iloc[-1])
         # / 10 = extreme greed (1.0), 30 = neutral (0.0), 50 = extreme fear (-1.0)
-        return max(-1.0, min(1.0, (30.0 - vix) / 20.0))
+        normalized = max(-1.0, min(1.0, (30.0 - vix) / 20.0))
+        return {"raw_level": vix, "normalized": normalized}
     except Exception:
         return None
 
 
-async def fetch_vix() -> float | None:
+async def fetch_vix() -> dict[str, float] | None:
     # / VIX fear gauge for equities, wrapped to avoid blocking event loop
     try:
         result = await asyncio.to_thread(_fetch_vix_sync)
         if result is not None:
-            logger.info("vix_fetched", normalized=result)
+            logger.info("vix_fetched", normalized=result["normalized"], raw=result["raw_level"])
         return result
     except Exception as exc:
         logger.debug("vix_fetch_failed", error=str(exc))
@@ -252,9 +253,9 @@ async def run_social_sentiment(
                     await store_social_sentiment(
                         pool, symbol, "vix",
                         None, None, None,
-                        vix_score,
+                        vix_score["normalized"],
                     )
-                fear_score = vix_score
+                fear_score = vix_score["normalized"] if vix_score else None
 
             # / compute aggregate score
             # / social buzz 60% + fear gauge 40%

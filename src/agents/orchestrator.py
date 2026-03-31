@@ -189,8 +189,12 @@ class AgentOrchestrator:
 
     async def _deepseek_loop(self) -> None:
         # / run deepseek analysis hourly (separate from groq every-cycle)
+        # / first run after short delay to let initial groq cycle start
+        first_run = True
         while not self._stop_event.is_set():
-            if await self._wait_or_stop(DEEPSEEK_INTERVAL):
+            wait = 120 if first_run else DEEPSEEK_INTERVAL
+            first_run = False
+            if await self._wait_or_stop(wait):
                 break
             try:
                 symbols = self._get_symbols()
@@ -205,9 +209,13 @@ class AgentOrchestrator:
         from src.analysis.ai_summary import generate_daily_synthesis
         from src.notifications.notifier import notify_daily_synthesis
         while not self._stop_event.is_set():
-            # / calculate seconds until 5PM ET
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
+            # / calculate seconds until 5PM ET (use zoneinfo for dst awareness)
+            try:
+                from zoneinfo import ZoneInfo
+                et_tz = ZoneInfo("America/New_York")
+            except ImportError:
+                et_tz = timezone(timedelta(hours=-5))
+            now = datetime.now(et_tz)
             target = now.replace(hour=17, minute=0, second=0, microsecond=0)
             if now >= target:
                 target += timedelta(days=1)
@@ -266,16 +274,34 @@ class AgentOrchestrator:
                 break
 
     async def _risk_poll_loop(self) -> None:
-        # / poll for pending trade signals
+        # / poll for pending trade signals, process each independently
         while not self._stop_event.is_set():
             try:
                 pending = await tools.fetch_pending_signals(self._pool)
                 for signal in pending:
-                    broker = self._broker_factory.get_broker()
-                    await self._risk.process_signal(
-                        self._pool, signal["id"], broker,
-                        strategy_pool=self._strategy_pool,
-                    )
+                    try:
+                        broker = self._broker_factory.get_broker()
+                        result = await self._risk.process_signal(
+                            self._pool, signal["id"], broker,
+                            strategy_pool=self._strategy_pool,
+                        )
+                        if result.get("status") not in ("approved", "skipped"):
+                            logger.info(
+                                "risk_signal_result",
+                                signal_id=signal["id"],
+                                symbol=signal.get("symbol"),
+                                result=result.get("status"),
+                                reason=result.get("reason"),
+                            )
+                    except Exception as exc:
+                        # / mark signal as error to prevent infinite retry
+                        logger.error("risk_signal_error", signal_id=signal["id"], error=str(exc))
+                        try:
+                            await tools.update_trade_status(
+                                self._pool, "trade_signals", signal["id"], "error",
+                            )
+                        except Exception:
+                            pass
             except Exception:
                 logger.error("risk_poll_error", exc_info=True)
 

@@ -24,7 +24,7 @@ DEFAULT_MODEL = "llama-3.1-8b-instant"
 FALLBACK_MODEL = "openai/gpt-oss-20b"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-MAX_TOKENS = 800
+MAX_TOKENS = 1200
 
 
 @dataclass
@@ -483,41 +483,55 @@ class _RateLimited(Exception):
 async def _call_llm(
     api_key: str, model: str, prompt: str, symbol: str,
     system_message: str = _EQUITY_SYSTEM_MSG,
+    max_retries: int = 2,
 ) -> AnalysisSummary | None:
-    # / single llm api call — returns None on failure, raises _RateLimited on 429
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": MAX_TOKENS,
-                    "temperature": 0.3,
-                },
-            )
-            if resp.status_code == 429:
-                logger.info("llm_rate_limited", symbol=symbol, model=model)
-                raise _RateLimited()
-            resp.raise_for_status()
-            data = resp.json()
-            summary_text = data["choices"][0]["message"]["content"].strip()
-            signal, confidence = _extract_signal(summary_text)
-            logger.info("ai_summary_generated", symbol=symbol, model=model)
-            return AnalysisSummary(
-                symbol=symbol, date=date.today(), summary=summary_text,
-                model_used=model, signal=signal, confidence=confidence,
-            )
-    except _RateLimited:
-        raise
-    except Exception as exc:
-        logger.info("llm_model_failed", symbol=symbol, model=model, error=str(exc)[:100])
-        return None
+    # / single llm api call with retry on 429, raises _RateLimited after exhausting retries
+    import asyncio
+    import httpx
+    for attempt in range(max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "max_tokens": MAX_TOKENS,
+                        "temperature": 0.3,
+                    },
+                )
+                if resp.status_code == 429:
+                    # / backoff: 4s, 8s between retries
+                    if attempt < max_retries:
+                        wait = (attempt + 1) * 4
+                        logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.info("llm_rate_limited_exhausted", symbol=symbol, model=model)
+                    raise _RateLimited()
+                resp.raise_for_status()
+                data = resp.json()
+                choice = data["choices"][0]
+                summary_text = choice["message"]["content"].strip()
+                # / detect truncated output from max_tokens hit
+                if choice.get("finish_reason") == "length":
+                    logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
+                signal, confidence = _extract_signal(summary_text)
+                logger.info("ai_summary_generated", symbol=symbol, model=model)
+                return AnalysisSummary(
+                    symbol=symbol, date=date.today(), summary=summary_text,
+                    model_used=model, signal=signal, confidence=confidence,
+                )
+        except _RateLimited:
+            raise
+        except Exception as exc:
+            logger.info("llm_model_failed", symbol=symbol, model=model, error=str(exc)[:100])
+            return None
+    return None
 
 
 async def generate_summary(
@@ -551,7 +565,7 @@ async def generate_summary(
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
 
     # / try models in order: 120b → default → fallback 20b
-    # / stop on 429 — all groq models share the same rate limit
+    # / _call_llm retries 429 internally; if still limited, try next model
     models = ["openai/gpt-oss-120b", DEFAULT_MODEL, FALLBACK_MODEL]
     for model in models:
         try:
@@ -559,7 +573,7 @@ async def generate_summary(
             if result:
                 return result
         except _RateLimited:
-            break
+            continue
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)
     if crypto_data is not None:
@@ -594,34 +608,46 @@ async def _generate_deepseek_summary(
                                indicators=indicators, sentiment=sentiment)
         sys_msg = _DEEPSEEK_SYSTEM_MSG
 
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{DEEPSEEK_BASE}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": DEEPSEEK_MODEL,
-                    "messages": [
-                        {"role": "system", "content": sys_msg},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": MAX_TOKENS,
-                    "temperature": 0.3,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            summary_text = data["choices"][0]["message"]["content"].strip()
-            signal, confidence = _extract_signal(summary_text)
-            logger.info("deepseek_summary_generated", symbol=symbol)
-            return AnalysisSummary(
-                symbol=symbol, date=date.today(), summary=summary_text,
-                model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
-            )
-    except Exception as exc:
-        logger.warning("deepseek_api_failed", symbol=symbol, error=str(exc))
-        return None
+    # / retry once on 429 or transient errors
+    import asyncio
+    import httpx
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                resp = await client.post(
+                    f"{DEEPSEEK_BASE}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": DEEPSEEK_MODEL,
+                        "messages": [
+                            {"role": "system", "content": sys_msg},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "max_tokens": MAX_TOKENS,
+                        "temperature": 0.3,
+                    },
+                )
+                if resp.status_code == 429 and attempt == 0:
+                    logger.info("deepseek_rate_limited_retrying", symbol=symbol)
+                    await asyncio.sleep(5)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                summary_text = data["choices"][0]["message"]["content"].strip()
+                signal, confidence = _extract_signal(summary_text)
+                logger.info("deepseek_summary_generated", symbol=symbol)
+                return AnalysisSummary(
+                    symbol=symbol, date=date.today(), summary=summary_text,
+                    model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
+                )
+        except Exception as exc:
+            if attempt == 0:
+                logger.info("deepseek_attempt_failed_retrying", symbol=symbol, error=str(exc)[:100])
+                await asyncio.sleep(3)
+                continue
+            logger.warning("deepseek_api_failed", symbol=symbol, error=str(exc))
+            return None
+    return None
 
 
 def _compute_consensus(
@@ -696,7 +722,8 @@ async def generate_daily_synthesis(
         logger.info("no_deepseek_key_skipping_synthesis")
         return None
 
-    # / gather today's analysis scores
+    # / gather latest analysis scores — use today, fall back to most recent day
+    from datetime import timedelta as _td
     today = date.today()
     scores = []
     try:
@@ -710,11 +737,24 @@ async def generate_daily_synthesis(
                 today,
             )
             scores = [dict(r) for r in rows]
+            # / if no scores today (weekend/holiday/timing), grab most recent day
+            if not scores:
+                rows = await conn.fetch(
+                    """SELECT symbol, composite_score, regime,
+                        details->>'ai_consensus' as ai_consensus
+                    FROM analysis_scores
+                    WHERE date >= $1
+                    ORDER BY composite_score DESC""",
+                    today - _td(days=3),
+                )
+                scores = [dict(r) for r in rows]
+                if scores:
+                    logger.info("synthesis_using_recent_scores", count=len(scores), lookback_days=3)
     except Exception as exc:
         logger.warning("synthesis_fetch_scores_failed", error=str(exc))
 
     if not scores:
-        logger.info("synthesis_no_data_today")
+        logger.info("synthesis_no_data_recent")
         return None
 
     # / build the prompt

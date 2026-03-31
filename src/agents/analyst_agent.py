@@ -215,6 +215,9 @@ class AnalystAgent:
             "news_sentiment_score": sentiment_score,
             "regime": regime,
         }
+        # / fear_greed_index on 0-100 scale for dashboard display
+        if fear_greed is not None:
+            details["fear_greed_index"] = round(fear_greed * 50.0 + 50.0, 1)
         if coin_data:
             details["price_change_24h"] = coin_data.get("price_change_24h_pct")
             details["price_change_7d"] = coin_data.get("price_change_7d_pct")
@@ -356,6 +359,21 @@ class AnalystAgent:
 
         regime, symbol_trend, indicator_data, sentiment_data = await self._fetch_equity_enrichment(pool, symbol)
 
+        # / fetch vix level for equity details
+        vix_level: float | None = None
+        try:
+            async with pool.acquire() as conn:
+                vix_row = await conn.fetchrow(
+                    """SELECT raw_score FROM social_sentiment
+                    WHERE source = 'vix'
+                    ORDER BY date DESC LIMIT 1""",
+                )
+                if vix_row and vix_row["raw_score"] is not None:
+                    # / reverse normalize: raw_vix = 30 - (normalized * 20)
+                    vix_level = round(30.0 - float(vix_row["raw_score"]) * 20.0, 1)
+        except Exception:
+            logger.debug("vix_fetch_for_details_failed", exc_info=True)
+
         # / store dcf result to dcf_valuations table (regime known at this point)
         if dcf_result:
             try:
@@ -418,6 +436,8 @@ class AnalystAgent:
             details["llm_analysis_deepseek"] = dual.deepseek.summary
             details["llm_signal_deepseek"] = dual.deepseek.signal
         details["regime"] = regime
+        if vix_level is not None:
+            details["vix"] = vix_level
 
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None
