@@ -65,32 +65,57 @@ async def _query_one(sql: str, *args) -> dict | None:
 
 @app.get("/api/portfolio")
 async def get_portfolio():
-    # / current portfolio value, P&L, positions count
-    positions = await _query(
-        """SELECT symbol, side, qty, price, strategy_id, created_at
-        FROM trade_log ORDER BY created_at DESC LIMIT 50"""
-    )
-    trades_today = await _query(
-        """SELECT * FROM trade_log
-        WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
-    )
-    return {
-        "positions_count": 0,
-        "positions": _serialize(positions),
-        "trades_today": _serialize(trades_today),
-    }
+    # / pull live data from alpaca, fall back to trade_log
+    try:
+        from src.brokers.alpaca_broker import AlpacaBroker
+        broker = AlpacaBroker()
+        balance = await broker.get_account_balance()
+        positions = await broker.get_positions()
+        return {
+            "equity": balance.equity,
+            "cash": balance.cash,
+            "buying_power": balance.buying_power,
+            "positions_count": len(positions),
+            "daily_pnl": sum(p.unrealized_pnl for p in positions),
+            "positions": [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
+                          "market_value": p.market_value, "entry_price": p.avg_entry_price,
+                          "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
+                         for p in positions],
+            "trades_today": _serialize(await _query(
+                """SELECT * FROM trade_log
+                WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
+            )),
+        }
+    except Exception as exc:
+        logger.debug("portfolio_alpaca_fallback", error=str(exc))
+        # / fallback to db
+        positions = await _query(
+            """SELECT symbol, side, qty, price, strategy_id, created_at
+            FROM trade_log ORDER BY created_at DESC LIMIT 50"""
+        )
+        return {"positions_count": 0, "positions": _serialize(positions), "trades_today": []}
 
 
 @app.get("/api/positions")
 async def get_positions():
-    rows = await _query(
-        """SELECT tl.symbol, tl.side, tl.qty, tl.price as entry_price,
-                tl.strategy_id, tl.created_at
-        FROM trade_log tl
-        WHERE tl.exit_price IS NULL
-        ORDER BY tl.created_at DESC"""
-    )
-    return _serialize(rows)
+    # / pull live positions from alpaca
+    try:
+        from src.brokers.alpaca_broker import AlpacaBroker
+        broker = AlpacaBroker()
+        positions = await broker.get_positions()
+        return [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
+                "entry_price": p.avg_entry_price, "market_value": p.market_value,
+                "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
+               for p in positions]
+    except Exception as exc:
+        logger.debug("positions_alpaca_fallback", error=str(exc))
+        rows = await _query(
+            """SELECT tl.symbol, tl.side, tl.qty, tl.price as entry_price,
+                    tl.strategy_id, tl.created_at
+            FROM trade_log tl WHERE tl.exit_price IS NULL
+            ORDER BY tl.created_at DESC"""
+        )
+        return _serialize(rows)
 
 
 @app.get("/api/trades")
