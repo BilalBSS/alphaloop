@@ -694,55 +694,71 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
 
   return (
     <div className="space-y-3">
-      {/* fear/greed + vix + social detail rows */}
-      {(fng != null || vix != null || mentions > 0) && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
-          {isCrypto && fng != null && (
-            <div className="bg-bg-primary border border-border p-2">
-              <div className="text-[10px] uppercase text-text-muted">Crypto F&G</div>
-              <div className={`text-lg font-mono font-bold ${fngColor(fng)}`}>{parseFloat(fng).toFixed(0)}</div>
-              <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>{fngLabel(fng)}</div>
-            </div>
-          )}
-          {vix != null && (
-            <div className="bg-bg-primary border border-border p-2">
-              <div className="text-[10px] uppercase text-text-muted">VIX</div>
-              <div className={`text-lg font-mono font-bold ${parseFloat(vix) > 25 ? 'text-loss' : parseFloat(vix) > 18 ? 'text-warning' : 'text-profit'}`}>
-                {parseFloat(vix).toFixed(1)}
-              </div>
-              <div className="text-[10px] text-text-muted">
-                {parseFloat(vix) > 25 ? 'High Vol' : parseFloat(vix) > 18 ? 'Elevated' : 'Low Vol'}
-              </div>
-            </div>
-          )}
-          {mentions > 0 && (
-            <div className="bg-bg-primary border border-border p-2">
-              <div className="text-[10px] uppercase text-text-muted">
-                {latestSocial?.source === 'apewisdom' ? 'Social (ApeWisdom)' : latestSocial?.source || 'Social'} Mentions
-              </div>
-              <div className="text-lg font-mono font-bold text-text-primary">{mentions.toLocaleString()}</div>
-              {apewisdom && apewisdom.raw_score != null && (
-                <div className="text-[10px] font-mono">
-                  <span className={parseFloat(apewisdom.raw_score) >= 0 ? 'text-profit' : 'text-loss'}>
-                    score: {parseFloat(apewisdom.raw_score).toFixed(2)}
-                  </span>
-                </div>
+      {/* gauges row: always show fear gauge + social side by side above chart */}
+      <div className="grid grid-cols-2 gap-2 text-[11px]">
+        {/* left: fear gauge (VIX for stocks, F&G for crypto) */}
+        <div className="bg-bg-primary border border-border p-2">
+          {isCrypto ? (
+            <>
+              <div className="text-[10px] uppercase text-text-muted">Crypto Fear & Greed</div>
+              {fng != null ? (
+                <>
+                  <div className={`text-lg font-mono font-bold ${fngColor(fng)}`}>{parseFloat(fng).toFixed(0)}</div>
+                  <div className={`text-[10px] uppercase font-semibold ${fngColor(fng)}`}>{fngLabel(fng)}</div>
+                  <div className="text-[9px] text-text-muted mt-0.5">0 = extreme fear, 100 = extreme greed</div>
+                </>
+              ) : (
+                <div className="text-sm text-text-muted py-1">No data</div>
               )}
-              {!apewisdom && (bullPct > 0 || bearPct > 0) && (
-                <div className="text-[10px] font-mono">
-                  <span className="text-profit">{(bullPct * 100).toFixed(0)}%</span>
-                  <span className="text-text-muted"> bull</span>
-                </div>
+            </>
+          ) : (
+            <>
+              <div className="text-[10px] uppercase text-text-muted">VIX Fear Gauge</div>
+              {vix != null ? (
+                <>
+                  <div className={`text-lg font-mono font-bold ${parseFloat(vix) > 25 ? 'text-loss' : parseFloat(vix) > 18 ? 'text-warning' : 'text-profit'}`}>
+                    {parseFloat(vix).toFixed(1)}
+                  </div>
+                  <div className="text-[10px] text-text-muted">
+                    {parseFloat(vix) > 30 ? 'Extreme Fear' : parseFloat(vix) > 25 ? 'High Vol' : parseFloat(vix) > 18 ? 'Elevated' : parseFloat(vix) > 12 ? 'Low Vol' : 'Complacent'}
+                  </div>
+                  <div className="text-[9px] text-text-muted mt-0.5">&lt;15 calm, 15-25 normal, &gt;25 fear</div>
+                </>
+              ) : (
+                <div className="text-sm text-text-muted py-1">No data</div>
               )}
-            </div>
+            </>
           )}
         </div>
-      )}
+        {/* right: social buzz (apewisdom) */}
+        <div className="bg-bg-primary border border-border p-2">
+          <div className="text-[10px] uppercase text-text-muted">Social (ApeWisdom)</div>
+          {mentions > 0 ? (
+            <>
+              <div className="text-lg font-mono font-bold text-text-primary">{mentions.toLocaleString()}</div>
+              <div className="text-[10px] text-text-muted">Reddit mentions (24h)</div>
+              {apewisdom && apewisdom.raw_score != null && (
+                <div className="text-[10px] font-mono mt-0.5">
+                  <span className="text-text-muted">score: </span>
+                  <span className={parseFloat(apewisdom.raw_score) >= 0 ? 'text-profit' : 'text-loss'}>
+                    {parseFloat(apewisdom.raw_score).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-text-muted ml-1">(-1 bear, +1 bull)</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="text-sm text-text-muted py-1">No mentions</div>
+              <div className="text-[9px] text-text-muted">Not trending on Reddit</div>
+            </>
+          )}
+        </div>
+      </div>
+      {/* news sentiment chart */}
       {hasNews ? (
         <>
-          <div className="text-[10px] uppercase text-text-muted px-1">
-            {isCrypto ? 'Crypto FNG' : 'VIX Fear Gauge'} + News
-          </div>
+          <div className="text-[10px] uppercase text-text-muted px-1">News Sentiment</div>
           <ResponsiveContainer width="100%" height={140}>
             <BarChart data={chartData}>
               <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
@@ -758,38 +774,6 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
         </>
       ) : (
         <div className="text-text-muted text-sm py-2">No news sentiment data</div>
-      )}
-      {latestSocial && (
-        <div className="space-y-1.5 px-1">
-          <div className="flex items-center gap-2 text-[10px] text-text-secondary">
-            <span className="uppercase">
-              {latestSocial.source === 'apewisdom' ? 'Social (ApeWisdom)' : latestSocial.source || 'Social'}
-            </span>
-            {mentions > 0 && <span className="text-text-muted">({mentions} mentions)</span>}
-          </div>
-          {/* bullish/bearish bar */}
-          {(bullPct > 0 || bearPct > 0) && (
-            <div className="flex h-2 w-full overflow-hidden rounded">
-              <div className="bg-profit transition-all" style={{ width: `${bullPct * 100}%` }}
-                title={`Bullish: ${(bullPct * 100).toFixed(0)}%`} />
-              <div className="bg-loss transition-all" style={{ width: `${bearPct * 100}%` }}
-                title={`Bearish: ${(bearPct * 100).toFixed(0)}%`} />
-              <div className="bg-bg-primary flex-1" />
-            </div>
-          )}
-          <div className="flex gap-3 text-xs">
-            {latestSocial.raw_score != null ? (
-              <span className={`font-mono ${parseFloat(latestSocial.raw_score) >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {parseFloat(latestSocial.raw_score).toFixed(2)}
-              </span>
-            ) : (
-              <>
-                <span className="text-profit font-mono">{(bullPct * 100).toFixed(0)}% bull</span>
-                <span className="text-loss font-mono">{(bearPct * 100).toFixed(0)}% bear</span>
-              </>
-            )}
-          </div>
-        </div>
       )}
     </div>
   )
