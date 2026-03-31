@@ -171,6 +171,61 @@ async def store_trade_log(
         return row["id"]
 
 
+async def sync_trades_from_alpaca(pool) -> int:
+    # / pull filled orders from alpaca and upsert into trade_log
+    # / alpaca is source of truth — this keeps db in sync after restarts
+    import httpx
+    import os
+    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    headers = {
+        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
+        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{base}/v2/orders",
+                headers=headers,
+                params={"status": "filled", "limit": 200, "direction": "desc"},
+            )
+            resp.raise_for_status()
+            orders = resp.json()
+    except Exception as exc:
+        logger.warning("alpaca_sync_fetch_failed", error=str(exc))
+        return 0
+
+    synced = 0
+    async with pool.acquire() as conn:
+        for o in orders:
+            order_id = o["id"]
+            # / skip if already in trade_log
+            existing = await conn.fetchrow(
+                "SELECT id FROM trade_log WHERE order_id = $1", order_id,
+            )
+            if existing:
+                continue
+            symbol = o["symbol"]
+            side = o["side"]
+            qty = float(o.get("filled_qty", 0))
+            price = float(o.get("filled_avg_price", 0))
+            filled_at = o.get("filled_at")
+            if qty <= 0 or price <= 0:
+                continue
+            await conn.execute(
+                """INSERT INTO trade_log
+                (trade_id, symbol, side, qty, price, order_id, broker, regime, pnl, strategy_id, details, created_at)
+                VALUES (NULL, $1, $2, $3, $4, $5, 'AlpacaBroker', NULL, NULL, NULL,
+                        $6, $7::timestamptz)""",
+                symbol, side, Decimal(str(qty)), Decimal(str(price)),
+                order_id, {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
+                filled_at,
+            )
+            synced += 1
+    if synced:
+        logger.info("alpaca_sync_complete", synced=synced, total_orders=len(orders))
+    return synced
+
+
 async def store_strategy_score(
     pool, strategy_id: str, period_start: date, period_end: date,
     sharpe_ratio: float, max_drawdown: float, win_rate: float,
