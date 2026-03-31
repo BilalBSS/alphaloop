@@ -224,18 +224,3 @@ async def store_insider_trades(pool, trades: list[dict[str, Any]]) -> int:
 
         logger.info("stored_insider_trades", count=inserted)
         return inserted
-
-
-async def log_data_quality_issue(pool, symbol: str, details: str) -> None:
-    # / log parsing/fetch failures to data_quality table
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO data_quality (source, symbol, date, issue_type, details)
-                VALUES ('sec_filings', $1, $2, 'api_error', $3)
-                """,
-                symbol, date.today(), details,
-            )
-    except Exception:
-        pass  # don't fail on logging

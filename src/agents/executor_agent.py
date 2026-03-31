@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import structlog
 
 from src.agents import tools

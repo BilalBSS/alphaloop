@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from datetime import date
 from typing import Any

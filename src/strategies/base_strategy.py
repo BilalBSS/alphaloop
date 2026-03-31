@@ -185,7 +185,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         ):
             override_ff = self._bear_market_overrides.get("fundamental_filters", {})
             for key, value in override_ff.items():
-                if key in filters and value is not None:
+                if value is not None:
                     filters[key] = value
         return filters
 

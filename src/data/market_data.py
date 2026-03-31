@@ -13,7 +13,7 @@ import httpx
 import structlog
 
 from .resilience import with_retry
-from .symbols import is_crypto, to_alpaca, market_type
+from .symbols import is_crypto, to_alpaca
 from .validators import validate_ohlcv
 
 logger = structlog.get_logger(__name__)

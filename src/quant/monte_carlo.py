@@ -5,9 +5,6 @@
 from __future__ import annotations
 
 import numpy as np
-import structlog
-
-logger = structlog.get_logger(__name__)
 
 
 def antithetic_sample(

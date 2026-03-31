@@ -8,9 +8,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import structlog
-
-logger = structlog.get_logger(__name__)
 
 
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:

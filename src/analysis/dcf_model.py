@@ -134,7 +134,7 @@ def run_dcf_simulation(
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
     # / mean-revert growth rates toward long-term average over projection period
-    long_term_growth = 0.05
+    long_term_growth = assumptions.terminal_growth
     reversion_speed = 0.1
     for year in range(1, years):
         growth_rates[:, year] = (

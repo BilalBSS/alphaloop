@@ -125,13 +125,6 @@ def to_alpaca(symbol: str) -> str:
     return symbol
 
 
-def from_alpaca(symbol: str) -> str:
-    # / "BTC/USD" -> "BTC-USD", equities pass through
-    if "/" in symbol and is_crypto(symbol):
-        return symbol.replace("/", "-")
-    return symbol
-
-
 def is_crypto(symbol: str) -> bool:
     # / true for crypto symbols in either format
     upper = symbol.upper()

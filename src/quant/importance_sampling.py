@@ -6,9 +6,6 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import stats
-import structlog
-
-logger = structlog.get_logger(__name__)
 
 
 def exponential_tilt(
