@@ -131,15 +131,19 @@ async def get_equity_history(period: str = "1D", timeframe: str = "5Min"):
 @app.get("/api/strategy-positions")
 async def get_strategy_positions(symbol: str | None = None):
     # / per-equity breakdown: which strategy owns what
-    rows = await _query(
-        """SELECT sp.strategy_id, sp.symbol, sp.qty, sp.avg_entry_price, sp.updated_at
-        FROM strategy_positions sp
-        ORDER BY sp.symbol, sp.strategy_id"""
-    )
-    result = _serialize(rows)
     if symbol:
-        result = [r for r in result if r.get("symbol") == symbol]
-    return result
+        rows = await _query(
+            """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+            FROM strategy_positions WHERE symbol = $1
+            ORDER BY strategy_id""",
+            symbol,
+        )
+    else:
+        rows = await _query(
+            """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+            FROM strategy_positions ORDER BY symbol, strategy_id"""
+        )
+    return _serialize(rows)
 
 
 @app.get("/api/positions")

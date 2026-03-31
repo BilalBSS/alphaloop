@@ -194,29 +194,31 @@ async def open_strategy_position(
 async def close_strategy_position(
     pool, strategy_id: str, symbol: str, qty: float,
 ) -> float | None:
-    # / reduce qty, delete if zero. returns entry_price for pnl calc
+    # / atomic reduce qty, delete if zero. returns entry_price for pnl calc
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
-            strategy_id, symbol,
-        )
-        if not row:
-            logger.warning("close_position_not_found", strategy_id=strategy_id, symbol=symbol)
-            return None
-
-        entry_price = float(row["avg_entry_price"]) if row["avg_entry_price"] else None
-        remaining = float(row["qty"]) - qty
-
-        if remaining <= 0:
-            await conn.execute(
-                "DELETE FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
+        # / atomic: lock row, read, update/delete in one transaction
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 FOR UPDATE",
                 strategy_id, symbol,
             )
-        else:
-            await conn.execute(
-                "UPDATE strategy_positions SET qty = $1, updated_at = NOW() WHERE strategy_id = $2 AND symbol = $3",
-                Decimal(str(remaining)), strategy_id, symbol,
-            )
+            if not row:
+                logger.warning("close_position_not_found", strategy_id=strategy_id, symbol=symbol)
+                return None
+
+            entry_price = float(row["avg_entry_price"]) if row["avg_entry_price"] else None
+            remaining = float(row["qty"]) - qty
+
+            if remaining <= 0:
+                await conn.execute(
+                    "DELETE FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
+                    strategy_id, symbol,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE strategy_positions SET qty = $1, updated_at = NOW() WHERE strategy_id = $2 AND symbol = $3",
+                    Decimal(str(remaining)), strategy_id, symbol,
+                )
     logger.info("strategy_position_closed", strategy_id=strategy_id, symbol=symbol, qty=qty, remaining=max(0, remaining))
     return entry_price
 
