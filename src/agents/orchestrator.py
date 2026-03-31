@@ -394,8 +394,9 @@ class AgentOrchestrator:
                         data = await fetch_coin_data(symbol)
                         if data and self._pool:
                             await tools.log_event(
-                                self._pool, "crypto_backfill", symbol=symbol,
-                                message=f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
+                                self._pool, "info", "crypto_backfill",
+                                f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
+                                symbol=symbol,
                             )
                     except Exception as exc:
                         logger.warning("crypto_backfill_symbol_error", symbol=symbol, error=str(exc))

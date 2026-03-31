@@ -185,7 +185,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         ):
             override_ff = self._bear_market_overrides.get("fundamental_filters", {})
             for key, value in override_ff.items():
-                if key in filters and value is not None:
+                if value is not None:
                     filters[key] = value
         return filters
 
@@ -425,223 +425,317 @@ class ConfigDrivenStrategy(StrategyInterface):
             reasons = [r[2] for r in passed_results]
             return True, max_strength, reasons
 
+    def _eval_bollinger(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.volatility import bollinger_bands
+        close = market_data["close"]
+        condition = sig.get("condition", "")
+        period = sig.get("lookback", sig.get("period", 20))
+        std = sig.get("std_dev", 2.0)
+        bb = bollinger_bands(close, period=period, std_dev=std)
+        last_close = float(close.iloc[-1])
+        if condition == "price_below_lower":
+            last_lower = float(bb.lower.iloc[-1])
+            passed = last_close < last_lower
+            strength = max(0, min(1, (last_lower - last_close) / (last_lower * 0.01 + 1e-9)))
+            return passed, strength if passed else 0.0, f"bb: close={last_close:.2f} {'<' if passed else '>='} lower={last_lower:.2f}"
+        elif condition == "price_above_upper":
+            last_upper = float(bb.upper.iloc[-1])
+            passed = last_close > last_upper
+            strength = max(0, min(1, (last_close - last_upper) / (last_upper * 0.01 + 1e-9)))
+            return passed, strength if passed else 0.0, f"bb: close={last_close:.2f} {'>' if passed else '<='} upper={last_upper:.2f}"
+        elif condition == "price_above_middle":
+            last_mid = float(bb.middle.iloc[-1])
+            passed = last_close > last_mid
+            return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'>' if passed else '<='} middle={last_mid:.2f}"
+        elif condition == "price_below_upper":
+            last_upper = float(bb.upper.iloc[-1])
+            passed = last_close < last_upper
+            return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'<' if passed else '>='} upper={last_upper:.2f}"
+        return False, 0.0, f"unknown bb condition: {condition}"
+
+    def _eval_rsi(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.momentum import rsi as rsi_fn
+        close = market_data["close"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 14)
+        threshold = sig.get("threshold", 30)
+        rsi_val = rsi_fn(close, period=period)
+        last_rsi = float(rsi_val.dropna().iloc[-1]) if not rsi_val.dropna().empty else 50.0
+        if condition == "below":
+            passed = last_rsi < threshold
+            strength = max(0, min(1, (threshold - last_rsi) / threshold)) if passed else 0.0
+            return passed, strength, f"rsi={last_rsi:.1f} {'<' if passed else '>='} {threshold}"
+        elif condition == "above":
+            passed = last_rsi > threshold
+            strength = max(0, min(1, (last_rsi - threshold) / (100 - threshold))) if passed else 0.0
+            return passed, strength, f"rsi={last_rsi:.1f} {'>' if passed else '<='} {threshold}"
+        return False, 0.0, f"unknown rsi condition: {condition}"
+
+    def _eval_macd(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.trend import macd as macd_fn
+        close = market_data["close"]
+        condition = sig.get("condition", "")
+        result = macd_fn(close)
+        last_hist = float(result.histogram.dropna().iloc[-1]) if not result.histogram.dropna().empty else 0.0
+        prev_hist = float(result.histogram.dropna().iloc[-2]) if len(result.histogram.dropna()) >= 2 else 0.0
+        if condition == "crossover_bullish":
+            passed = prev_hist < 0 and last_hist >= 0
+            return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
+        elif condition == "crossover_bearish":
+            passed = prev_hist > 0 and last_hist <= 0
+            return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
+        elif condition == "positive":
+            passed = last_hist > 0
+            return passed, 0.5 if passed else 0.0, f"macd histogram={last_hist:.4f}"
+        return False, 0.0, f"unknown macd condition: {condition}"
+
+    def _eval_volume(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        volume = market_data["volume"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 20)
+        multiplier = sig.get("multiplier", 1.5)
+        avg_vol = float(volume.rolling(window=period, min_periods=period).mean().iloc[-1])
+        last_vol = float(volume.iloc[-1])
+        if condition == "above_average":
+            passed = last_vol > avg_vol * multiplier
+            strength = min(1, last_vol / (avg_vol * multiplier)) if avg_vol > 0 else 0.0
+            return passed, strength if passed else 0.0, f"vol={last_vol:.0f} {'>' if passed else '<='} {multiplier}x avg={avg_vol:.0f}"
+        return False, 0.0, f"unknown volume condition: {condition}"
+
+    def _eval_sma(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.trend import sma as sma_fn
+        close = market_data["close"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 50)
+        sma_val = sma_fn(close, period=period)
+        last_close = float(close.iloc[-1])
+        last_sma = float(sma_val.iloc[-1])
+        if condition == "price_above":
+            passed = last_close > last_sma
+            return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} {'>' if passed else '<='} sma{period}={last_sma:.2f}"
+        elif condition == "price_below":
+            passed = last_close < last_sma
+            return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} {'<' if passed else '>='} sma{period}={last_sma:.2f}"
+        return False, 0.0, f"unknown sma condition: {condition}"
+
+    def _eval_adx(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.trend import adx as adx_fn
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 14)
+        threshold = sig.get("threshold", 25)
+        adx_val = adx_fn(high, low, close, period=period)
+        last_adx = float(adx_val.dropna().iloc[-1]) if not adx_val.dropna().empty else 0.0
+        if condition == "above":
+            passed = last_adx > threshold
+            return passed, min(1, last_adx / 50) if passed else 0.0, f"adx={last_adx:.1f} {'>' if passed else '<='} {threshold}"
+        elif condition == "below":
+            passed = last_adx < threshold
+            return passed, 0.5 if passed else 0.0, f"adx={last_adx:.1f} {'<' if passed else '>='} {threshold}"
+        return False, 0.0, f"unknown adx condition: {condition}"
+
+    def _eval_atr(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.volatility import atr as atr_fn
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 14)
+        threshold = sig.get("threshold", 0)
+        atr_val = atr_fn(high, low, close, period=period)
+        last_atr = float(atr_val.dropna().iloc[-1]) if not atr_val.dropna().empty else 0.0
+        last_close = float(close.iloc[-1])
+        atr_pct = last_atr / last_close if last_close > 0 else 0
+        if condition == "above":
+            passed = atr_pct > threshold
+            return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'>' if passed else '<='} {threshold}"
+        elif condition == "below":
+            passed = atr_pct < threshold
+            return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'<' if passed else '>='} {threshold}"
+        # / no condition specified: informational only, always passes
+        return True, 0.5, f"atr={last_atr:.2f} ({atr_pct:.2%} of price)"
+
+    def _eval_stochastic(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.momentum import stochastic as stoch_fn
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        period = sig.get("period", 14)
+        threshold = sig.get("threshold", 20)
+        result = stoch_fn(high, low, close, k_period=period)
+        last_k = float(result.k.dropna().iloc[-1]) if not result.k.dropna().empty else 50.0
+        if condition == "below":
+            passed = last_k < threshold
+            return passed, max(0, min(1, (threshold - last_k) / threshold)) if passed else 0.0, f"stoch %k={last_k:.1f} {'<' if passed else '>='} {threshold}"
+        elif condition == "above":
+            passed = last_k > threshold
+            return passed, max(0, min(1, (last_k - threshold) / (100 - threshold))) if passed else 0.0, f"stoch %k={last_k:.1f} {'>' if passed else '<='} {threshold}"
+        return False, 0.0, f"unknown stochastic condition: {condition}"
+
+    def _eval_fvg(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.structure import fair_value_gaps
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        result = fair_value_gaps(high, low, close)
+        last_sig = int(result.signal.iloc[-1])
+        if condition == "bullish":
+            passed = last_sig == 1
+            return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
+        elif condition == "bearish":
+            passed = last_sig == -1
+            return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
+        passed = last_sig != 0
+        return passed, 0.6 if passed else 0.0, f"fvg signal={last_sig}"
+
+    def _eval_order_block(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.structure import order_blocks
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        open_ = market_data["open"]
+        result = order_blocks(high, low, close, open_)
+        last_sig = int(result.signal.iloc[-1])
+        if condition == "bullish":
+            passed = last_sig == 1
+        elif condition == "bearish":
+            passed = last_sig == -1
+        else:
+            passed = last_sig != 0
+        return passed, 0.7 if passed else 0.0, f"ob signal={last_sig}"
+
+    def _eval_structure_break(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.structure import structure_breaks
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        lookback = sig.get("lookback", 5)
+        result = structure_breaks(high, low, close, swing_lookback=lookback)
+        last_sig = int(result.signal.iloc[-1])
+        if condition == "bullish":
+            passed = last_sig == 1
+        elif condition == "bearish":
+            passed = last_sig == -1
+        else:
+            passed = last_sig != 0
+        return passed, 0.8 if passed else 0.0, f"structure break={last_sig}"
+
+    def _eval_pivot_points(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.support_resistance import pivot_points
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        pp = pivot_points(float(high.iloc[-2]), float(low.iloc[-2]), float(close.iloc[-2]))
+        last_close = float(close.iloc[-1])
+        if condition == "above_r1":
+            passed = last_close > pp.r1
+            return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs r1={pp.r1:.2f}"
+        elif condition == "below_s1":
+            passed = last_close < pp.s1
+            return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs s1={pp.s1:.2f}"
+        passed = last_close < pp.pivot
+        return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs pivot={pp.pivot:.2f}"
+
+    def _eval_fibonacci(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.support_resistance import fibonacci_retracement
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        lookback = sig.get("lookback", 50)
+        fib = fibonacci_retracement(high, low, lookback=lookback)
+        last_close = float(close.iloc[-1])
+        level = sig.get("level", 0.618)
+        fib_map = {0.236: fib.level_236, 0.382: fib.level_382, 0.5: fib.level_500, 0.618: fib.level_618, 0.786: fib.level_786}
+        target = fib_map.get(level, fib.level_618)
+        tolerance = abs(target - fib.swing_low) * 0.02
+        if condition == "near_level":
+            passed = abs(last_close - target) <= tolerance
+            return passed, 0.7 if passed else 0.0, f"close={last_close:.2f} near fib {level}={target:.2f}"
+        passed = last_close <= target
+        return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs fib {level}={target:.2f}"
+
+    def _eval_sr_zone(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.support_resistance import sr_zones_series
+        close = market_data["close"]
+        high = market_data["high"]
+        low = market_data["low"]
+        condition = sig.get("condition", "")
+        sr = sr_zones_series(close, high, low)
+        last_sr = float(sr.iloc[-1])
+        threshold_val = sig.get("threshold", 0.02)
+        if condition == "near_support":
+            passed = last_sr < 0 and abs(last_sr) < threshold_val
+            return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
+        elif condition == "near_resistance":
+            passed = last_sr > 0 and abs(last_sr) < threshold_val
+            return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
+        passed = abs(last_sr) < threshold_val
+        return passed, 0.5 if passed else 0.0, f"sr distance={last_sr:.4f}"
+
+    _SIGNAL_HANDLERS: dict[str, Any] = {
+        "bollinger_bands": _eval_bollinger,
+        "rsi": _eval_rsi,
+        "macd": _eval_macd,
+        "volume": _eval_volume,
+        "sma": _eval_sma,
+        "adx": _eval_adx,
+        "atr": _eval_atr,
+        "stochastic": _eval_stochastic,
+        "fair_value_gap": _eval_fvg,
+        "order_block": _eval_order_block,
+        "structure_break": _eval_structure_break,
+        "pivot_points": _eval_pivot_points,
+        "fibonacci": _eval_fibonacci,
+        "sr_zone": _eval_sr_zone,
+    }
+
     def _evaluate_signal(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
     ) -> tuple[bool, float, str]:
         # / evaluate a single technical signal condition
         indicator = sig.get("indicator", "")
-        condition = sig.get("condition", "")
-        close = market_data["close"]
-        high = market_data["high"]
-        low = market_data["low"]
-        volume = market_data["volume"]
-
         try:
-            if indicator == "bollinger_bands":
-                from src.indicators.volatility import bollinger_bands
-                period = sig.get("lookback", sig.get("period", 20))
-                std = sig.get("std_dev", 2.0)
-                bb = bollinger_bands(close, period=period, std_dev=std)
-                last_close = float(close.iloc[-1])
-                if condition == "price_below_lower":
-                    last_lower = float(bb.lower.iloc[-1])
-                    passed = last_close < last_lower
-                    strength = max(0, min(1, (last_lower - last_close) / (last_lower * 0.01 + 1e-9)))
-                    return passed, strength if passed else 0.0, f"bb: close={last_close:.2f} {'<' if passed else '>='} lower={last_lower:.2f}"
-                elif condition == "price_above_upper":
-                    last_upper = float(bb.upper.iloc[-1])
-                    passed = last_close > last_upper
-                    strength = max(0, min(1, (last_close - last_upper) / (last_upper * 0.01 + 1e-9)))
-                    return passed, strength if passed else 0.0, f"bb: close={last_close:.2f} {'>' if passed else '<='} upper={last_upper:.2f}"
-                elif condition == "price_above_middle":
-                    last_mid = float(bb.middle.iloc[-1])
-                    passed = last_close > last_mid
-                    return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'>' if passed else '<='} middle={last_mid:.2f}"
-                elif condition == "price_below_upper":
-                    last_upper = float(bb.upper.iloc[-1])
-                    passed = last_close < last_upper
-                    return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'<' if passed else '>='} upper={last_upper:.2f}"
-
-            elif indicator == "rsi":
-                from src.indicators.momentum import rsi as rsi_fn
-                period = sig.get("period", 14)
-                threshold = sig.get("threshold", 30)
-                rsi_val = rsi_fn(close, period=period)
-                last_rsi = float(rsi_val.dropna().iloc[-1]) if not rsi_val.dropna().empty else 50.0
-                if condition == "below":
-                    passed = last_rsi < threshold
-                    strength = max(0, min(1, (threshold - last_rsi) / threshold)) if passed else 0.0
-                    return passed, strength, f"rsi={last_rsi:.1f} {'<' if passed else '>='} {threshold}"
-                elif condition == "above":
-                    passed = last_rsi > threshold
-                    strength = max(0, min(1, (last_rsi - threshold) / (100 - threshold))) if passed else 0.0
-                    return passed, strength, f"rsi={last_rsi:.1f} {'>' if passed else '<='} {threshold}"
-
-            elif indicator == "macd":
-                from src.indicators.trend import macd as macd_fn
-                result = macd_fn(close)
-                last_hist = float(result.histogram.dropna().iloc[-1]) if not result.histogram.dropna().empty else 0.0
-                prev_hist = float(result.histogram.dropna().iloc[-2]) if len(result.histogram.dropna()) >= 2 else 0.0
-                if condition == "crossover_bullish":
-                    passed = prev_hist < 0 and last_hist >= 0
-                    return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
-                elif condition == "crossover_bearish":
-                    passed = prev_hist > 0 and last_hist <= 0
-                    return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
-                elif condition == "positive":
-                    passed = last_hist > 0
-                    return passed, 0.5 if passed else 0.0, f"macd histogram={last_hist:.4f}"
-
-            elif indicator == "volume":
-                period = sig.get("period", 20)
-                multiplier = sig.get("multiplier", 1.5)
-                avg_vol = float(volume.rolling(window=period, min_periods=period).mean().iloc[-1])
-                last_vol = float(volume.iloc[-1])
-                if condition == "above_average":
-                    passed = last_vol > avg_vol * multiplier
-                    strength = min(1, last_vol / (avg_vol * multiplier)) if avg_vol > 0 else 0.0
-                    return passed, strength if passed else 0.0, f"vol={last_vol:.0f} {'>' if passed else '<='} {multiplier}x avg={avg_vol:.0f}"
-
-            elif indicator == "sma":
-                from src.indicators.trend import sma as sma_fn
-                period = sig.get("period", 50)
-                sma_val = sma_fn(close, period=period)
-                last_close = float(close.iloc[-1])
-                last_sma = float(sma_val.iloc[-1])
-                if condition == "price_above":
-                    passed = last_close > last_sma
-                    return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} {'>' if passed else '<='} sma{period}={last_sma:.2f}"
-                elif condition == "price_below":
-                    passed = last_close < last_sma
-                    return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} {'<' if passed else '>='} sma{period}={last_sma:.2f}"
-
-            elif indicator == "adx":
-                from src.indicators.trend import adx as adx_fn
-                period = sig.get("period", 14)
-                threshold = sig.get("threshold", 25)
-                adx_val = adx_fn(high, low, close, period=period)
-                last_adx = float(adx_val.dropna().iloc[-1]) if not adx_val.dropna().empty else 0.0
-                if condition == "above":
-                    passed = last_adx > threshold
-                    return passed, min(1, last_adx / 50) if passed else 0.0, f"adx={last_adx:.1f} {'>' if passed else '<='} {threshold}"
-                elif condition == "below":
-                    passed = last_adx < threshold
-                    return passed, 0.5 if passed else 0.0, f"adx={last_adx:.1f} {'<' if passed else '>='} {threshold}"
-
-            elif indicator == "atr":
-                from src.indicators.volatility import atr as atr_fn
-                period = sig.get("period", 14)
-                threshold = sig.get("threshold", 0)
-                atr_val = atr_fn(high, low, close, period=period)
-                last_atr = float(atr_val.dropna().iloc[-1]) if not atr_val.dropna().empty else 0.0
-                last_close = float(close.iloc[-1])
-                atr_pct = last_atr / last_close if last_close > 0 else 0
-                if condition == "above":
-                    passed = atr_pct > threshold
-                    return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'>' if passed else '<='} {threshold}"
-                elif condition == "below":
-                    passed = atr_pct < threshold
-                    return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'<' if passed else '>='} {threshold}"
-                # / no condition specified: informational only, always passes
-                return True, 0.5, f"atr={last_atr:.2f} ({atr_pct:.2%} of price)"
-
-            elif indicator == "stochastic":
-                from src.indicators.momentum import stochastic as stoch_fn
-                period = sig.get("period", 14)
-                threshold = sig.get("threshold", 20)
-                result = stoch_fn(high, low, close, k_period=period)
-                last_k = float(result.k.dropna().iloc[-1]) if not result.k.dropna().empty else 50.0
-                if condition == "below":
-                    passed = last_k < threshold
-                    return passed, max(0, min(1, (threshold - last_k) / threshold)) if passed else 0.0, f"stoch %k={last_k:.1f} {'<' if passed else '>='} {threshold}"
-                elif condition == "above":
-                    passed = last_k > threshold
-                    return passed, max(0, min(1, (last_k - threshold) / (100 - threshold))) if passed else 0.0, f"stoch %k={last_k:.1f} {'>' if passed else '<='} {threshold}"
-
-            elif indicator == "fair_value_gap":
-                from src.indicators.structure import fair_value_gaps
-                result = fair_value_gaps(high, low, close)
-                last_sig = int(result.signal.iloc[-1])
-                if condition == "bullish":
-                    passed = last_sig == 1
-                    return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
-                elif condition == "bearish":
-                    passed = last_sig == -1
-                    return passed, 0.7 if passed else 0.0, f"fvg signal={last_sig}"
-                passed = last_sig != 0
-                return passed, 0.6 if passed else 0.0, f"fvg signal={last_sig}"
-
-            elif indicator == "order_block":
-                from src.indicators.structure import order_blocks
-                open_ = market_data["open"]
-                result = order_blocks(high, low, close, open_)
-                last_sig = int(result.signal.iloc[-1])
-                if condition == "bullish":
-                    passed = last_sig == 1
-                elif condition == "bearish":
-                    passed = last_sig == -1
-                else:
-                    passed = last_sig != 0
-                return passed, 0.7 if passed else 0.0, f"ob signal={last_sig}"
-
-            elif indicator == "structure_break":
-                from src.indicators.structure import structure_breaks
-                lookback = sig.get("lookback", 5)
-                result = structure_breaks(high, low, close, swing_lookback=lookback)
-                last_sig = int(result.signal.iloc[-1])
-                if condition == "bullish":
-                    passed = last_sig == 1
-                elif condition == "bearish":
-                    passed = last_sig == -1
-                else:
-                    passed = last_sig != 0
-                return passed, 0.8 if passed else 0.0, f"structure break={last_sig}"
-
-            elif indicator == "pivot_points":
-                from src.indicators.support_resistance import pivot_points
-                pp = pivot_points(float(high.iloc[-2]), float(low.iloc[-2]), float(close.iloc[-2]))
-                last_close = float(close.iloc[-1])
-                if condition == "above_r1":
-                    passed = last_close > pp.r1
-                    return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs r1={pp.r1:.2f}"
-                elif condition == "below_s1":
-                    passed = last_close < pp.s1
-                    return passed, 0.6 if passed else 0.0, f"close={last_close:.2f} vs s1={pp.s1:.2f}"
-                passed = last_close < pp.pivot
-                return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs pivot={pp.pivot:.2f}"
-
-            elif indicator == "fibonacci":
-                from src.indicators.support_resistance import fibonacci_retracement
-                lookback = sig.get("lookback", 50)
-                fib = fibonacci_retracement(high, low, lookback=lookback)
-                last_close = float(close.iloc[-1])
-                level = sig.get("level", 0.618)
-                fib_map = {0.236: fib.level_236, 0.382: fib.level_382, 0.5: fib.level_500, 0.618: fib.level_618, 0.786: fib.level_786}
-                target = fib_map.get(level, fib.level_618)
-                tolerance = abs(target - fib.swing_low) * 0.02
-                if condition == "near_level":
-                    passed = abs(last_close - target) <= tolerance
-                    return passed, 0.7 if passed else 0.0, f"close={last_close:.2f} near fib {level}={target:.2f}"
-                passed = last_close <= target
-                return passed, 0.5 if passed else 0.0, f"close={last_close:.2f} vs fib {level}={target:.2f}"
-
-            elif indicator == "sr_zone":
-                from src.indicators.support_resistance import sr_zones_series
-                sr = sr_zones_series(close, high, low)
-                last_sr = float(sr.iloc[-1])
-                threshold_val = sig.get("threshold", 0.02)
-                if condition == "near_support":
-                    passed = last_sr < 0 and abs(last_sr) < threshold_val
-                    return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
-                elif condition == "near_resistance":
-                    passed = last_sr > 0 and abs(last_sr) < threshold_val
-                    return passed, 0.6 if passed else 0.0, f"sr distance={last_sr:.4f}"
-                passed = abs(last_sr) < threshold_val
-                return passed, 0.5 if passed else 0.0, f"sr distance={last_sr:.4f}"
-
-            # / unknown indicator — skip gracefully
-            return False, 0.0, f"unknown indicator: {indicator}"
-
+            handler = self._SIGNAL_HANDLERS.get(indicator)
+            if handler is None:
+                # / unknown indicator — skip gracefully
+                return False, 0.0, f"unknown indicator: {indicator}"
+            return handler(self, sig, market_data)
         except (IndexError, KeyError, ValueError) as e:
             logger.warning("signal_evaluation_error", indicator=indicator, error=str(e))
             return False, 0.0, f"error evaluating {indicator}: {e}"

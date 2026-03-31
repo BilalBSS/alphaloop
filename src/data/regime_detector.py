@@ -8,12 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any
 
 import numpy as np
 import structlog
-
-from .symbols import market_type
 
 logger = structlog.get_logger(__name__)
 

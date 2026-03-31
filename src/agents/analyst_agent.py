@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from datetime import date
 from typing import Any
@@ -75,8 +74,8 @@ class AnalystAgent:
             return await self._analyze_crypto_symbol(pool, symbol)
         return await self._analyze_equity_symbol(pool, symbol)
 
-    async def _analyze_crypto_symbol(self, pool, symbol: str) -> float | None:
-        # / crypto: NVT from coingecko + sentiment + LLM analysis
+    async def _fetch_crypto_components(self, pool, symbol: str) -> tuple:
+        # / returns (sentiment_score, nvt, coin_data, funding_rate, oi_rank)
         sentiment_score: float | None = None
         try:
             sentiment_score = await compute_sentiment_score(symbol)
@@ -113,15 +112,24 @@ class AnalystAgent:
             self._funding_cache = {}  # / mark as attempted, don't retry per-symbol
             logger.warning("analyst_crypto_funding_failed", symbol=symbol, error=str(exc))
 
-        regime: str | None = None
+        return (sentiment_score, nvt, coin_data, funding_rate, oi_rank)
+
+    async def _analyze_crypto_symbol(self, pool, symbol: str) -> float | None:
+        # / crypto: NVT from coingecko + sentiment + LLM analysis
+        sentiment_score, nvt, coin_data, funding_rate, oi_rank = await self._fetch_crypto_components(pool, symbol)
+
+        regime = await tools.fetch_latest_regime(pool, "crypto")
+        fear_greed: float | None = None
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """SELECT regime FROM regime_history
-                    WHERE market = 'crypto' ORDER BY date DESC LIMIT 1"""
+                fng_row = await conn.fetchrow(
+                    """SELECT raw_score FROM social_sentiment
+                    WHERE symbol = $1 AND source = 'fear_greed'
+                    ORDER BY date DESC LIMIT 1""",
+                    symbol,
                 )
-                if row:
-                    regime = row["regime"]
+                if fng_row and fng_row["raw_score"] is not None:
+                    fear_greed = float(fng_row["raw_score"])
         except Exception:
             pass
 
@@ -137,7 +145,7 @@ class AnalystAgent:
             "price_change_24h": coin_data.get("price_change_24h_pct") if coin_data else None,
             "price_change_7d": coin_data.get("price_change_7d_pct") if coin_data else None,
             "market_cap": coin_data.get("market_cap") if coin_data else None,
-            "fear_greed": None,  # TODO: fetch from social_sentiment
+            "fear_greed": fear_greed,
             "sentiment_score": sentiment_score,
             "regime": regime,
         }
@@ -239,13 +247,12 @@ class AnalystAgent:
         logger.info("analyst_crypto_complete", symbol=symbol, composite=composite, nvt=nvt)
         return composite
 
-    async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
-        # / run all analysis components, compute composite, store to db
+    async def _fetch_equity_components(self, pool, symbol: str) -> tuple:
+        # / returns (ratio_score, dcf_result, earnings_signal, insider_signal)
         ratio_score: RatioScore | None = None
         dcf_result: DCFResult | None = None
         earnings_signal: EarningsSignal | None = None
         insider_signal: InsiderSignal | None = None
-        regime: str | None = None
 
         # / each component independently try/excepted
         try:
@@ -271,34 +278,11 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_insider_failed", symbol=symbol, error=str(exc))
 
-        # / news sentiment (phase 8)
-        sentiment_score: float | None = None
-        try:
-            sentiment_score = await compute_sentiment_score(symbol)
-            if sentiment_score != 0.0:
-                await store_sentiment(pool, symbol, sentiment_score)
-        except Exception as exc:
-            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
+        return (ratio_score, dcf_result, earnings_signal, insider_signal)
 
-        # / fetch latest regime from regime_history
-        try:
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """SELECT regime, confidence FROM regime_history
-                    WHERE market = 'equity' ORDER BY date DESC LIMIT 1"""
-                )
-                if row:
-                    regime = row["regime"]
-        except Exception as exc:
-            logger.warning("regime_fetch_failed", symbol=symbol, error=str(exc))
-
-        # / store dcf result to dcf_valuations table (regime known at this point)
-        if dcf_result:
-            try:
-                from src.analysis.dcf_model import store_dcf_result
-                await store_dcf_result(pool, dcf_result, regime=regime)
-            except Exception as exc:
-                logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
+    async def _fetch_equity_enrichment(self, pool, symbol: str) -> tuple:
+        # / returns (regime, symbol_trend, indicator_data, sentiment_data)
+        regime = await tools.fetch_latest_regime(pool, "equity")
 
         # / compute per-symbol trend for consensus gate
         symbol_trend = "unknown"
@@ -314,10 +298,8 @@ class AnalystAgent:
                     import pandas as pd
                     close_series = pd.Series([float(r["close"]) for r in reversed(rows)])
                     sma50 = close_series.rolling(window=50, min_periods=50).mean().iloc[-1]
-                    if sma50 is not None and not (hasattr(sma50, '__class__') and str(sma50) == 'nan'):
-                        import math
-                        if not math.isnan(float(sma50)):
-                            symbol_trend = "up" if float(close_series.iloc[-1]) > float(sma50) else "down"
+                    if pd.notna(sma50):
+                        symbol_trend = "up" if float(close_series.iloc[-1]) > float(sma50) else "down"
         except Exception:
             pass
 
@@ -356,6 +338,31 @@ class AnalystAgent:
                     sentiment_data = None
         except Exception:
             pass
+
+        return (regime, symbol_trend, indicator_data, sentiment_data)
+
+    async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
+        # / run all analysis components, compute composite, store to db
+        ratio_score, dcf_result, earnings_signal, insider_signal = await self._fetch_equity_components(pool, symbol)
+
+        # / news sentiment (phase 8)
+        sentiment_score: float | None = None
+        try:
+            sentiment_score = await compute_sentiment_score(symbol)
+            if sentiment_score != 0.0:
+                await store_sentiment(pool, symbol, sentiment_score)
+        except Exception as exc:
+            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
+
+        regime, symbol_trend, indicator_data, sentiment_data = await self._fetch_equity_enrichment(pool, symbol)
+
+        # / store dcf result to dcf_valuations table (regime known at this point)
+        if dcf_result:
+            try:
+                from src.analysis.dcf_model import store_dcf_result
+                await store_dcf_result(pool, dcf_result, regime=regime)
+            except Exception as exc:
+                logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
 
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
         regime_with_trend = regime

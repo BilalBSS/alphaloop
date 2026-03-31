@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -13,11 +14,6 @@
   --color-accent: #3b82f6;
   --color-warning: #f59e0b;
   --color-critical: #ef4444;
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  src: url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
 }
 
 body {

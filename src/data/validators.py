@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 
@@ -122,23 +122,3 @@ def validate_sentiment(row: dict) -> list[ValidationResult]:
 validate_ohlcv = validate_market_data
 
 
-def filter_valid(rows: list[dict], validator_fn: Callable, source: str) -> list[dict]:
-    # / filter rows through validator, log and drop invalid ones
-    valid_rows = []
-    for row in rows:
-        results = validator_fn(row)
-        failures = [r for r in results if not r.valid]
-        if failures:
-            logger.warning(
-                "validation_failed",
-                source=source,
-                symbol=row.get("symbol", "unknown"),
-                date=str(row.get("date", "unknown")),
-                failures=[
-                    {"field": f.field, "value": str(f.value), "reason": f.reason}
-                    for f in failures
-                ],
-            )
-        else:
-            valid_rows.append(row)
-    return valid_rows

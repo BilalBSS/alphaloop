@@ -655,7 +655,9 @@ function InsiderPanel({ insiderTrades, score, symbol }) {
 // / sentiment panel: news chart + fear/greed + vix + social detail
 function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
   const hasNews = sentiment && sentiment.length > 0
-  const latestSocial = socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null
+  // / prefer apewisdom row, fall back to latest social row
+  const apewisdom = socialSentiment?.find(s => s.source === 'apewisdom') || null
+  const latestSocial = apewisdom || (socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null)
   const details = (score?.details && typeof score.details === 'object') ? score.details : {}
 
   const chartData = hasNews
@@ -715,9 +717,18 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
           )}
           {mentions > 0 && (
             <div className="bg-bg-primary border border-border p-2">
-              <div className="text-[10px] uppercase text-text-muted">{latestSocial?.source || 'Social'} Mentions</div>
+              <div className="text-[10px] uppercase text-text-muted">
+                {latestSocial?.source === 'apewisdom' ? 'Social (ApeWisdom)' : latestSocial?.source || 'Social'} Mentions
+              </div>
               <div className="text-lg font-mono font-bold text-text-primary">{mentions.toLocaleString()}</div>
-              {(bullPct > 0 || bearPct > 0) && (
+              {apewisdom && apewisdom.raw_score != null && (
+                <div className="text-[10px] font-mono">
+                  <span className={parseFloat(apewisdom.raw_score) >= 0 ? 'text-profit' : 'text-loss'}>
+                    score: {parseFloat(apewisdom.raw_score).toFixed(2)}
+                  </span>
+                </div>
+              )}
+              {!apewisdom && (bullPct > 0 || bearPct > 0) && (
                 <div className="text-[10px] font-mono">
                   <span className="text-profit">{(bullPct * 100).toFixed(0)}%</span>
                   <span className="text-text-muted"> bull</span>
@@ -751,7 +762,9 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
       {latestSocial && (
         <div className="space-y-1.5 px-1">
           <div className="flex items-center gap-2 text-[10px] text-text-secondary">
-            <span className="uppercase">{latestSocial.source || 'Social'}</span>
+            <span className="uppercase">
+              {latestSocial.source === 'apewisdom' ? 'Social (ApeWisdom)' : latestSocial.source || 'Social'}
+            </span>
             {mentions > 0 && <span className="text-text-muted">({mentions} mentions)</span>}
           </div>
           {/* bullish/bearish bar */}

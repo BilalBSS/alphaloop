@@ -4,12 +4,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
 
 import asyncpg
 import structlog

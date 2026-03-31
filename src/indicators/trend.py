@@ -8,9 +8,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import structlog
-
-logger = structlog.get_logger(__name__)
 
 
 def sma(series: pd.Series, period: int = 20) -> pd.Series:

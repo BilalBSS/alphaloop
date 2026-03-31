@@ -13,13 +13,12 @@ import httpx
 import structlog
 
 from .resilience import with_retry
-from .symbols import is_crypto, to_alpaca, market_type
+from .symbols import is_crypto, to_alpaca
 from .validators import validate_ohlcv
 
 logger = structlog.get_logger(__name__)
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
-ALPACA_CRYPTO_URL = "https://data.alpaca.markets"
 
 # / rate limit: 200 req/min for alpaca free tier
 _rate_semaphore = asyncio.Semaphore(10)  # concurrency cap
@@ -49,7 +48,7 @@ async def fetch_bars_alpaca(
     crypto = is_crypto(symbol)
 
     if crypto:
-        url = f"{ALPACA_CRYPTO_URL}/v1beta3/crypto/us/bars"
+        url = f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars"
         params = {
             "symbols": alpaca_sym,
             "timeframe": timeframe,
@@ -172,7 +171,7 @@ async def fetch_latest_quote(symbol: str) -> dict[str, Any] | None:
     crypto = is_crypto(symbol)
 
     if crypto:
-        url = f"{ALPACA_CRYPTO_URL}/v1beta3/crypto/us/latest/trades"
+        url = f"{ALPACA_DATA_URL}/v1beta3/crypto/us/latest/trades"
         params = {"symbols": alpaca_sym}
     else:
         url = f"{ALPACA_DATA_URL}/v2/stocks/{alpaca_sym}/trades/latest"

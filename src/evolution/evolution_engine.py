@@ -68,6 +68,61 @@ class EvolutionEngine:
             return summary
 
         # / 1. READ: fetch strategy scores from db
+        db_scores, generation = await self._read_scores(pool)
+        summary["generation"] = generation
+        logger.info("evolution_start", generation=generation, pool_size=strategy_pool.size)
+
+        # / 2. UPDATE pool scores from db
+        self._update_pool(db_scores, strategy_pool)
+
+        # / 3. KILL: bottom quartile
+        killed_configs = await self._kill_bottom_quartile(pool, generation, strategy_pool, summary)
+
+        # / 4. KILL: tier-2 underperformers
+        await self._kill_underperforming_tier2(pool, generation, strategy_pool, killed_configs, summary)
+        logger.info("evolution_killed", count=len(killed_configs))
+
+        # / 5-6. MUTATE + BACKTEST
+        mutated_configs = await self._mutate_killed(pool, killed_configs, strategy_pool, summary)
+        backtest_results = await self._backtest_mutated(mutated_configs, market_data, summary)
+
+        # / 7-8. SCORE + ADD above-median to pool
+        await self._score_and_add(pool, generation, backtest_results, strategy_pool, summary)
+
+        # / 9. PROMOTE: paper_trading -> live
+        await self._promote_paper(pool, generation, strategy_pool, summary)
+
+        # / 10. SPAWN TIER-2: per-symbol tweaks from sector strategies
+        try:
+            spawned = await self._spawn_tier2(pool, strategy_pool, generation)
+            summary["spawned_tier2"] = spawned
+        except Exception as exc:
+            logger.error("spawn_tier2_failed", error=str(exc))
+            summary["errors"].append(f"spawn_tier2 failed: {exc}")
+
+        # / 11. GRADUATE TIER-3: per-symbol full freedom
+        try:
+            graduated = await self._graduate_tier3(pool, strategy_pool, generation)
+            summary["graduated_tier3"] = graduated
+        except Exception as exc:
+            logger.error("graduate_tier3_failed", error=str(exc))
+            summary["errors"].append(f"graduate_tier3 failed: {exc}")
+
+        # / 12. DOCUMENT: generate report and update docs
+        await self._document(pool, generation, strategy_pool, summary)
+
+        notify_evolution_summary(summary)
+        logger.info(
+            "evolution_complete",
+            generation=generation,
+            killed=len(summary["killed"]),
+            mutated=len(summary["mutated"]),
+            promoted=len(summary["promoted"]),
+        )
+        return summary
+
+    async def _read_scores(self, pool: Any) -> tuple[list, int]:
+        # / 1. READ: fetch strategy scores from db
         try:
             db_scores = await fetch_strategy_scores(pool)
         except Exception as exc:
@@ -87,9 +142,9 @@ class EvolutionEngine:
             except Exception:
                 generation = 1
 
-        summary["generation"] = generation
-        logger.info("evolution_start", generation=generation, pool_size=strategy_pool.size)
+        return db_scores, generation
 
+    def _update_pool(self, db_scores: list, strategy_pool: StrategyPool) -> None:
         # / update pool scores from db
         for score_row in db_scores:
             sid = score_row.get("strategy_id", "")
@@ -105,6 +160,9 @@ class EvolutionEngine:
                 )
                 strategy_pool.update_score(sid, s)
 
+    async def _kill_bottom_quartile(
+        self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
+    ) -> list[dict]:
         # / 2. RANK + 3. KILL: bottom quartile
         # / skip killing if strategies haven't accumulated enough trade data
         scored_count = sum(
@@ -136,6 +194,12 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.error("evolution_log_kill_failed", strategy_id=sid, error=str(exc))
 
+        return killed_configs
+
+    async def _kill_underperforming_tier2(
+        self, pool: Any, generation: int, strategy_pool: StrategyPool,
+        killed_configs: list[dict], summary: dict,
+    ) -> None:
         # / tier-2 kill condition: tweaked strategies that don't beat sector base
         for entry in strategy_pool.list_by_status("live"):
             config = entry.strategy.config
@@ -155,8 +219,10 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.error("evolution_log_tier2_kill_failed", error=str(exc))
 
-        logger.info("evolution_killed", count=len(killed_configs))
-
+    async def _mutate_killed(
+        self, pool: Any, killed_configs: list[dict], strategy_pool: StrategyPool,
+        summary: dict,
+    ) -> list[dict]:
         # / 4. MUTATE: propose mutations for each killed strategy
         top_performers = strategy_pool.top_performers(n=1)
         top_config = top_performers[0].strategy.config if top_performers else {}
@@ -186,6 +252,12 @@ class EvolutionEngine:
                 else:
                     mutated_configs.append(result)
 
+        return mutated_configs
+
+    async def _backtest_mutated(
+        self, mutated_configs: list[dict], market_data: dict | None,
+        summary: dict,
+    ) -> list[tuple[dict, BacktestResult]]:
         # / 5. BACKTEST: run backtests in parallel
         backtest_results: list[tuple[dict, BacktestResult]] = []
         if mutated_configs and market_data:
@@ -202,6 +274,13 @@ class EvolutionEngine:
                 else:
                     backtest_results.append((config, bt_result))
 
+        return backtest_results
+
+    async def _score_and_add(
+        self, pool: Any, generation: int,
+        backtest_results: list[tuple[dict, BacktestResult]],
+        strategy_pool: StrategyPool, summary: dict,
+    ) -> None:
         # / 6. SCORE + 7. ADD above-median to pool
         # / compute median composite score of current pool
         ranked = strategy_pool.ranked()
@@ -264,6 +343,9 @@ class EvolutionEngine:
 
             summary["mutated"].append(mutation_entry)
 
+    async def _promote_paper(
+        self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
+    ) -> None:
         # / 8. PROMOTE: paper_trading strategies with 14+ days and sharpe >= 0.8
         paper_strategies = strategy_pool.list_by_status("paper_trading")
         for entry in paper_strategies:
@@ -284,22 +366,9 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.error("evolution_log_promote_failed", error=str(exc))
 
-        # / 9. SPAWN TIER-2: per-symbol tweaks from sector strategies
-        try:
-            spawned = await self._spawn_tier2(pool, strategy_pool, generation)
-            summary["spawned_tier2"] = spawned
-        except Exception as exc:
-            logger.error("spawn_tier2_failed", error=str(exc))
-            summary["errors"].append(f"spawn_tier2 failed: {exc}")
-
-        # / 10. GRADUATE TIER-3: per-symbol full freedom
-        try:
-            graduated = await self._graduate_tier3(pool, strategy_pool, generation)
-            summary["graduated_tier3"] = graduated
-        except Exception as exc:
-            logger.error("graduate_tier3_failed", error=str(exc))
-            summary["errors"].append(f"graduate_tier3 failed: {exc}")
-
+    async def _document(
+        self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
+    ) -> None:
         # / 11. DOCUMENT: generate report and update docs
         pool_summary = strategy_pool.summary()
         try:
@@ -315,16 +384,6 @@ class EvolutionEngine:
         except Exception as exc:
             logger.error("report_generation_failed", error=str(exc))
             summary["errors"].append(f"report failed: {exc}")
-
-        notify_evolution_summary(summary)
-        logger.info(
-            "evolution_complete",
-            generation=generation,
-            killed=len(summary["killed"]),
-            mutated=len(summary["mutated"]),
-            promoted=len(summary["promoted"]),
-        )
-        return summary
 
     async def _spawn_tier2(
         self, pool: Any, strategy_pool: StrategyPool, generation: int,

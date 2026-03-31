@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -158,53 +157,10 @@ async def run_backtest(
                 # / use open price for fills (realistic: signal at close, fill at next open)
                 broker.set_price(symbol, float(bar["open"]) if date_idx > 0 else float(bar["close"]))
 
-        # / 2. check exits for open positions
-        exits_to_process: list[tuple[str, str]] = []  # (symbol, reason)
-        for symbol, pos in list(open_positions.items()):
-            if symbol not in market_data or current_date not in market_data[symbol].index:
-                continue
-            df = market_data[symbol]
-            bar_idx = df.index.get_loc(current_date)
-
-            # / only check exit if we have enough data
-            if bar_idx < 1:
-                continue
-
-            # / evaluate exit using data up to previous bar (decision made at close of prev bar)
-            exit_signal = strategy.should_exit(
-                symbol=symbol,
-                market_data=df.iloc[:bar_idx],  # / data up to but not including current bar
-                entry_price=pos.entry_price,
-                entry_date=pos.entry_date,
-                current_bar_idx=bar_idx - 1,  # / evaluate at previous bar close
-            )
-            if exit_signal.should_exit:
-                exits_to_process.append((symbol, exit_signal.reason))
-
-        # / 3. execute exits at current bar open
-        for symbol, reason in exits_to_process:
-            pos = open_positions.get(symbol)
-            if pos is None:
-                continue
-
-            # / set price to current open for fill
-            if current_date in market_data[symbol].index:
-                fill_price = float(market_data[symbol].loc[current_date, "open"])
-                broker.set_price(symbol, fill_price)
-
-                order = await broker.place_order(symbol, pos.qty, "sell")
-                if order.status == "filled":
-                    pnl = (fill_price - pos.entry_price) * pos.qty
-                    pnl_pct = (fill_price - pos.entry_price) / pos.entry_price
-                    holding = (current_date - pos.entry_date).days if hasattr(current_date - pos.entry_date, "days") else 0
-                    closed_trades.append(Trade(
-                        symbol=symbol, side="buy", qty=pos.qty,
-                        entry_price=pos.entry_price, entry_date=pos.entry_date,
-                        exit_price=fill_price, exit_date=current_date,
-                        pnl=pnl, pnl_pct=pnl_pct,
-                        exit_reason=reason, holding_days=holding,
-                    ))
-                    del open_positions[symbol]
+        # / 2-3. check and execute exits
+        await _process_exits(
+            strategy, market_data, current_date, open_positions, broker, closed_trades,
+        )
 
         # / skip entry evaluation during warmup
         if date_idx < warmup_bars:
@@ -216,54 +172,11 @@ async def run_backtest(
             prev_equity = balance.equity
             continue
 
-        # / 4. check entries (evaluate using data up to previous bar close)
-        entries_to_process: list[tuple[str, float, float]] = []  # (symbol, strength, open_price)
-        if len(open_positions) < max_open_positions:
-            for symbol in universe:
-                if symbol in open_positions:
-                    continue
-                if current_date not in market_data[symbol].index:
-                    continue
-
-                df = market_data[symbol]
-                bar_idx = df.index.get_loc(current_date)
-                if bar_idx < warmup_bars:
-                    continue
-
-                # / evaluate entry using data up to previous bar (no lookahead)
-                data_for_eval = df.iloc[:bar_idx]  # / everything before current bar
-
-                analysis = analysis_data.get(symbol) if analysis_data else None
-                entry_signal = strategy.should_enter(symbol, data_for_eval, analysis)
-
-                if entry_signal.should_enter:
-                    open_price = float(df.loc[current_date, "open"])
-                    entries_to_process.append((symbol, entry_signal.strength, open_price))
-
-        # / 5. execute entries at current bar open (sorted by strength, strongest first)
-        entries_to_process.sort(key=lambda x: x[1], reverse=True)
-        balance = await broker.get_account_balance()
-
-        for symbol, strength, open_price in entries_to_process:
-            if len(open_positions) >= max_open_positions:
-                break
-
-            broker.set_price(symbol, open_price)
-            sizing = strategy.position_size(balance.equity, open_price, strength)
-            if sizing.qty <= 0:
-                continue
-
-            order = await broker.place_order(symbol, sizing.qty, "buy")
-            if order.status == "filled":
-                open_positions[symbol] = OpenPosition(
-                    symbol=symbol,
-                    qty=sizing.qty,
-                    entry_price=order.filled_price,
-                    entry_date=current_date,
-                    entry_bar_idx=date_idx,
-                )
-                # / refresh balance after each entry
-                balance = await broker.get_account_balance()
+        # / 4-5. check and execute entries
+        await _process_entries(
+            strategy, market_data, analysis_data, current_date, date_idx,
+            warmup_bars, max_open_positions, universe, open_positions, broker,
+        )
 
         # / update prices to close for equity tracking
         for symbol, df in market_data.items():
@@ -277,7 +190,151 @@ async def run_backtest(
         prev_equity = balance.equity
 
     # / close any remaining open positions at last bar close
-    last_date = sorted_dates[-1]
+    await _close_remaining(open_positions, broker, market_data, sorted_dates[-1], closed_trades)
+
+    # / compute final metrics
+    final_balance = await broker.get_account_balance()
+    result = _compute_metrics(
+        strategy_id=strategy.strategy_id,
+        strategy_name=strategy.name,
+        initial_equity=initial_cash,
+        final_equity=final_balance.equity,
+        equity_curve=equity_curve,
+        daily_returns=daily_returns,
+        trades=closed_trades,
+        start_date=sorted_dates[0] if sorted_dates else None,
+        end_date=sorted_dates[-1] if sorted_dates else None,
+    )
+    return result
+
+
+async def _process_exits(
+    strategy: ConfigDrivenStrategy,
+    market_data: dict[str, pd.DataFrame],
+    current_date: Any,
+    open_positions: dict[str, OpenPosition],
+    broker: PaperBroker,
+    closed_trades: list[Trade],
+) -> None:
+    # / 2. check exits for open positions
+    exits_to_process: list[tuple[str, str]] = []  # (symbol, reason)
+    for symbol, pos in list(open_positions.items()):
+        if symbol not in market_data or current_date not in market_data[symbol].index:
+            continue
+        df = market_data[symbol]
+        bar_idx = df.index.get_loc(current_date)
+
+        # / only check exit if we have enough data
+        if bar_idx < 1:
+            continue
+
+        # / evaluate exit using data up to previous bar (decision made at close of prev bar)
+        exit_signal = strategy.should_exit(
+            symbol=symbol,
+            market_data=df.iloc[:bar_idx],  # / data up to but not including current bar
+            entry_price=pos.entry_price,
+            entry_date=pos.entry_date,
+            current_bar_idx=bar_idx - 1,  # / evaluate at previous bar close
+        )
+        if exit_signal.should_exit:
+            exits_to_process.append((symbol, exit_signal.reason))
+
+    # / 3. execute exits at current bar open
+    for symbol, reason in exits_to_process:
+        pos = open_positions.get(symbol)
+        if pos is None:
+            continue
+
+        # / set price to current open for fill
+        if current_date in market_data[symbol].index:
+            fill_price = float(market_data[symbol].loc[current_date, "open"])
+            broker.set_price(symbol, fill_price)
+
+            order = await broker.place_order(symbol, pos.qty, "sell")
+            if order.status == "filled":
+                pnl = (fill_price - pos.entry_price) * pos.qty
+                pnl_pct = (fill_price - pos.entry_price) / pos.entry_price
+                holding = (current_date - pos.entry_date).days if hasattr(current_date - pos.entry_date, "days") else 0
+                closed_trades.append(Trade(
+                    symbol=symbol, side="buy", qty=pos.qty,
+                    entry_price=pos.entry_price, entry_date=pos.entry_date,
+                    exit_price=fill_price, exit_date=current_date,
+                    pnl=pnl, pnl_pct=pnl_pct,
+                    exit_reason=reason, holding_days=holding,
+                ))
+                del open_positions[symbol]
+
+
+async def _process_entries(
+    strategy: ConfigDrivenStrategy,
+    market_data: dict[str, pd.DataFrame],
+    analysis_data: dict[str, AnalysisData] | None,
+    current_date: Any,
+    date_idx: int,
+    warmup_bars: int,
+    max_open_positions: int,
+    universe: list[str],
+    open_positions: dict[str, OpenPosition],
+    broker: PaperBroker,
+) -> None:
+    # / 4. check entries (evaluate using data up to previous bar close)
+    entries_to_process: list[tuple[str, float, float]] = []  # (symbol, strength, open_price)
+    if len(open_positions) < max_open_positions:
+        for symbol in universe:
+            if symbol in open_positions:
+                continue
+            if current_date not in market_data[symbol].index:
+                continue
+
+            df = market_data[symbol]
+            bar_idx = df.index.get_loc(current_date)
+            if bar_idx < warmup_bars:
+                continue
+
+            # / evaluate entry using data up to previous bar (no lookahead)
+            data_for_eval = df.iloc[:bar_idx]  # / everything before current bar
+
+            analysis = analysis_data.get(symbol) if analysis_data else None
+            entry_signal = strategy.should_enter(symbol, data_for_eval, analysis)
+
+            if entry_signal.should_enter:
+                open_price = float(df.loc[current_date, "open"])
+                entries_to_process.append((symbol, entry_signal.strength, open_price))
+
+    # / 5. execute entries at current bar open (sorted by strength, strongest first)
+    entries_to_process.sort(key=lambda x: x[1], reverse=True)
+    balance = await broker.get_account_balance()
+
+    for symbol, strength, open_price in entries_to_process:
+        if len(open_positions) >= max_open_positions:
+            break
+
+        broker.set_price(symbol, open_price)
+        sizing = strategy.position_size(balance.equity, open_price, strength)
+        if sizing.qty <= 0:
+            continue
+
+        order = await broker.place_order(symbol, sizing.qty, "buy")
+        if order.status == "filled":
+            open_positions[symbol] = OpenPosition(
+                symbol=symbol,
+                qty=sizing.qty,
+                entry_price=order.filled_price,
+                entry_date=current_date,
+                entry_bar_idx=date_idx,
+            )
+            # / refresh balance after each entry
+            balance = await broker.get_account_balance()
+
+
+async def _close_remaining(
+    open_positions: dict[str, OpenPosition],
+    broker: PaperBroker,
+    market_data: dict[str, pd.DataFrame],
+    last_date: Any,
+    closed_trades: list[Trade],
+) -> None:
+    # / close any remaining open positions at last bar close
     for symbol, pos in list(open_positions.items()):
         if symbol in market_data and last_date in market_data[symbol].index:
             close_price = float(market_data[symbol].loc[last_date, "close"])
@@ -294,21 +351,6 @@ async def run_backtest(
                     pnl=pnl, pnl_pct=pnl_pct,
                     exit_reason="backtest_end", holding_days=holding,
                 ))
-
-    # / compute final metrics
-    final_balance = await broker.get_account_balance()
-    result = _compute_metrics(
-        strategy_id=strategy.strategy_id,
-        strategy_name=strategy.name,
-        initial_equity=initial_cash,
-        final_equity=final_balance.equity,
-        equity_curve=equity_curve,
-        daily_returns=daily_returns,
-        trades=closed_trades,
-        start_date=sorted_dates[0] if sorted_dates else None,
-        end_date=sorted_dates[-1] if sorted_dates else None,
-    )
-    return result
 
 
 def _compute_metrics(

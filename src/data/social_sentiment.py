@@ -171,12 +171,6 @@ async def fetch_vix() -> float | None:
         return None
 
 
-async def fetch_reddit_sentiment(symbol: str) -> dict[str, Any] | None:
-    # / deprecated: use fetch_apewisdom instead
-    logger.debug("reddit_sentiment_deprecated_use_apewisdom", symbol=symbol)
-    return None
-
-
 # ---------------------------------------------------------------------------
 # / storage + scoring
 # ---------------------------------------------------------------------------
@@ -210,31 +204,6 @@ async def store_social_sentiment(
             volume,
             raw_score,
         )
-
-
-async def compute_social_score(symbol: str) -> float:
-    # / aggregate social sentiment from all sources, returns -1.0 to 1.0
-    scores: list[float] = []
-    weights: list[float] = []
-
-    # / stocktwits: direct sentiment ratio
-    st_data = await fetch_stocktwits_sentiment(symbol)
-    if st_data and st_data.get("raw_score") is not None:
-        scores.append(st_data["raw_score"])
-        weights.append(0.6)
-
-    # / fear & greed: market-wide sentiment
-    fng_data = await fetch_fear_greed_index()
-    if fng_data and fng_data.get("normalized") is not None:
-        scores.append(fng_data["normalized"])
-        weights.append(0.4)
-
-    if not scores:
-        return 0.0
-
-    total_weight = sum(weights)
-    weighted = sum(s * w for s, w in zip(scores, weights)) / total_weight
-    return max(-1.0, min(1.0, weighted))
 
 
 async def run_social_sentiment(

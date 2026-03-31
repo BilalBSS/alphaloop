@@ -223,46 +223,6 @@ async def fetch_recent_trades(pool, strategy_id: str | None = None, limit: int =
     return [dict(r) for r in rows]
 
 
-async def store_crypto_onchain(
-    pool, symbol: str, data_type: str, data: dict,
-    chain: str = "ethereum", source: str = "dune",
-) -> None:
-    # / store on-chain data row
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO crypto_onchain (symbol, date, data_type, chain, data, source)
-            VALUES ($1, CURRENT_DATE, $2, $3, $4, $5)
-            ON CONFLICT DO NOTHING""",
-            symbol, data_type, chain, data, source,
-        )
-
-
-def analysis_data_to_dict(data: AnalysisData) -> dict:
-    # / serialize AnalysisData to dict for JSONB storage
-    return {
-        "pe_ratio": data.pe_ratio,
-        "pe_forward": data.pe_forward,
-        "ps_ratio": data.ps_ratio,
-        "peg_ratio": data.peg_ratio,
-        "revenue_growth": data.revenue_growth,
-        "fcf_margin": data.fcf_margin,
-        "debt_to_equity": data.debt_to_equity,
-        "sector_pe_avg": data.sector_pe_avg,
-        "sector_ps_avg": data.sector_ps_avg,
-        "dcf_upside": data.dcf_upside,
-        "insider_net_buy_ratio": data.insider_net_buy_ratio,
-        "earnings_surprise_pct": data.earnings_surprise_pct,
-        "consecutive_beats": data.consecutive_beats,
-        "fundamental_score": data.fundamental_score,
-        "nvt_ratio": data.nvt_ratio,
-        "funding_rate": data.funding_rate,
-        "exchange_flow_ratio": data.exchange_flow_ratio,
-        "news_sentiment_score": data.news_sentiment_score,
-        "ai_consensus": data.ai_consensus,
-        "regime": data.regime,
-    }
-
-
 def dict_to_analysis_data(d: dict) -> AnalysisData:
     # / deserialize dict from JSONB to AnalysisData
     return AnalysisData(
@@ -287,76 +247,6 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         ai_consensus=d.get("ai_consensus"),
         regime=d.get("regime"),
     )
-
-
-# / --- sector + symbol profile helpers ---
-
-async def store_sector_profile(
-    pool, sector: str, date, best_indicators: dict | None,
-    best_fundamentals: dict | None, avg_sharpe: float, avg_win_rate: float,
-    total_trades: int,
-) -> int:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO sector_profiles (sector, date, best_indicators, best_fundamentals,
-                avg_sharpe, avg_win_rate, total_trades)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (sector, date) DO UPDATE SET
-                best_indicators = EXCLUDED.best_indicators,
-                best_fundamentals = EXCLUDED.best_fundamentals,
-                avg_sharpe = EXCLUDED.avg_sharpe,
-                avg_win_rate = EXCLUDED.avg_win_rate,
-                total_trades = EXCLUDED.total_trades
-            RETURNING id""",
-            sector, date,
-            best_indicators if best_indicators else None,
-            best_fundamentals if best_fundamentals else None,
-            avg_sharpe, avg_win_rate, total_trades,
-        )
-        return row["id"]
-
-
-async def fetch_sector_profile(pool, sector: str) -> dict | None:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT * FROM sector_profiles
-            WHERE sector = $1 ORDER BY date DESC LIMIT 1""",
-            sector,
-        )
-        return dict(row) if row else None
-
-
-async def store_symbol_profile(
-    pool, symbol: str, sector: str | None, date,
-    tier: str, parameter_overrides: dict | None,
-    avg_sharpe: float, total_trades: int,
-) -> int:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO symbol_profiles (symbol, sector, date, tier,
-                parameter_overrides, avg_sharpe, total_trades)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (symbol, date) DO UPDATE SET
-                sector = EXCLUDED.sector, tier = EXCLUDED.tier,
-                parameter_overrides = EXCLUDED.parameter_overrides,
-                avg_sharpe = EXCLUDED.avg_sharpe,
-                total_trades = EXCLUDED.total_trades
-            RETURNING id""",
-            symbol, sector, date, tier,
-            parameter_overrides if parameter_overrides else None,
-            avg_sharpe, total_trades,
-        )
-        return row["id"]
-
-
-async def fetch_symbol_profile(pool, symbol: str) -> dict | None:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT * FROM symbol_profiles
-            WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
-            symbol,
-        )
-        return dict(row) if row else None
 
 
 async def count_symbol_trades(pool, strategy_id: str, symbol: str) -> int:
@@ -470,6 +360,20 @@ async def store_computed_indicators(
             )
     except Exception as exc:
         logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))
+
+
+async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
+    # / get latest regime from regime_history for equity or crypto
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT regime FROM regime_history
+                WHERE market = $1 ORDER BY date DESC LIMIT 1""",
+                market,
+            )
+            return row["regime"] if row else None
+    except Exception:
+        return None
 
 
 async def log_event(

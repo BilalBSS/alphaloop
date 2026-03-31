@@ -1,6 +1,6 @@
 {
   "id": "strategy_004",
-  "name": "Keltner_Breakout_Momentum",
+  "name": "Bollinger_Breakout_Momentum",
   "version": 1,
   "created_by": "human",
   "parent_id": null,
