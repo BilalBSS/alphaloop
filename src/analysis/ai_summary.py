@@ -550,7 +550,7 @@ async def generate_summary(
             )
         return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
 
-    # / try models in order: default → 120b → fallback 20b
+    # / try models in order: 120b → default → fallback 20b
     # / stop on 429 — all groq models share the same rate limit
     models = ["openai/gpt-oss-120b", DEFAULT_MODEL, FALLBACK_MODEL]
     for model in models:
@@ -689,7 +689,6 @@ async def generate_daily_synthesis(
     # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
     # / reads all today's data, produces top buys/avoids/risk assessment
     import json
-    from datetime import date as dt_date
     from src.agents.tools import store_daily_synthesis
 
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -698,7 +697,7 @@ async def generate_daily_synthesis(
         return None
 
     # / gather today's analysis scores
-    today = dt_date.today()
+    today = date.today()
     scores = []
     try:
         async with pool.acquire() as conn:
@@ -768,7 +767,6 @@ Output ONLY valid JSON. No explanation outside the JSON."""
             raw = resp.json()["choices"][0]["message"]["content"]
 
         # / parse structured response
-        import re
         text = raw.strip()
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
         if match:
