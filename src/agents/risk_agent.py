@@ -86,13 +86,22 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "zero_equity"}
 
-        # / reject buy if already holding this symbol (prevent position stacking)
+        # / reject buy if this strategy already holds this symbol
+        # / different strategies can hold the same symbol independently
         if side == "buy":
-            existing_pos = [p for p in positions
-                           if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol]
-            if existing_pos:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
-                return {"status": "rejected", "reason": "already_holding"}
+            strategy_id = signal.get("strategy_id")
+            if strategy_id:
+                strat_positions = await tools.get_strategy_positions(pool, strategy_id=strategy_id, symbol=symbol)
+                if strat_positions:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": "already_holding"}
+            else:
+                # / fallback for signals without strategy_id
+                existing_pos = [p for p in positions
+                               if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol]
+                if existing_pos:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": "already_holding"}
 
         # / get current price
         try:

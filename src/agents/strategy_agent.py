@@ -423,25 +423,26 @@ class StrategyAgent:
     async def _check_exits(
         self, pool, strategy_pool: StrategyPool, broker,
     ) -> list[dict]:
-        # / check exit conditions for open positions
+        # / check exit conditions using strategy_positions (knows who owns what)
         signals: list[dict] = []
-        positions = await broker.get_positions()
 
-        for pos in positions:
-            # / find which strategy owns this position (simplified: check all active)
-            active = (
-                strategy_pool.list_by_status("paper_trading")
-                + strategy_pool.list_by_status("live")
-            )
-            for entry in active:
-                strategy = entry.strategy
+        active = (
+            strategy_pool.list_by_status("paper_trading")
+            + strategy_pool.list_by_status("live")
+        )
+
+        for entry in active:
+            strategy = entry.strategy
+            # / get this strategy's positions from db
+            strat_positions = await tools.get_strategy_positions(pool, strategy_id=strategy.strategy_id)
+            for sp in strat_positions:
                 try:
-                    df = await self._fetch_market_df(pool, pos.symbol)
+                    df = await self._fetch_market_df(pool, sp["symbol"])
                     if df is None:
                         continue
 
                     exit_signal = strategy.should_exit(
-                        pos.symbol, df, pos.avg_entry_price,
+                        sp["symbol"], df, sp["avg_entry_price"] or 0,
                         pd.Timestamp(df.index[0]), len(df) - 1,
                     )
 
@@ -449,23 +450,26 @@ class StrategyAgent:
                         signal_id = await tools.store_trade_signal(
                             pool,
                             strategy_id=strategy.strategy_id,
-                            symbol=pos.symbol,
+                            symbol=sp["symbol"],
                             signal_type="sell",
                             strength=1.0,
                             regime=None,
-                            details={"exit_reason": exit_signal.reason},
+                            details={
+                                "exit_reason": exit_signal.reason,
+                                "qty": sp["qty"],
+                            },
                         )
                         signals.append({
                             "signal_id": signal_id,
                             "strategy_id": strategy.strategy_id,
-                            "symbol": pos.symbol,
+                            "symbol": sp["symbol"],
                             "signal_type": "sell",
+                            "qty": sp["qty"],
                         })
-                        break  # / one exit signal per position
                 except Exception as exc:
                     logger.warning(
                         "exit_check_symbol_failed",
-                        symbol=pos.symbol, error=str(exc),
+                        symbol=sp["symbol"], error=str(exc),
                     )
 
         return signals
