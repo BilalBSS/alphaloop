@@ -69,17 +69,26 @@ async def store_trade_signal(
     pool, strategy_id: str, symbol: str, signal_type: str,
     strength: float, regime: str | None, details: dict | None = None,
 ) -> int:
-    # / upsert trade signal — one per strategy+symbol+type per day
+    # / upsert trade signal — one pending per strategy+symbol+type per day
     async with pool.acquire() as conn:
+        # / check for existing pending signal today
+        existing = await conn.fetchrow(
+            """SELECT id FROM trade_signals
+            WHERE strategy_id = $1 AND symbol = $2 AND signal_type = $3
+            AND created_at::date = CURRENT_DATE AND status = 'pending'""",
+            strategy_id, symbol, signal_type,
+        )
+        if existing:
+            await conn.execute(
+                """UPDATE trade_signals SET strength = $1, regime = $2, details = $3
+                WHERE id = $4""",
+                Decimal(str(strength)), regime,
+                details if details else None, existing["id"],
+            )
+            return existing["id"]
         row = await conn.fetchrow(
             """INSERT INTO trade_signals (strategy_id, symbol, signal_type, strength, regime, details, status)
             VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-            ON CONFLICT (strategy_id, symbol, signal_type, (created_at::date))
-            WHERE status = 'pending'
-            DO UPDATE SET
-                strength = EXCLUDED.strength,
-                regime = EXCLUDED.regime,
-                details = EXCLUDED.details
             RETURNING id""",
             strategy_id, symbol, signal_type,
             Decimal(str(strength)), regime,
