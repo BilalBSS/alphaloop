@@ -66,6 +66,9 @@ def compute_terminal_multiple(
         adjustment = max(FCF_MARGIN_FLOOR, min(FCF_MARGIN_CAP, adjustment))
         base *= adjustment
 
+    # / cap after margin adjustment so premium doesn't exceed 40x
+    base = min(base, 40.0)
+
     return round(base, 1)
 
 
@@ -135,7 +138,8 @@ def run_dcf_simulation(
 
     # / mean-revert growth rates toward long-term average over projection period
     long_term_growth = assumptions.terminal_growth
-    reversion_speed = 0.1
+    # / higher growth = faster decay (NVDA at 65% should decay faster than AAPL at 8%)
+    reversion_speed = min(0.3, 0.1 + abs(assumptions.revenue_growth) * 0.3)
     for year in range(1, years):
         growth_rates[:, year] = (
             (1 - reversion_speed) * growth_rates[:, year - 1]
@@ -143,6 +147,14 @@ def run_dcf_simulation(
             + assumptions.growth_std * 0.3 * rng.standard_normal(n)
         )
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
+
+    # / dampen growth for large-revenue companies (law of large numbers)
+    if assumptions.revenue > 100_000_000_000:  # >$100B
+        size_factor = min(1.0, 100_000_000_000 / assumptions.revenue)
+        growth_rates *= size_factor ** 0.3  # gentle damping, not a cliff
+    elif assumptions.revenue > 50_000_000_000:  # >$50B
+        size_factor = min(1.0, 50_000_000_000 / assumptions.revenue)
+        growth_rates *= size_factor ** 0.15
 
     margins = np.vstack([
         assumptions.fcf_margin + assumptions.margin_std * z_margins,
@@ -302,6 +314,11 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
         margin_std = 0.03
 
     tm = compute_terminal_multiple(revenue_growth, fcf_margin)
+
+    # / quality floor: high-FCF, net-cash companies deserve premium multiples
+    if fcf_margin > 0.20 and net_debt_val < 0:
+        tm = max(tm, 18.0)
+
     tm_std = compute_terminal_multiple_std(tm)
     projection_years = 7 if revenue_growth > 0.15 else 5
 

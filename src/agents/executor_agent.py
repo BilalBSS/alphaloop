@@ -64,17 +64,7 @@ class ExecutorAgent:
 
         if order.status == "filled":
             # / fetch regime for logging
-            regime = None
-            try:
-                async with pool.acquire() as conn:
-                    row = await conn.fetchrow(
-                        """SELECT regime FROM regime_history
-                        WHERE market = 'equity' ORDER BY date DESC LIMIT 1"""
-                    )
-                    if row:
-                        regime = row["regime"]
-            except Exception:
-                pass
+            regime = await tools.fetch_latest_regime(pool, "equity")
 
             log_id = await tools.store_trade_log(
                 pool,

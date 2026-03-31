@@ -118,16 +118,10 @@ class AnalystAgent:
         # / crypto: NVT from coingecko + sentiment + LLM analysis
         sentiment_score, nvt, coin_data, funding_rate, oi_rank = await self._fetch_crypto_components(pool, symbol)
 
-        regime: str | None = None
+        regime = await tools.fetch_latest_regime(pool, "crypto")
         fear_greed: float | None = None
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """SELECT regime FROM regime_history
-                    WHERE market = 'crypto' ORDER BY date DESC LIMIT 1"""
-                )
-                if row:
-                    regime = row["regime"]
                 fng_row = await conn.fetchrow(
                     """SELECT raw_score FROM social_sentiment
                     WHERE symbol = $1 AND source = 'fear_greed'
@@ -288,19 +282,7 @@ class AnalystAgent:
 
     async def _fetch_equity_enrichment(self, pool, symbol: str) -> tuple:
         # / returns (regime, symbol_trend, indicator_data, sentiment_data)
-        regime: str | None = None
-
-        # / fetch latest regime from regime_history
-        try:
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """SELECT regime, confidence FROM regime_history
-                    WHERE market = 'equity' ORDER BY date DESC LIMIT 1"""
-                )
-                if row:
-                    regime = row["regime"]
-        except Exception as exc:
-            logger.warning("regime_fetch_failed", symbol=symbol, error=str(exc))
+        regime = await tools.fetch_latest_regime(pool, "equity")
 
         # / compute per-symbol trend for consensus gate
         symbol_trend = "unknown"

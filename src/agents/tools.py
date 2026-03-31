@@ -362,6 +362,20 @@ async def store_computed_indicators(
         logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))
 
 
+async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
+    # / get latest regime from regime_history for equity or crypto
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT regime FROM regime_history
+                WHERE market = $1 ORDER BY date DESC LIMIT 1""",
+                market,
+            )
+            return row["regime"] if row else None
+    except Exception:
+        return None
+
+
 async def log_event(
     pool, level: str, source: str, message: str,
     symbol: str | None = None, details: dict | None = None,
