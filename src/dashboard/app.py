@@ -128,6 +128,24 @@ async def get_equity_history(period: str = "1D", timeframe: str = "5Min"):
         return {"timestamps": [], "equity": [], "profit_loss": [], "base_value": 100000}
 
 
+@app.get("/api/strategy-positions")
+async def get_strategy_positions(symbol: str | None = None):
+    # / per-equity breakdown: which strategy owns what
+    if symbol:
+        rows = await _query(
+            """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+            FROM strategy_positions WHERE symbol = $1
+            ORDER BY strategy_id""",
+            symbol,
+        )
+    else:
+        rows = await _query(
+            """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+            FROM strategy_positions ORDER BY symbol, strategy_id"""
+        )
+    return _serialize(rows)
+
+
 @app.get("/api/positions")
 async def get_positions():
     # / pull live positions from alpaca

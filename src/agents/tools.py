@@ -171,6 +171,130 @@ async def store_trade_log(
         return row["id"]
 
 
+async def open_strategy_position(
+    pool, strategy_id: str, symbol: str, qty: float, price: float,
+) -> None:
+    # / upsert strategy position — average entry price on add
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (strategy_id, symbol) DO UPDATE SET
+                avg_entry_price = (
+                    strategy_positions.avg_entry_price * strategy_positions.qty
+                    + EXCLUDED.avg_entry_price * EXCLUDED.qty
+                ) / NULLIF(strategy_positions.qty + EXCLUDED.qty, 0),
+                qty = strategy_positions.qty + EXCLUDED.qty,
+                updated_at = NOW()""",
+            strategy_id, symbol, Decimal(str(qty)), Decimal(str(price)),
+        )
+    logger.info("strategy_position_opened", strategy_id=strategy_id, symbol=symbol, qty=qty, price=price)
+
+
+async def close_strategy_position(
+    pool, strategy_id: str, symbol: str, qty: float,
+) -> float | None:
+    # / atomic reduce qty, delete if zero. returns entry_price for pnl calc
+    async with pool.acquire() as conn:
+        # / atomic: lock row, read, update/delete in one transaction
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 FOR UPDATE",
+                strategy_id, symbol,
+            )
+            if not row:
+                logger.warning("close_position_not_found", strategy_id=strategy_id, symbol=symbol)
+                return None
+
+            entry_price = float(row["avg_entry_price"]) if row["avg_entry_price"] else None
+            remaining = float(row["qty"]) - qty
+
+            if remaining <= 0:
+                await conn.execute(
+                    "DELETE FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
+                    strategy_id, symbol,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE strategy_positions SET qty = $1, updated_at = NOW() WHERE strategy_id = $2 AND symbol = $3",
+                    Decimal(str(remaining)), strategy_id, symbol,
+                )
+    logger.info("strategy_position_closed", strategy_id=strategy_id, symbol=symbol, qty=qty, remaining=max(0, remaining))
+    return entry_price
+
+
+async def get_strategy_positions(
+    pool, strategy_id: str | None = None, symbol: str | None = None,
+) -> list[dict]:
+    # / query strategy positions with optional filters
+    async with pool.acquire() as conn:
+        if strategy_id and symbol:
+            rows = await conn.fetch(
+                "SELECT strategy_id, symbol, qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
+                strategy_id, symbol,
+            )
+        elif strategy_id:
+            rows = await conn.fetch(
+                "SELECT strategy_id, symbol, qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1",
+                strategy_id,
+            )
+        elif symbol:
+            rows = await conn.fetch(
+                "SELECT strategy_id, symbol, qty, avg_entry_price FROM strategy_positions WHERE symbol = $1",
+                symbol,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT strategy_id, symbol, qty, avg_entry_price FROM strategy_positions",
+            )
+    return [{"strategy_id": r["strategy_id"], "symbol": r["symbol"],
+             "qty": float(r["qty"]), "avg_entry_price": float(r["avg_entry_price"]) if r["avg_entry_price"] else None}
+            for r in rows]
+
+
+async def sync_strategy_positions_from_alpaca(pool) -> int:
+    # / bootstrap: insert untracked positions from alpaca not in strategy_positions
+    import httpx
+    import os
+    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    headers = {
+        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
+        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{base}/v2/positions", headers=headers)
+            resp.raise_for_status()
+            alpaca_positions = resp.json()
+    except Exception as exc:
+        logger.warning("alpaca_position_sync_failed", error=str(exc))
+        return 0
+
+    # / get sum of tracked qty per symbol
+    async with pool.acquire() as conn:
+        tracked = await conn.fetch(
+            "SELECT symbol, SUM(qty) as total_qty FROM strategy_positions GROUP BY symbol",
+        )
+    tracked_map = {r["symbol"]: float(r["total_qty"]) for r in tracked}
+
+    synced = 0
+    for p in alpaca_positions:
+        symbol = p["symbol"]
+        alpaca_qty = float(p.get("qty", 0))
+        if alpaca_qty <= 0:
+            continue
+        tracked_qty = tracked_map.get(symbol, 0)
+        untracked_qty = alpaca_qty - tracked_qty
+        if untracked_qty > 0.0001:
+            avg_price = float(p.get("avg_entry_price", 0))
+            await open_strategy_position(pool, "untracked", symbol, untracked_qty, avg_price)
+            synced += 1
+
+    if synced:
+        logger.info("strategy_positions_synced", untracked_inserted=synced)
+    return synced
+
+
 async def sync_trades_from_alpaca(pool) -> int:
     # / pull filled orders from alpaca and upsert into trade_log
     # / alpaca is source of truth — this keeps db in sync after restarts

@@ -66,6 +66,19 @@ class ExecutorAgent:
             # / fetch regime for logging
             regime = await tools.fetch_latest_regime(pool, "equity")
 
+            # / track strategy-level position
+            pnl = None
+            if side == "buy" and strategy_id:
+                await tools.open_strategy_position(
+                    pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
+                )
+            elif side == "sell" and strategy_id:
+                entry_price = await tools.close_strategy_position(
+                    pool, strategy_id, symbol, order.filled_qty,
+                )
+                if entry_price and order.filled_price:
+                    pnl = (order.filled_price - entry_price) * order.filled_qty
+
             log_id = await tools.store_trade_log(
                 pool,
                 trade_id=trade_id,
@@ -76,7 +89,7 @@ class ExecutorAgent:
                 order_id=order.order_id,
                 broker=type(broker).__name__,
                 regime=regime,
-                pnl=None,  # / computed at exit time
+                pnl=pnl,
                 strategy_id=strategy_id,
                 details={
                     "order_status": order.status,
@@ -127,11 +140,25 @@ class ExecutorAgent:
 
             if order.status == "filled":
                 regime = await tools.fetch_latest_regime(pool, "equity")
+
+                # / track strategy-level position (polled fill)
+                pnl = None
+                if side == "buy" and strategy_id:
+                    await tools.open_strategy_position(
+                        pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
+                    )
+                elif side == "sell" and strategy_id:
+                    entry_price = await tools.close_strategy_position(
+                        pool, strategy_id, symbol, order.filled_qty,
+                    )
+                    if entry_price and order.filled_price:
+                        pnl = (order.filled_price - entry_price) * order.filled_qty
+
                 log_id = await tools.store_trade_log(
                     pool, trade_id=trade_id, symbol=symbol, side=side,
                     qty=order.filled_qty, price=order.filled_price or 0.0,
                     order_id=order.order_id, broker=type(broker).__name__,
-                    regime=regime, pnl=None, strategy_id=strategy_id,
+                    regime=regime, pnl=pnl, strategy_id=strategy_id,
                     details={"order_status": "filled", "order_type": order_type},
                 )
                 await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")

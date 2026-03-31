@@ -79,6 +79,10 @@ class AgentOrchestrator:
             synced = await tools.sync_trades_from_alpaca(self._pool)
             if synced:
                 logger.info("startup_alpaca_sync", trades_synced=synced)
+            # / bootstrap strategy positions from alpaca for pre-existing holdings
+            pos_synced = await tools.sync_strategy_positions_from_alpaca(self._pool)
+            if pos_synced:
+                logger.info("startup_position_sync", positions_synced=pos_synced)
         except Exception:
             logger.debug("startup_sync_failed", exc_info=True)
 
