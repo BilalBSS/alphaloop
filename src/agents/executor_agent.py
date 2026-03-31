@@ -110,6 +110,38 @@ class ExecutorAgent:
             return {"status": "failed", "reason": order.status, "details": order.details}
 
         else:
-            # / pending or partial — update status
+            # / alpaca market orders fill within seconds — poll for fill
+            import asyncio
+            for _ in range(10):
+                await asyncio.sleep(1)
+                try:
+                    updated = await broker.get_order_status(order.order_id)
+                    if updated.status == "filled":
+                        order = updated
+                        break
+                    elif updated.status in ("rejected", "cancelled"):
+                        await tools.update_trade_status(pool, "approved_trades", trade_id, "failed")
+                        return {"status": "failed", "reason": updated.status}
+                except Exception:
+                    pass
+
+            if order.status == "filled":
+                regime = await tools.fetch_latest_regime(pool, "equity")
+                log_id = await tools.store_trade_log(
+                    pool, trade_id=trade_id, symbol=symbol, side=side,
+                    qty=order.filled_qty, price=order.filled_price or 0.0,
+                    order_id=order.order_id, broker=type(broker).__name__,
+                    regime=regime, pnl=None, strategy_id=strategy_id,
+                    details={"order_status": "filled", "order_type": order_type},
+                )
+                await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
+                notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id)
+                logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
+                            symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)
+                return {"status": "filled", "log_id": log_id, "order_id": order.order_id,
+                        "qty": order.filled_qty, "price": order.filled_price}
+
+            # / still not filled after 10s — log current status
             await tools.update_trade_status(pool, "approved_trades", trade_id, order.status)
+            logger.warning("trade_not_filled_after_poll", trade_id=trade_id, symbol=symbol, status=order.status)
             return {"status": order.status}

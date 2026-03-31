@@ -86,6 +86,14 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "zero_equity"}
 
+        # / reject buy if already holding this symbol (prevent position stacking)
+        if side == "buy":
+            existing_pos = [p for p in positions
+                           if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol]
+            if existing_pos:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": "already_holding"}
+
         # / get current price
         try:
             price = await broker.get_price(symbol)
