@@ -66,6 +66,22 @@ class AgentOrchestrator:
         except Exception:
             pass  # / table may not exist yet on first run
 
+        # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
+        try:
+            # / remove ghost trades from in-memory PaperBroker (order_id is a uuid, alpaca uses different format)
+            async with self._pool.acquire() as conn:
+                cleaned = await conn.execute(
+                    """DELETE FROM trade_log WHERE broker = 'PaperBroker'
+                    OR (broker IS NULL AND order_id ~ '^[0-9a-f]{8}-')"""
+                )
+                if cleaned != "DELETE 0":
+                    logger.info("cleaned_stale_paper_trades", result=cleaned)
+            synced = await tools.sync_trades_from_alpaca(self._pool)
+            if synced:
+                logger.info("startup_alpaca_sync", trades_synced=synced)
+        except Exception:
+            logger.debug("startup_sync_failed", exc_info=True)
+
         # / init broker
         self._broker_factory = BrokerFactory(mode=self._mode)
 
@@ -98,6 +114,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
+            asyncio.create_task(self._alpaca_sync_loop(), name="alpaca_sync"),
         ]
 
         try:
@@ -445,4 +462,17 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "intraday_backfill")
 
             if await self._wait_or_stop(INTRADAY_INTERVAL):
+                break
+
+    async def _alpaca_sync_loop(self) -> None:
+        # / periodically sync filled orders from alpaca into trade_log
+        while not self._stop_event.is_set():
+            try:
+                synced = await tools.sync_trades_from_alpaca(self._pool)
+                if synced:
+                    logger.info("alpaca_periodic_sync", trades_synced=synced)
+            except Exception:
+                logger.debug("alpaca_sync_error", exc_info=True)
+            # / sync every 5 minutes
+            if await self._wait_or_stop(300):
                 break
