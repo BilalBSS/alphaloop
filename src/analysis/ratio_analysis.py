@@ -157,6 +157,9 @@ def compute_ratio_score(fundamentals: dict[str, Any]) -> RatioScore:
             "peg_ratio": str(fundamentals.get("peg_ratio")) if fundamentals.get("peg_ratio") else None,
             "fcf_margin": str(fundamentals.get("fcf_margin")) if fundamentals.get("fcf_margin") else None,
             "debt_to_equity": str(fundamentals.get("debt_to_equity")) if fundamentals.get("debt_to_equity") else None,
+            "revenue_growth_1y": str(fundamentals.get("revenue_growth_1y")) if fundamentals.get("revenue_growth_1y") else None,
+            "sector_pe_avg": str(fundamentals.get("sector_pe_avg")) if fundamentals.get("sector_pe_avg") else None,
+            "sector_ps_avg": str(fundamentals.get("sector_ps_avg")) if fundamentals.get("sector_ps_avg") else None,
             "weights_used": total_weight,
         },
     )

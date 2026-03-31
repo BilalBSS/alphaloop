@@ -457,6 +457,10 @@ class ConfigDrivenStrategy(StrategyInterface):
                     last_mid = float(bb.middle.iloc[-1])
                     passed = last_close > last_mid
                     return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'>' if passed else '<='} middle={last_mid:.2f}"
+                elif condition == "price_below_upper":
+                    last_upper = float(bb.upper.iloc[-1])
+                    passed = last_close < last_upper
+                    return passed, 0.5 if passed else 0.0, f"bb: close={last_close:.2f} {'<' if passed else '>='} upper={last_upper:.2f}"
 
             elif indicator == "rsi":
                 from src.indicators.momentum import rsi as rsi_fn
