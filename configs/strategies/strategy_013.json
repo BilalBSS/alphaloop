@@ -1,0 +1,50 @@
+{
+    "id": "strategy_013",
+    "name": "Pivot_Bounce_Momentum",
+    "version": 1,
+    "created_by": "human",
+    "description": "Buy when price bounces off pivot support with MACD turning positive and ADX confirming trend strength",
+    "asset_class": "stocks",
+    "universe": "all_stocks",
+
+    "fundamental_filters": {
+        "pe_ratio_max": 55,
+        "revenue_growth_min": -0.02,
+        "fcf_margin_min": 0.05,
+        "debt_to_equity_max": 2.0,
+        "dcf_upside_min": 0.0
+    },
+
+    "entry_conditions": {
+        "operator": "AND",
+        "signals": [
+            {"indicator": "pivot_points", "condition": "below_s1"},
+            {"indicator": "macd", "condition": "crossover_up", "fast": 12, "slow": 26, "signal": 9},
+            {"indicator": "adx", "condition": "above", "threshold": 20, "period": 14}
+        ]
+    },
+
+    "exit_conditions": {
+        "take_profit": {"indicator": "pivot_points", "condition": "above_r1"},
+        "stop_loss": {"type": "fixed_pct", "pct": 0.06},
+        "time_exit": {"max_holding_days": 14}
+    },
+
+    "position_sizing": {
+        "method": "fixed_pct",
+        "max_position_pct": 0.06
+    },
+
+    "metadata": {
+        "status": "paper_trading",
+        "generation": 1
+    },
+
+    "bear_market_overrides": {
+        "fundamental_filters": {
+            "pe_ratio_max": 65,
+            "revenue_growth_min": -0.10,
+            "dcf_upside_min": -0.10
+        }
+    }
+}
