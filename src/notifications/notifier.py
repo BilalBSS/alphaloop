@@ -276,9 +276,12 @@ def _detail_fields(details: dict[str, Any] | None) -> dict[str, str]:
 def notify_trade_executed(
     symbol: str, side: str, qty: float, price: float,
     strategy_id: str | None = None,
+    pnl: float | None = None,
     details: dict[str, Any] | None = None,
 ) -> asyncio.Task | None:
     fields = {"strategy": strategy_id or "unknown"}
+    if pnl is not None:
+        fields["P&L"] = f"${pnl:+,.2f}"
     if details:
         if details.get("reasons"):
             fields["reasons"] = ", ".join(str(r) for r in details["reasons"][:3])

@@ -61,6 +61,7 @@ class BrokerInterface(ABC):
         order_type: str = "market",
         limit_price: float | None = None,
         stop_price: float | None = None,
+        extended_hours: bool = False,
     ) -> Order:
         # / place an order, returns order object
         ...

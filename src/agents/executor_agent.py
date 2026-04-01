@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import structlog
 
 from src.agents import tools
 from src.brokers.base import BrokerInterface
+from src.data.symbols import is_crypto
 from src.notifications.notifier import notify_trade_executed, notify_trade_error
 
 logger = structlog.get_logger(__name__)
@@ -49,9 +53,17 @@ class ExecutorAgent:
         order_type = trade.get("order_type", "market")
         strategy_id = trade.get("strategy_id")
 
+        # / use extended hours for stock market orders outside regular hours
+        ext_hours = False
+        if not is_crypto(symbol) and order_type == "market":
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            mins = now_et.hour * 60 + now_et.minute
+            ext_hours = now_et.weekday() >= 5 or mins < 570 or mins >= 960
+
         try:
             order = await broker.place_order(
                 symbol=symbol, qty=qty, side=side, order_type=order_type,
+                extended_hours=ext_hours,
             )
         except Exception as exc:
             logger.error(
@@ -98,7 +110,7 @@ class ExecutorAgent:
             )
             await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
 
-            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id)
+            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
             logger.info(
                 "trade_executed",
                 trade_id=trade_id, log_id=log_id,
@@ -162,7 +174,7 @@ class ExecutorAgent:
                     details={"order_status": "filled", "order_type": order_type},
                 )
                 await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
-                notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id)
+                notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
                 logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
                             symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)
                 return {"status": "filled", "log_id": log_id, "order_id": order.order_id,

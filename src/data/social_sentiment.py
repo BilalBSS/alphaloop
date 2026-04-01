@@ -66,6 +66,7 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
                 "raw_score": min(1.0, raw),
             }
 
+        logger.debug("apewisdom_tickers", filter=filter_type, tickers=list(result.keys())[:10])
         logger.info("apewisdom_fetched", filter=filter_type, count=len(result))
     except Exception as exc:
         logger.warning("apewisdom_fetch_failed", filter=filter_type, error=str(exc)[:200])
@@ -121,13 +122,19 @@ async def fetch_fear_greed_index() -> dict[str, Any] | None:
     try:
         resp = await api_get(FNG_URL, source="fng")
         data = resp.json()
+        logger.debug("fng_raw", data_len=len(data.get("data", [])),
+                     first_entry=data.get("data", [{}])[0] if data.get("data") else None)
 
         value_str = data.get("data", [{}])[0].get("value")
         if value_str is None:
             logger.debug("fng_no_value")
             return None
 
+        logger.debug("fng_parsed", value_str=value_str, type=type(value_str).__name__)
         value = float(value_str)
+        if value < 0:
+            logger.warning("fng_negative_sentinel", raw_value=value)
+            return None
         # / 0 = extreme fear = -1.0, 50 = neutral = 0.0, 100 = extreme greed = 1.0
         normalized = (value - 50.0) / 50.0
 
@@ -228,6 +235,9 @@ async def run_social_sentiment(
             if is_crypto(symbol):
                 aw_ticker = symbol.replace("-USD", "")
                 aw_data = aw_crypto.get(aw_ticker)
+                if not aw_data:
+                    logger.debug("apewisdom_crypto_miss", symbol=symbol, lookup=aw_ticker,
+                                 available=list(aw_crypto.keys())[:15])
             else:
                 aw_data = aw_stocks.get(symbol)
 

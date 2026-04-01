@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 import structlog
@@ -95,15 +96,27 @@ class AlpacaBroker(BrokerInterface):
         order_type: str = "market",
         limit_price: float | None = None,
         stop_price: float | None = None,
+        extended_hours: bool = False,
     ) -> Order:
         alpaca_sym = to_alpaca(symbol)
+        crypto = is_crypto(symbol)
+
+        # / auto-convert market orders to limit during extended hours for stocks
+        if extended_hours and not crypto and order_type == "market":
+            if limit_price is None:
+                price = await self.get_price(symbol)
+                limit_price = round(price * 1.005, 2) if side == "buy" else round(price * 0.995, 2)
+            order_type = "limit"
+
         payload: dict[str, Any] = {
             "symbol": alpaca_sym,
             "qty": str(qty),
             "side": side,
             "type": order_type,
-            "time_in_force": "day" if not is_crypto(symbol) else "gtc",
+            "time_in_force": "day" if not crypto else "gtc",
         }
+        if extended_hours and not crypto:
+            payload["extended_hours"] = True
         if limit_price is not None:
             payload["limit_price"] = str(limit_price)
         if stop_price is not None:

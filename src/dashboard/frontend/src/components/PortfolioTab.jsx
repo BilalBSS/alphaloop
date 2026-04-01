@@ -1,10 +1,14 @@
+import { useState } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Panel from './Panel'
 import { SkeletonTable, SkeletonChart } from './Skeleton'
 import { useApi } from '../hooks/useApi'
 
+const PERIODS = ['1D', '1W', '1M', 'All']
+
 function EquityChart() {
-  const { data, loading } = useApi('/api/equity-history?period=1D&timeframe=5Min', 60000)
+  const [period, setPeriod] = useState('1D')
+  const { data, loading } = useApi(`/api/equity-history?period=${period}&timeframe=5Min`, 60000)
 
   if (loading && !data) return <SkeletonChart />
   if (!data || !data.timestamps || data.timestamps.length === 0) {
@@ -15,35 +19,50 @@ function EquityChart() {
     )
   }
 
-  const chartData = data.timestamps.map((ts, i) => ({
-    time: new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    equity: data.equity[i],
-  }))
+  const chartData = data.timestamps.map((ts, i) => {
+    const d = new Date(ts * 1000)
+    const time = period === '1D'
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+    return { time, equity: data.equity[i] }
+  })
 
   const minEq = Math.min(...chartData.map(d => d.equity))
   const maxEq = Math.max(...chartData.map(d => d.equity))
   const isUp = chartData.length > 1 && chartData[chartData.length - 1].equity >= chartData[0].equity
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={chartData}>
-        <defs>
-          <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0.15} />
-            <stop offset="100%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
-        <YAxis domain={[minEq * 0.999, maxEq * 1.001]} hide />
-        <Tooltip
-          contentStyle={{ background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }}
-          labelStyle={{ color: '#8888a0' }}
-          formatter={(v) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Equity']}
-        />
-        <Area type="monotone" dataKey="equity" stroke={isUp ? '#00dc82' : '#ff4757'} strokeWidth={2}
-          fill="url(#eqGrad)" />
-      </AreaChart>
-    </ResponsiveContainer>
+    <div>
+      <div className="flex gap-1 mb-2">
+        {PERIODS.map(p => (
+          <button key={p} onClick={() => setPeriod(p)}
+            className={`px-2 py-0.5 text-[10px] border rounded ${
+              p === period
+                ? 'bg-accent text-bg-surface border-accent'
+                : 'bg-bg-primary text-text-secondary border-border hover:border-text-muted'
+            }`}>{p}</button>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={200}>
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0.15} />
+              <stop offset="100%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
+          <YAxis domain={[minEq * 0.999, maxEq * 1.001]} hide />
+          <Tooltip
+            contentStyle={{ background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }}
+            labelStyle={{ color: '#8888a0' }}
+            formatter={(v) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Equity']}
+          />
+          <Area type="monotone" dataKey="equity" stroke={isUp ? '#00dc82' : '#ff4757'} strokeWidth={2}
+            fill="url(#eqGrad)" />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -195,6 +214,37 @@ function StrategiesPanel({ strategies, loading }) {
   )
 }
 
+function StrategyPositions() {
+  const { data: positions, loading } = useApi('/api/strategy-positions', 30000)
+
+  if (loading && !positions) return <SkeletonTable rows={3} cols={4} />
+  if (!positions || positions.length === 0) {
+    return <div className="text-text-muted text-sm py-4">No strategy positions</div>
+  }
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-text-secondary text-[11px] uppercase">
+          <th className="text-left px-2 py-1">Symbol</th>
+          <th className="text-left px-2 py-1">Strategy</th>
+          <th className="text-right px-2 py-1">Qty</th>
+          <th className="text-right px-2 py-1">Avg Entry</th>
+        </tr>
+      </thead>
+      <tbody>
+        {positions.map((p, i) => (
+          <tr key={i} className="hover:bg-bg-hover border-t border-border" style={{ height: 36 }}>
+            <td className="px-2 py-1 font-mono font-semibold">{p.symbol}</td>
+            <td className="px-2 py-1 text-text-secondary truncate max-w-[120px]">{p.strategy_id || '--'}</td>
+            <td className="px-2 py-1 text-right font-mono">{p.qty}</td>
+            <td className="px-2 py-1 text-right font-mono">${parseFloat(p.avg_entry_price || 0).toFixed(2)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 export default function PortfolioTab({ portfolio, trades, strategies, loading }) {
   return (
     <div className="space-y-2">
@@ -210,6 +260,10 @@ export default function PortfolioTab({ portfolio, trades, strategies, loading })
 
         <Panel title="Open Positions">
           <PositionsTable positions={portfolio?.positions} loading={loading.portfolio} />
+        </Panel>
+
+        <Panel title="Strategy Positions">
+          <StrategyPositions />
         </Panel>
 
         <Panel title="Recent Trades">

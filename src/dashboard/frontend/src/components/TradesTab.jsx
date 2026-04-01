@@ -41,7 +41,7 @@ export default function TradesTab({ trades, loading }) {
                       {pnl !== 0 ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}` : '--'}
                     </td>
                     <td className="px-2 py-1 text-text-secondary truncate max-w-[100px]">{t.strategy_id || '--'}</td>
-                    <td className="px-2 py-1 text-right text-text-muted">{t.created_at?.split('T')[0]}</td>
+                    <td className="px-2 py-1 text-right text-text-muted">{t.created_at?.replace('T', ' ').slice(0, 16) || '--'}</td>
                   </tr>
                 )
               })}

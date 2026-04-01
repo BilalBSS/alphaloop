@@ -70,6 +70,7 @@ class PaperBroker(BrokerInterface):
         order_type: str = "market",
         limit_price: float | None = None,
         stop_price: float | None = None,
+        extended_hours: bool = False,
     ) -> Order:
         if qty <= 0:
             raise ValueError(f"qty must be positive, got {qty}")

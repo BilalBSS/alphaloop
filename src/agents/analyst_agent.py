@@ -150,6 +150,9 @@ class AnalystAgent:
             "regime": regime,
         }
 
+        # / fetch strategy positions for llm context
+        strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+
         deepseek_text: str | None = None
         ai_confidence: float = 0.0
         if getattr(self, "_run_deepseek", True):
@@ -157,6 +160,7 @@ class AnalystAgent:
             try:
                 dual = await generate_dual_analysis(
                     symbol, crypto_data=crypto_data,
+                    positions=strat_positions,
                 )
                 ai_signal = dual.consensus
                 ai_confidence = dual.consensus_confidence
@@ -169,6 +173,7 @@ class AnalystAgent:
             try:
                 summary = await generate_summary(
                     symbol, crypto_data=crypto_data,
+                    positions=strat_positions,
                 )
                 if summary:
                     ai_signal = summary.signal
@@ -382,6 +387,9 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
 
+        # / fetch strategy positions for llm context
+        strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
         regime_with_trend = regime
         if symbol_trend != "unknown":
@@ -392,6 +400,7 @@ class AnalystAgent:
                     symbol, ratio=ratio_score, dcf=dcf_result,
                     earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
+                    positions=strat_positions,
                 )
             else:
                 # / groq only, skip deepseek call
@@ -399,6 +408,7 @@ class AnalystAgent:
                     symbol, ratio=ratio_score, dcf=dcf_result,
                     earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
+                    positions=strat_positions,
                 )
                 from src.analysis.ai_summary import DualAnalysis
                 dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal, consensus_confidence=groq_only.confidence)
