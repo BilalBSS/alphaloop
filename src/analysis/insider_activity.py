@@ -205,6 +205,10 @@ def compute_insider_signal(
             "weighted_buy_value": round(weighted_buy_value, 2),
             "weighted_sell_value": round(weighted_sell_value, 2),
             "trade_count": trade_count,
+            # / non-conviction transaction counts for llm context
+            "option_exercise_count": sum(1 for t in trades if t.get("transaction_type") == "option_exercise"),
+            "tax_payment_count": sum(1 for t in trades if t.get("transaction_type") == "tax_payment"),
+            "gift_count": sum(1 for t in trades if t.get("transaction_type") == "gift"),
         },
         top_trades=top,
     )

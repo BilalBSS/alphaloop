@@ -42,7 +42,7 @@ export default function EvolutionTab({ evolution, loading }) {
                     <td className="px-2 py-1 truncate max-w-[120px]">{e.strategy_id}</td>
                     <td className="px-2 py-1 text-text-muted truncate max-w-[100px]">{e.parent_id || '--'}</td>
                     <td className="px-2 py-1 text-text-secondary truncate max-w-[200px]">{e.reason || '--'}</td>
-                    <td className="px-2 py-1 text-right text-text-muted">{e.created_at?.split('T')[0]}</td>
+                    <td className="px-2 py-1 text-right text-text-muted">{e.created_at?.replace('T', ' ').slice(0, 16) || '--'}</td>
                   </tr>
                 )
               })}

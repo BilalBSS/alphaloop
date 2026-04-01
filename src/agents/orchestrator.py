@@ -478,7 +478,7 @@ class AgentOrchestrator:
                 break
 
     async def _alpaca_sync_loop(self) -> None:
-        # / periodically sync filled orders from alpaca into trade_log
+        # / periodically sync filled orders from alpaca into trade_log + reconcile positions
         while not self._stop_event.is_set():
             try:
                 synced = await tools.sync_trades_from_alpaca(self._pool)
@@ -486,6 +486,49 @@ class AgentOrchestrator:
                     logger.info("alpaca_periodic_sync", trades_synced=synced)
             except Exception:
                 logger.debug("alpaca_sync_error", exc_info=True)
+
+            # / reconcile strategy_positions vs alpaca positions
+            try:
+                # / aggregate tracked qty per symbol from db
+                all_positions = await tools.get_strategy_positions(self._pool)
+                tracked: dict[str, float] = {}
+                for p in all_positions:
+                    tracked[p["symbol"]] = tracked.get(p["symbol"], 0) + p["qty"]
+
+                # / get alpaca positions (source of truth)
+                broker = self._broker_factory.get_broker()
+                alpaca_positions = await broker.get_positions()
+                alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
+
+                drift_found = False
+                needs_sync = False
+
+                # / check each alpaca position against tracked
+                for symbol, alpaca_qty in alpaca_map.items():
+                    tracked_qty = tracked.pop(symbol, 0)
+                    if abs(tracked_qty - alpaca_qty) > 0.0001:
+                        logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
+                        notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
+                        drift_found = True
+                        if tracked_qty == 0:
+                            needs_sync = True
+
+                # / check tracked symbols no longer in alpaca
+                for symbol, tracked_qty in tracked.items():
+                    if tracked_qty > 0.0001:
+                        logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=0)
+                        notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca=0", "reconciliation")
+                        drift_found = True
+
+                # / bootstrap untracked positions once after loop
+                if needs_sync:
+                    await tools.sync_strategy_positions_from_alpaca(self._pool)
+
+                if not drift_found:
+                    logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
+            except Exception:
+                logger.debug("position_reconciliation_error", exc_info=True)
+
             # / sync every 5 minutes
             if await self._wait_or_stop(300):
                 break

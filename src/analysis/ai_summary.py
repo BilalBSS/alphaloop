@@ -54,6 +54,7 @@ def _build_prompt(
     regime: str | None = None,
     indicators: dict | None = None,
     sentiment: dict | None = None,
+    positions: list[dict] | None = None,
 ) -> str:
     # / construct structured analysis prompt with analytical instructions
     parts = [f"Analyze {symbol} and provide an investment signal."]
@@ -104,12 +105,31 @@ def _build_prompt(
                 parts.append(f"  Buy volume: ${wb:,.0f}, Sell volume: ${ws:,.0f}")
         if insider.top_trades:
             parts.append(f"  Key trades:")
+            # / map transaction types to human-readable actions
+            _action_map = {
+                "buy": "bought",
+                "sell": "sold",
+                "option_exercise": "exercised options (not a market sale)",
+                "tax_payment": "withheld shares for tax (automatic)",
+                "gift": "gifted shares (not a market sale)",
+            }
             for t in insider.top_trades[:5]:
                 title = f" ({t['title']})" if t.get("title") else ""
-                action = "bought" if t["type"] == "buy" else "sold"
+                action = _action_map.get(t["type"], t["type"])
                 shares = int(float(t.get("shares", 0)))
                 value = float(t.get("value", 0))
                 parts.append(f"    {t['name']}{title} {action} {shares:,} shares (${value:,.0f}) on {t['date']}")
+        # / notes for non-conviction transactions excluded from signal
+        if insider.details:
+            oe = insider.details.get("option_exercise_count", 0)
+            tp = insider.details.get("tax_payment_count", 0)
+            gc = insider.details.get("gift_count", 0)
+            if oe > 0:
+                parts.append(f"  Note: {oe} option exercises excluded (RSU/stock vesting, not market sales)")
+            if tp > 0:
+                parts.append(f"  Note: {tp} tax withholding transactions excluded (automatic, not market sales)")
+            if gc > 0:
+                parts.append(f"  Note: {gc} gift transactions excluded (not market sales)")
 
     if indicators:
         parts.append(f"\n## Technical Setup")
@@ -144,6 +164,13 @@ def _build_prompt(
                     s += f", {float(bull):.0%} bullish"
                 parts.append(s)
 
+    if positions:
+        parts.append(f"\n## Current Positions")
+        parts.append(f"{len(positions)} strategies currently hold this stock:")
+        for p in positions:
+            entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
+            parts.append(f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}")
+
     parts.append("\n## Instructions")
     parts.append("- Identify the 2-3 most important signals and explain why they matter more than the others")
     parts.append("- If signals conflict, state which you trust and why")
@@ -163,6 +190,7 @@ def _build_crypto_prompt(
     fear_greed: float | None = None,
     sentiment_score: float | None = None,
     regime: str | None = None,
+    positions: list[dict] | None = None,
 ) -> str:
     # / construct crypto-specific analysis prompt
     parts = [f"Analyze {symbol} and provide a trading signal."]
@@ -203,6 +231,13 @@ def _build_crypto_prompt(
             parts.append(f"  Fear & Greed: {fear_greed:.0f}/100 ({label})")
         if sentiment_score is not None:
             parts.append(f"  News sentiment: {sentiment_score:+.2f}")
+
+    if positions:
+        parts.append(f"\n## Current Positions")
+        parts.append(f"{len(positions)} strategies currently hold this asset:")
+        for p in positions:
+            entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
+            parts.append(f"  - {p['strategy_id']}: {p['qty']:.4f} units{entry}")
 
     parts.append(f"\n## Analysis Framework")
     parts.append("Consider these factors:")
@@ -544,14 +579,16 @@ async def generate_summary(
     indicators: dict | None = None,
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
+    positions: list[dict] | None = None,
 ) -> AnalysisSummary:
     # / try groq llm, fall back to structured summary
     if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data)
+        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
         sys_msg = _CRYPTO_SYSTEM_MSG
     else:
         prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment)
+                               indicators=indicators, sentiment=sentiment,
+                               positions=positions)
         sys_msg = _EQUITY_SYSTEM_MSG
 
     api_key = os.environ.get("GROQ_API_KEY")
@@ -594,6 +631,7 @@ async def _generate_deepseek_summary(
     indicators: dict | None = None,
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
+    positions: list[dict] | None = None,
 ) -> AnalysisSummary | None:
     # / independent second opinion via deepseek — gets same raw data, NOT groq's output
     api_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -601,11 +639,12 @@ async def _generate_deepseek_summary(
         return None
 
     if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data)
+        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
         sys_msg = _CRYPTO_SYSTEM_MSG
     else:
         prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment)
+                               indicators=indicators, sentiment=sentiment,
+                               positions=positions)
         sys_msg = _DEEPSEEK_SYSTEM_MSG
 
     # / retry once on 429 or transient errors
@@ -682,15 +721,16 @@ async def generate_dual_analysis(
     indicators: dict | None = None,
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
+    positions: list[dict] | None = None,
 ) -> DualAnalysis:
     # / run groq + deepseek in parallel, compute consensus
     import asyncio
     groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
                                  indicators=indicators, sentiment=sentiment,
-                                 crypto_data=crypto_data)
+                                 crypto_data=crypto_data, positions=positions)
     deepseek_task = _generate_deepseek_summary(symbol, ratio, dcf, earnings, insider, regime,
                                                 indicators=indicators, sentiment=sentiment,
-                                                crypto_data=crypto_data)
+                                                crypto_data=crypto_data, positions=positions)
 
     groq_result, deepseek_result = await asyncio.gather(groq_task, deepseek_task)
 
