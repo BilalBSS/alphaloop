@@ -501,7 +501,6 @@ class AgentOrchestrator:
                 alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
 
                 drift_found = False
-                needs_sync = False
 
                 # / check each alpaca position against tracked
                 for symbol, alpaca_qty in alpaca_map.items():
@@ -510,21 +509,21 @@ class AgentOrchestrator:
                         logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
                         notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
                         drift_found = True
-                        if tracked_qty == 0:
-                            needs_sync = True
 
-                # / check tracked symbols no longer in alpaca
+                # / check tracked symbols no longer in alpaca (sold externally)
                 for symbol, tracked_qty in tracked.items():
                     if tracked_qty > 0.0001:
                         logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=0)
-                        notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca=0", "reconciliation")
+                        notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
                         drift_found = True
 
-                # / bootstrap untracked positions once after loop
-                if needs_sync:
+                # / auto-fix: wipe stale strategy_positions and re-bootstrap from alpaca
+                if drift_found:
+                    async with self._pool.acquire() as conn:
+                        await conn.execute("DELETE FROM strategy_positions")
                     await tools.sync_strategy_positions_from_alpaca(self._pool)
-
-                if not drift_found:
+                    logger.info("position_reconciliation_auto_fixed")
+                else:
                     logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
             except Exception:
                 logger.debug("position_reconciliation_error", exc_info=True)
