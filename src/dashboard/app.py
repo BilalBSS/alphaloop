@@ -22,6 +22,7 @@ logger = structlog.get_logger(__name__)
 
 _pool: asyncpg.Pool | None = None
 _ws_clients: set[WebSocket] = set()
+_broker = None
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -46,6 +47,28 @@ app.add_middleware(
 )
 
 
+def _get_broker():
+    # / lazy singleton — avoid re-instantiating on every request
+    global _broker
+    if _broker is None:
+        from src.brokers.alpaca_broker import AlpacaBroker
+        _broker = AlpacaBroker()
+    return _broker
+
+
+def _serialize_position(p) -> dict:
+    # / consistent position dict for portfolio + positions endpoints
+    return {
+        "symbol": p.symbol,
+        "side": p.side,
+        "qty": p.qty,
+        "market_value": p.market_value,
+        "entry_price": p.avg_entry_price,
+        "unrealized_pl": p.unrealized_pnl,
+        "current_price": p.current_price,
+    }
+
+
 async def _query(sql: str, *args) -> list[dict]:
     if _pool is None:
         return []
@@ -68,8 +91,7 @@ async def _query_one(sql: str, *args) -> dict | None:
 async def get_portfolio():
     # / pull live data from alpaca, fall back to trade_log
     try:
-        from src.brokers.alpaca_broker import AlpacaBroker
-        broker = AlpacaBroker()
+        broker = _get_broker()
         balance = await broker.get_account_balance()
         positions = await broker.get_positions()
         return {
@@ -78,10 +100,7 @@ async def get_portfolio():
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
             "daily_pnl": sum(p.unrealized_pnl for p in positions),
-            "positions": [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
-                          "market_value": p.market_value, "entry_price": p.avg_entry_price,
-                          "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
-                         for p in positions],
+            "positions": [_serialize_position(p) for p in positions],
             "trades_today": _serialize(await _query(
                 """SELECT * FROM trade_log
                 WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
@@ -149,13 +168,9 @@ async def get_strategy_positions(symbol: str | None = None):
 async def get_positions():
     # / pull live positions from alpaca
     try:
-        from src.brokers.alpaca_broker import AlpacaBroker
-        broker = AlpacaBroker()
+        broker = _get_broker()
         positions = await broker.get_positions()
-        return [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
-                "entry_price": p.avg_entry_price, "market_value": p.market_value,
-                "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
-               for p in positions]
+        return [_serialize_position(p) for p in positions]
     except Exception as exc:
         logger.debug("positions_alpaca_fallback", error=str(exc))
         rows = await _query(

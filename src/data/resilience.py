@@ -185,6 +185,23 @@ async def close_http_client() -> None:
         _http_client = None
 
 
+async def _rate_limited_request(
+    source: str | None,
+    call: Callable[[], Any],
+) -> httpx.Response:
+    # / wrap an http call with optional per-source semaphore + delay
+    if source and source in _rate_limiters:
+        async with _rate_limiters[source]:
+            delay = _rate_delays.get(source, 0)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            resp = await call()
+    else:
+        resp = await call()
+    resp.raise_for_status()
+    return resp
+
+
 async def api_get(
     url: str,
     headers: dict[str, str] | None = None,
@@ -194,16 +211,9 @@ async def api_get(
 ) -> httpx.Response:
     # / shared GET with optional per-source rate limiting
     client = await get_http_client()
-    if source and source in _rate_limiters:
-        async with _rate_limiters[source]:
-            delay = _rate_delays.get(source, 0)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            resp = await client.get(url, headers=headers, params=params, timeout=timeout)
-    else:
-        resp = await client.get(url, headers=headers, params=params, timeout=timeout)
-    resp.raise_for_status()
-    return resp
+    return await _rate_limited_request(
+        source, lambda: client.get(url, headers=headers, params=params, timeout=timeout)
+    )
 
 
 async def api_post(
@@ -216,13 +226,6 @@ async def api_post(
 ) -> httpx.Response:
     # / shared POST with optional per-source rate limiting
     client = await get_http_client()
-    if source and source in _rate_limiters:
-        async with _rate_limiters[source]:
-            delay = _rate_delays.get(source, 0)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            resp = await client.post(url, headers=headers, json=json, content=data, timeout=timeout)
-    else:
-        resp = await client.post(url, headers=headers, json=json, content=data, timeout=timeout)
-    resp.raise_for_status()
-    return resp
+    return await _rate_limited_request(
+        source, lambda: client.post(url, headers=headers, json=json, content=data, timeout=timeout)
+    )

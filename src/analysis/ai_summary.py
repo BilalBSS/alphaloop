@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import dataclass
@@ -511,6 +512,48 @@ _CRYPTO_SYSTEM_MSG = (
 )
 
 
+def _dispatch_prompt(
+    symbol: str,
+    ratio: RatioScore | None,
+    dcf: DCFResult | None,
+    earnings: EarningsSignal | None,
+    insider: InsiderSignal | None,
+    regime: str | None,
+    indicators: dict | None,
+    sentiment: dict | None,
+    crypto_data: dict | None,
+    positions: list[dict] | None,
+    system_override: str | None = None,
+) -> tuple[str, str]:
+    # / build prompt + system message, dispatching crypto vs equity
+    if crypto_data is not None:
+        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
+        sys_msg = _CRYPTO_SYSTEM_MSG
+    else:
+        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
+                               indicators=indicators, sentiment=sentiment,
+                               positions=positions)
+        sys_msg = system_override or _EQUITY_SYSTEM_MSG
+    return prompt, sys_msg
+
+
+def _dispatch_fallback(
+    symbol: str,
+    ratio: RatioScore | None,
+    dcf: DCFResult | None,
+    earnings: EarningsSignal | None,
+    insider: InsiderSignal | None,
+    crypto_data: dict | None,
+) -> AnalysisSummary:
+    # / return structured fallback, dispatching crypto vs equity
+    if crypto_data is not None:
+        return _build_crypto_fallback_summary(
+            symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
+            price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
+        )
+    return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+
+
 class _RateLimited(Exception):
     pass
 
@@ -521,7 +564,6 @@ async def _call_llm(
     max_retries: int = 2,
 ) -> AnalysisSummary | None:
     # / single llm api call with retry on 429, raises _RateLimited after exhausting retries
-    import asyncio
     from src.data.llm_client import get_llm_client
     client = await get_llm_client("groq")
     for attempt in range(max_retries + 1):
@@ -583,24 +625,15 @@ async def generate_summary(
     positions: list[dict] | None = None,
 ) -> AnalysisSummary:
     # / try groq llm, fall back to structured summary
-    if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
-        sys_msg = _CRYPTO_SYSTEM_MSG
-    else:
-        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment,
-                               positions=positions)
-        sys_msg = _EQUITY_SYSTEM_MSG
+    prompt, sys_msg = _dispatch_prompt(
+        symbol, ratio, dcf, earnings, insider, regime,
+        indicators, sentiment, crypto_data, positions,
+    )
 
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
-        if crypto_data is not None:
-            return _build_crypto_fallback_summary(
-                symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
-                price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
-            )
-        return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+        return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
     # / try models in order: 120b → default → fallback 20b
     # / _call_llm retries 429 internally; if still limited, try next model
@@ -614,12 +647,7 @@ async def generate_summary(
             continue
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)
-    if crypto_data is not None:
-        return _build_crypto_fallback_summary(
-            symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
-            price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
-        )
-    return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+    return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
 
 async def _generate_deepseek_summary(
@@ -639,17 +667,13 @@ async def _generate_deepseek_summary(
     if not api_key:
         return None
 
-    if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
-        sys_msg = _CRYPTO_SYSTEM_MSG
-    else:
-        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment,
-                               positions=positions)
-        sys_msg = _DEEPSEEK_SYSTEM_MSG
+    prompt, sys_msg = _dispatch_prompt(
+        symbol, ratio, dcf, earnings, insider, regime,
+        indicators, sentiment, crypto_data, positions,
+        system_override=_DEEPSEEK_SYSTEM_MSG,
+    )
 
     # / retry once on 429 or transient errors
-    import asyncio
     from src.data.llm_client import get_llm_client
     client = await get_llm_client("deepseek")
     for attempt in range(2):
@@ -726,7 +750,6 @@ async def generate_dual_analysis(
     positions: list[dict] | None = None,
 ) -> DualAnalysis:
     # / run groq + deepseek in parallel, compute consensus
-    import asyncio
     groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
                                  indicators=indicators, sentiment=sentiment,
                                  crypto_data=crypto_data, positions=positions)
