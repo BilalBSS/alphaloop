@@ -436,7 +436,7 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         funding_rate=d.get("funding_rate"),
         exchange_flow_ratio=d.get("exchange_flow_ratio"),
         news_sentiment_score=d.get("news_sentiment_score"),
-        ai_consensus=d.get("ai_consensus"),
+        ai_consensus=d.get("ai_consensus") or "neutral",
         regime=d.get("regime"),
     )
 
@@ -559,11 +559,19 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT regime FROM regime_history
+                """SELECT regime, date FROM regime_history
                 WHERE market = $1 ORDER BY date DESC LIMIT 1""",
                 market,
             )
-            return row["regime"] if row else None
+            if not row:
+                logger.warning("regime_missing", market=market)
+                return None
+            # / warn if regime data is stale (>2 days old)
+            from datetime import date as _date
+            regime_date = row.get("date") if hasattr(row, "get") else None
+            if regime_date and (_date.today() - regime_date).days > 2:
+                logger.warning("regime_stale", market=market, last_date=str(regime_date))
+            return row["regime"]
     except Exception:
         return None
 
