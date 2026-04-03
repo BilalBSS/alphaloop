@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ logger = structlog.get_logger(__name__)
 
 _pool: asyncpg.Pool | None = None
 _ws_clients: set[WebSocket] = set()
+_broker = None
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -45,6 +47,28 @@ app.add_middleware(
 )
 
 
+def _get_broker():
+    # / lazy singleton — avoid re-instantiating on every request
+    global _broker
+    if _broker is None:
+        from src.brokers.alpaca_broker import AlpacaBroker
+        _broker = AlpacaBroker()
+    return _broker
+
+
+def _serialize_position(p) -> dict:
+    # / consistent position dict for portfolio + positions endpoints
+    return {
+        "symbol": p.symbol,
+        "side": p.side,
+        "qty": p.qty,
+        "market_value": p.market_value,
+        "entry_price": p.avg_entry_price,
+        "unrealized_pl": p.unrealized_pnl,
+        "current_price": p.current_price,
+    }
+
+
 async def _query(sql: str, *args) -> list[dict]:
     if _pool is None:
         return []
@@ -67,8 +91,7 @@ async def _query_one(sql: str, *args) -> dict | None:
 async def get_portfolio():
     # / pull live data from alpaca, fall back to trade_log
     try:
-        from src.brokers.alpaca_broker import AlpacaBroker
-        broker = AlpacaBroker()
+        broker = _get_broker()
         balance = await broker.get_account_balance()
         positions = await broker.get_positions()
         return {
@@ -77,10 +100,7 @@ async def get_portfolio():
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
             "daily_pnl": sum(p.unrealized_pnl for p in positions),
-            "positions": [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
-                          "market_value": p.market_value, "entry_price": p.avg_entry_price,
-                          "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
-                         for p in positions],
+            "positions": [_serialize_position(p) for p in positions],
             "trades_today": _serialize(await _query(
                 """SELECT * FROM trade_log
                 WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
@@ -99,30 +119,28 @@ async def get_portfolio():
 @app.get("/api/equity-history")
 async def get_equity_history(period: str = "1D", timeframe: str = "5Min"):
     # / pull portfolio history from alpaca for equity curve
-    import os, httpx
-    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    headers = {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
+    base = alpaca_base_url()
+    headers = alpaca_headers()
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{base}/v2/account/portfolio/history",
-                headers=headers,
-                params={"period": period, "timeframe": timeframe, "intraday_reporting": "market_hours", "pnl_reset": "per_day"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            timestamps = data.get("timestamp", [])
-            equity = data.get("equity", [])
-            profit_loss = data.get("profit_loss", [])
-            return {
-                "timestamps": timestamps,
-                "equity": equity,
-                "profit_loss": profit_loss,
-                "base_value": data.get("base_value", 100000),
-            }
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{base}/v2/account/portfolio/history",
+            headers=headers,
+            params={"period": period, "timeframe": timeframe, "intraday_reporting": "market_hours", "pnl_reset": "per_day"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        timestamps = data.get("timestamp", [])
+        equity = data.get("equity", [])
+        profit_loss = data.get("profit_loss", [])
+        return {
+            "timestamps": timestamps,
+            "equity": equity,
+            "profit_loss": profit_loss,
+            "base_value": data.get("base_value", 100000),
+        }
     except Exception as exc:
         logger.debug("equity_history_failed", error=str(exc))
         return {"timestamps": [], "equity": [], "profit_loss": [], "base_value": 100000}
@@ -150,13 +168,9 @@ async def get_strategy_positions(symbol: str | None = None):
 async def get_positions():
     # / pull live positions from alpaca
     try:
-        from src.brokers.alpaca_broker import AlpacaBroker
-        broker = AlpacaBroker()
+        broker = _get_broker()
         positions = await broker.get_positions()
-        return [{"symbol": p.symbol, "side": p.side, "qty": p.qty,
-                "entry_price": p.avg_entry_price, "market_value": p.market_value,
-                "unrealized_pl": p.unrealized_pnl, "current_price": p.current_price}
-               for p in positions]
+        return [_serialize_position(p) for p in positions]
     except Exception as exc:
         logger.debug("positions_alpaca_fallback", error=str(exc))
         rows = await _query(
@@ -190,75 +204,78 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = Non
 @app.get("/api/analysis/{symbol}")
 async def get_analysis(symbol: str):
     # / full deep-dive: fundamentals, DCF, dual-llm, indicators, trades, sentiment
-    score = await _query_one(
-        """SELECT * FROM analysis_scores
-        WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
-        symbol,
-    )
-    signals = await _query(
-        """SELECT * FROM trade_signals
-        WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
-        symbol,
-    )
-    trades = await _query(
-        """SELECT * FROM trade_log
-        WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
-        symbol,
-    )
-    sentiment = await _query(
-        """SELECT date, sentiment_score, sentiment_label, source
-        FROM news_sentiment WHERE symbol = $1
-        ORDER BY date DESC LIMIT 30""",
-        symbol,
-    )
-    fundamentals = await _query_one(
-        """SELECT f.*,
-            s.avg_fcf_margin as sector_fcf_margin_avg,
-            s.avg_de as sector_de_avg,
-            s.avg_rev_growth as sector_rev_growth_avg
-        FROM fundamentals f
-        LEFT JOIN LATERAL (
-            SELECT AVG(fcf_margin) as avg_fcf_margin,
-                   AVG(debt_to_equity) as avg_de,
-                   AVG(revenue_growth_1y) as avg_rev_growth
-            FROM fundamentals f2
-            WHERE f2.sector = f.sector AND f2.date = f.date AND f2.symbol != f.symbol
-        ) s ON true
-        WHERE f.symbol = $1 ORDER BY f.date DESC LIMIT 1""",
-        symbol,
-    )
-    dcf = await _query_one(
-        """SELECT * FROM dcf_valuations
-        WHERE symbol = $1 AND fair_value_median IS NOT NULL
-        ORDER BY date DESC LIMIT 1""",
-        symbol,
-    )
-    market = await _query(
-        """SELECT date, close, volume FROM market_data
-        WHERE symbol = $1 ORDER BY date DESC LIMIT 60""",
-        symbol,
-    )
-    social = await _query(
-        """SELECT date, source, bullish_pct, bearish_pct, volume, raw_score
-        FROM social_sentiment WHERE symbol = $1
-        ORDER BY date DESC LIMIT 30""",
-        symbol,
-    )
-    insider = await _query(
-        """SELECT filing_date, insider_name, insider_title, transaction_type,
-                shares, price_per_share, total_value
-        FROM insider_trades WHERE symbol = $1
-        ORDER BY filing_date DESC LIMIT 20""",
-        symbol,
-    )
-    evolution = await _query(
-        """SELECT generation, action, strategy_id, reason, details, created_at
-        FROM evolution_log
-        WHERE strategy_id IN (
-            SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
-        ) OR details::text LIKE '%' || $1 || '%'
-        ORDER BY created_at DESC LIMIT 20""",
-        symbol,
+    # / parallel fetch — all queries are independent
+    (score, signals, trades, sentiment, fundamentals, dcf, market, social, insider, evolution) = await asyncio.gather(
+        _query_one(
+            """SELECT * FROM analysis_scores
+            WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+            symbol,
+        ),
+        _query(
+            """SELECT * FROM trade_signals
+            WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
+            symbol,
+        ),
+        _query(
+            """SELECT * FROM trade_log
+            WHERE symbol = $1 ORDER BY created_at DESC LIMIT 20""",
+            symbol,
+        ),
+        _query(
+            """SELECT date, sentiment_score, sentiment_label, source
+            FROM news_sentiment WHERE symbol = $1
+            ORDER BY date DESC LIMIT 30""",
+            symbol,
+        ),
+        _query_one(
+            """SELECT f.*,
+                s.avg_fcf_margin as sector_fcf_margin_avg,
+                s.avg_de as sector_de_avg,
+                s.avg_rev_growth as sector_rev_growth_avg
+            FROM fundamentals f
+            LEFT JOIN LATERAL (
+                SELECT AVG(fcf_margin) as avg_fcf_margin,
+                       AVG(debt_to_equity) as avg_de,
+                       AVG(revenue_growth_1y) as avg_rev_growth
+                FROM fundamentals f2
+                WHERE f2.sector = f.sector AND f2.date = f.date AND f2.symbol != f.symbol
+            ) s ON true
+            WHERE f.symbol = $1 ORDER BY f.date DESC LIMIT 1""",
+            symbol,
+        ),
+        _query_one(
+            """SELECT * FROM dcf_valuations
+            WHERE symbol = $1 AND fair_value_median IS NOT NULL
+            ORDER BY date DESC LIMIT 1""",
+            symbol,
+        ),
+        _query(
+            """SELECT date, close, volume FROM market_data
+            WHERE symbol = $1 ORDER BY date DESC LIMIT 60""",
+            symbol,
+        ),
+        _query(
+            """SELECT date, source, bullish_pct, bearish_pct, volume, raw_score
+            FROM social_sentiment WHERE symbol = $1
+            ORDER BY date DESC LIMIT 30""",
+            symbol,
+        ),
+        _query(
+            """SELECT filing_date, insider_name, insider_title, transaction_type,
+                    shares, price_per_share, total_value
+            FROM insider_trades WHERE symbol = $1
+            ORDER BY filing_date DESC LIMIT 20""",
+            symbol,
+        ),
+        _query(
+            """SELECT generation, action, strategy_id, reason, details, created_at
+            FROM evolution_log
+            WHERE strategy_id IN (
+                SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
+            ) OR details::text LIKE '%' || $1 || '%'
+            ORDER BY created_at DESC LIMIT 20""",
+            symbol,
+        ),
     )
     return {
         "score": _serialize_one(score),
@@ -295,6 +312,22 @@ async def get_strategies():
         """SELECT * FROM strategy_scores
         ORDER BY sharpe_ratio DESC NULLS LAST"""
     )
+    # / fallback: compute basic metrics from trade_log when strategy_scores is empty
+    if not rows:
+        rows = await _query(
+            """SELECT strategy_id,
+                COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE pnl > 0) as wins,
+                COUNT(*) FILTER (WHERE pnl < 0) as losses,
+                COALESCE(ROUND(AVG(pnl)::numeric, 2), 0) as avg_pnl,
+                COALESCE(ROUND(SUM(pnl)::numeric, 2), 0) as total_pnl,
+                ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 3) as win_rate,
+                MAX(created_at) as last_trade_at
+            FROM trade_log
+            WHERE strategy_id IS NOT NULL
+            GROUP BY strategy_id
+            ORDER BY total_pnl DESC"""
+        )
     return _serialize(rows)
 
 
@@ -317,37 +350,76 @@ async def get_health():
     except Exception:
         pass
 
-    # / cycle timestamps
-    last_trade = await _query_one(
-        "SELECT created_at FROM trade_log ORDER BY created_at DESC LIMIT 1"
-    )
-    last_evolution = await _query_one(
-        "SELECT created_at FROM evolution_log ORDER BY created_at DESC LIMIT 1"
-    )
-    last_analysis = await _query_one(
-        """SELECT timestamp FROM system_events
-        WHERE source = 'analyst' ORDER BY timestamp DESC LIMIT 1"""
-    )
-    last_synthesis = await _query_one(
-        "SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"
-    )
-    last_eval = await _query_one(
-        "SELECT created_at FROM strategy_evaluations ORDER BY created_at DESC LIMIT 1"
+    # / parallel fetch — all remaining queries are independent
+    (
+        last_trade, last_evolution, last_analysis, last_synthesis, last_eval,
+        symbols_analyzed, last_llm, db_size, tables, conn_stats, active,
+        recent_errors, source_stats,
+    ) = await asyncio.gather(
+        _query_one("SELECT created_at FROM trade_log ORDER BY created_at DESC LIMIT 1"),
+        _query_one("SELECT created_at FROM evolution_log ORDER BY created_at DESC LIMIT 1"),
+        _query_one(
+            """SELECT timestamp FROM system_events
+            WHERE source = 'analyst' ORDER BY timestamp DESC LIMIT 1"""
+        ),
+        _query_one("SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"),
+        _query_one("SELECT created_at FROM strategy_evaluations ORDER BY created_at DESC LIMIT 1"),
+        _query_one(
+            """SELECT COUNT(DISTINCT symbol) as cnt FROM analysis_scores
+            WHERE date >= CURRENT_DATE"""
+        ),
+        _query_one(
+            """SELECT symbol, details->>'llm_analysis_groq' as groq,
+                    details->>'llm_analysis_deepseek' as deepseek
+            FROM analysis_scores WHERE date >= CURRENT_DATE
+            ORDER BY date DESC LIMIT 1"""
+        ),
+        _query_one("SELECT pg_database_size(current_database()) as size_bytes"),
+        _query(
+            """SELECT relname as name,
+                pg_total_relation_size(relid) as size_bytes,
+                n_live_tup as rows
+            FROM pg_stat_user_tables
+            ORDER BY pg_total_relation_size(relid) DESC LIMIT 10"""
+        ),
+        _query_one(
+            """SELECT numbackends, xact_commit, xact_rollback, blks_read, blks_hit
+            FROM pg_stat_database WHERE datname = current_database()"""
+        ),
+        _query_one("SELECT COUNT(*) as cnt FROM pg_stat_activity WHERE state = 'active'"),
+        _query(
+            """SELECT timestamp, source, symbol, message
+            FROM system_events WHERE level IN ('error', 'warning')
+            ORDER BY timestamp DESC LIMIT 20"""
+        ),
+        _query(
+            """SELECT source,
+                COUNT(*) FILTER (WHERE level = 'error') as errors_24h,
+                MAX(timestamp) FILTER (WHERE level = 'error') as last_error
+            FROM system_events
+            WHERE timestamp > NOW() - INTERVAL '24 hours'
+            GROUP BY source"""
+        ),
+        return_exceptions=True,
     )
 
-    # / count symbols with recent analysis
-    symbols_analyzed = await _query_one(
-        """SELECT COUNT(DISTINCT symbol) as cnt FROM analysis_scores
-        WHERE date >= CURRENT_DATE"""
-    )
+    # / handle errors from gathered results — use fallbacks matching original behavior
+    if isinstance(last_trade, Exception):
+        last_trade = None
+    if isinstance(last_evolution, Exception):
+        last_evolution = None
+    if isinstance(last_analysis, Exception):
+        last_analysis = None
+    if isinstance(last_synthesis, Exception):
+        last_synthesis = None
+    if isinstance(last_eval, Exception):
+        last_eval = None
+    if isinstance(symbols_analyzed, Exception):
+        symbols_analyzed = None
+    if isinstance(last_llm, Exception):
+        last_llm = None
 
     # / groq vs deepseek status
-    last_llm = await _query_one(
-        """SELECT symbol, details->>'llm_analysis_groq' as groq,
-                details->>'llm_analysis_deepseek' as deepseek
-        FROM analysis_scores WHERE date >= CURRENT_DATE
-        ORDER BY date DESC LIMIT 1"""
-    )
     groq_status = "unknown"
     if last_llm:
         groq_text = last_llm.get("groq") or ""
@@ -356,72 +428,45 @@ async def get_health():
     deepseek_status = "active" if (last_llm and last_llm.get("deepseek")) else "pending"
 
     # / db size
-    try:
-        db_size = await _query_one(
-            "SELECT pg_database_size(current_database()) as size_bytes"
-        )
-        db_size_mb = round(db_size["size_bytes"] / 1024 / 1024, 1) if db_size else 0
-    except Exception:
+    if isinstance(db_size, Exception) or not db_size:
         db_size_mb = None
+    else:
+        db_size_mb = round(db_size["size_bytes"] / 1024 / 1024, 1)
 
     # / per-table sizes + row counts (top 10)
-    try:
-        tables = await _query(
-            """SELECT relname as name,
-                pg_total_relation_size(relid) as size_bytes,
-                n_live_tup as rows
-            FROM pg_stat_user_tables
-            ORDER BY pg_total_relation_size(relid) DESC LIMIT 10"""
-        )
+    if isinstance(tables, Exception) or not tables:
+        table_stats = []
+    else:
         table_stats = [
             {"name": t["name"], "size_mb": round(t["size_bytes"] / 1024 / 1024, 2), "rows": t["rows"]}
             for t in tables
         ]
-    except Exception:
-        table_stats = []
 
     # / connection stats from pg_stat_database
-    try:
-        conn_stats = await _query_one(
-            """SELECT numbackends, xact_commit, xact_rollback, blks_read, blks_hit
-            FROM pg_stat_database WHERE datname = current_database()"""
-        )
+    if isinstance(conn_stats, Exception):
+        conn_stats = None
+        cache_ratio = 0
+    elif conn_stats:
         hit = conn_stats["blks_hit"] or 0
         read = conn_stats["blks_read"] or 0
         cache_ratio = round(hit / (hit + read), 4) if (hit + read) > 0 else 0
-    except Exception:
-        conn_stats = None
+    else:
         cache_ratio = 0
 
     # / active connections count
-    try:
-        active = await _query_one(
-            "SELECT COUNT(*) as cnt FROM pg_stat_activity WHERE state = 'active'"
-        )
-        active_conns = active["cnt"] if active else 0
-    except Exception:
+    if isinstance(active, Exception):
         active_conns = None
+    else:
+        active_conns = active["cnt"] if active else 0
 
     # / recent errors from system_events
-    try:
-        recent_errors = await _query(
-            """SELECT timestamp, source, symbol, message
-            FROM system_events WHERE level IN ('error', 'warning')
-            ORDER BY timestamp DESC LIMIT 20"""
-        )
-    except Exception:
+    if isinstance(recent_errors, Exception):
         recent_errors = []
 
     # / per-source health status (errors in last 24h)
-    try:
-        source_stats = await _query(
-            """SELECT source,
-                COUNT(*) FILTER (WHERE level = 'error') as errors_24h,
-                MAX(timestamp) FILTER (WHERE level = 'error') as last_error
-            FROM system_events
-            WHERE timestamp > NOW() - INTERVAL '24 hours'
-            GROUP BY source"""
-        )
+    if isinstance(source_stats, Exception) or not source_stats:
+        sources = {}
+    else:
         sources = {}
         for s in source_stats:
             sources[s["source"]] = {
@@ -429,8 +474,6 @@ async def get_health():
                 "last_error": str(s["last_error"]) if s["last_error"] else None,
                 "errors_24h": s["errors_24h"],
             }
-    except Exception:
-        sources = {}
 
     # / ensure groq + deepseek always present in sources
     if "groq" not in sources:

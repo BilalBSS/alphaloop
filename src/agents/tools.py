@@ -75,7 +75,8 @@ async def store_trade_signal(
         existing = await conn.fetchrow(
             """SELECT id FROM trade_signals
             WHERE strategy_id = $1 AND symbol = $2 AND signal_type = $3
-            AND created_at::date = CURRENT_DATE AND status = 'pending'""",
+            AND created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'
+            AND status = 'pending'""",
             strategy_id, symbol, signal_type,
         )
         if existing:
@@ -254,18 +255,14 @@ async def get_strategy_positions(
 
 async def sync_strategy_positions_from_alpaca(pool) -> int:
     # / bootstrap: insert untracked positions from alpaca not in strategy_positions
-    import httpx
-    import os
-    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    headers = {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
+    base = alpaca_base_url()
+    headers = alpaca_headers()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(f"{base}/v2/positions", headers=headers)
-            resp.raise_for_status()
-            alpaca_positions = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(f"{base}/v2/positions", headers=headers)
+        resp.raise_for_status()
+        alpaca_positions = resp.json()
     except Exception as exc:
         logger.warning("alpaca_position_sync_failed", error=str(exc))
         return 0
@@ -298,35 +295,36 @@ async def sync_strategy_positions_from_alpaca(pool) -> int:
 async def sync_trades_from_alpaca(pool) -> int:
     # / pull filled orders from alpaca and upsert into trade_log
     # / alpaca is source of truth — this keeps db in sync after restarts
-    import httpx
-    import os
-    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    headers = {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
+    base = alpaca_base_url()
+    headers = alpaca_headers()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{base}/v2/orders",
-                headers=headers,
-                params={"status": "filled", "limit": 200, "direction": "desc"},
-            )
-            resp.raise_for_status()
-            orders = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{base}/v2/orders",
+            headers=headers,
+            params={"status": "filled", "limit": 200, "direction": "desc"},
+        )
+        resp.raise_for_status()
+        orders = resp.json()
     except Exception as exc:
         logger.warning("alpaca_sync_fetch_failed", error=str(exc))
         return 0
+
+    # / batch lookup existing order_ids to avoid N+1 selects
+    order_ids = [o["id"] for o in orders]
+    async with pool.acquire() as conn:
+        existing = await conn.fetch(
+            "SELECT order_id FROM trade_log WHERE order_id = ANY($1)",
+            order_ids,
+        )
+        existing_set = {r["order_id"] for r in existing}
 
     synced = 0
     async with pool.acquire() as conn:
         for o in orders:
             order_id = o["id"]
-            # / skip if already in trade_log
-            existing = await conn.fetchrow(
-                "SELECT id FROM trade_log WHERE order_id = $1", order_id,
-            )
-            if existing:
+            if order_id in existing_set:
                 continue
             symbol = o["symbol"]
             side = o["side"]
@@ -438,7 +436,7 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         funding_rate=d.get("funding_rate"),
         exchange_flow_ratio=d.get("exchange_flow_ratio"),
         news_sentiment_score=d.get("news_sentiment_score"),
-        ai_consensus=d.get("ai_consensus"),
+        ai_consensus=d.get("ai_consensus") or "neutral",
         regime=d.get("regime"),
     )
 
@@ -561,11 +559,19 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT regime FROM regime_history
+                """SELECT regime, date FROM regime_history
                 WHERE market = $1 ORDER BY date DESC LIMIT 1""",
                 market,
             )
-            return row["regime"] if row else None
+            if not row:
+                logger.warning("regime_missing", market=market)
+                return None
+            # / warn if regime data is stale (>2 days old)
+            from datetime import date as _date
+            regime_date = row.get("date") if hasattr(row, "get") else None
+            if regime_date and (_date.today() - regime_date).days > 2:
+                logger.warning("regime_stale", market=market, last_date=str(regime_date))
+            return row["regime"]
     except Exception:
         return None
 

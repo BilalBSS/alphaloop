@@ -81,14 +81,14 @@ function PortfolioSummary({ portfolio }) {
       <div className="bg-bg-primary border border-border p-2">
         <div className="text-[10px] uppercase text-text-muted">Daily P&L</div>
         <div className={`text-lg font-mono font-bold ${pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-          {pnl >= 0 ? '+' : ''}${pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {pnl >= 0 ? '+$' : '-$'}{Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           <span className="text-xs ml-1">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)</span>
         </div>
       </div>
       <div className="bg-bg-primary border border-border p-2">
         <div className="text-[10px] uppercase text-text-muted">Cash</div>
         <div className="text-lg font-mono font-bold text-text-primary">
-          ${portfolio.cash?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '--'}
+          {portfolio.cash != null ? `${portfolio.cash < 0 ? '-$' : '$'}${Math.abs(portfolio.cash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '--'}
         </div>
       </div>
       <div className="bg-bg-primary border border-border p-2">
@@ -162,15 +162,15 @@ function RecentTrades({ trades, loading }) {
       </thead>
       <tbody>
         {trades.slice(0, 10).map((t, i) => {
-          const pnl = parseFloat(t.pnl || 0)
+          const pnl = t.pnl != null ? parseFloat(t.pnl) : null
           return (
             <tr key={i} className="hover:bg-bg-hover border-t border-border" style={{ height: 36 }}>
               <td className="px-2 py-1 font-mono font-semibold">{t.symbol}</td>
               <td className={`px-2 py-1 ${t.side === 'buy' ? 'text-profit' : 'text-loss'}`}>
                 {t.side?.toUpperCase()}
               </td>
-              <td className={`px-2 py-1 text-right font-mono ${pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+              <td className={`px-2 py-1 text-right font-mono ${pnl !== null && pnl >= 0 ? 'text-profit' : pnl !== null ? 'text-loss' : 'text-text-muted'}`}>
+                {pnl !== null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}` : '--'}
               </td>
               <td className="px-2 py-1 text-right text-text-muted">
                 {t.created_at?.replace('T', ' ').slice(0, 16) || '--'}
@@ -193,22 +193,25 @@ function StrategiesPanel({ strategies, loading }) {
       <thead>
         <tr className="text-text-secondary text-[11px] uppercase">
           <th className="text-left px-2 py-1">Strategy</th>
-          <th className="text-right px-2 py-1">Score</th>
+          <th className="text-right px-2 py-1">P&L</th>
           <th className="text-right px-2 py-1">W/L</th>
         </tr>
       </thead>
       <tbody>
-        {strategies.slice(0, 8).map((s, i) => (
+        {strategies.slice(0, 8).map((s, i) => {
+          const pnl = parseFloat(s.total_pnl ?? s.composite_score ?? 0)
+          return (
           <tr key={i} className="hover:bg-bg-hover border-t border-border" style={{ height: 36 }}>
             <td className="px-2 py-1 truncate max-w-[120px]">{s.strategy_id}</td>
-            <td className="px-2 py-1 text-right font-mono">
-              {parseFloat(s.composite_score || 0).toFixed(2)}
+            <td className={`px-2 py-1 text-right font-mono ${pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+              {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
             </td>
             <td className="px-2 py-1 text-right font-mono text-text-secondary">
               {(parseFloat(s.win_rate || 0) * 100).toFixed(0)}%
             </td>
           </tr>
-        ))}
+          )
+        })}
       </tbody>
     </table>
   )

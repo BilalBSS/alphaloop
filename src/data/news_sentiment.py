@@ -58,26 +58,22 @@ async def _groq_score_headlines(headlines: list[str]) -> float | None:
     )
 
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "llama-3.1-8b-instant",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 10,
-                    "temperature": 0.1,
-                },
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-            # / extract first number from response in case llm adds words
-            match = re.search(r"-?\d+\.?\d*", text)
-            if not match:
-                return None
-            score = float(match.group())
-            return max(-1.0, min(1.0, score))
+        from .llm_client import llm_call
+        data = await llm_call(
+            "groq",
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.1-8b-instant",
+            max_tokens=10,
+            temperature=0.1,
+            timeout=10.0,
+        )
+        text = data["choices"][0]["message"]["content"].strip()
+        # / extract first number from response in case llm adds words
+        match = re.search(r"-?\d+\.?\d*", text)
+        if not match:
+            return None
+        score = float(match.group())
+        return max(-1.0, min(1.0, score))
     except Exception as exc:
         logger.debug("groq_sentiment_failed", error=str(exc))
         return None

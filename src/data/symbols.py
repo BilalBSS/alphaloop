@@ -27,7 +27,7 @@ EQUITY_UNIVERSE = [
     "GLD", "SLV",
 ]
 CRYPTO_UNIVERSE = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD",
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "HYPE-USD", "AVAX-USD", "SUI-USD", "RENDER-USD",
 ]
 FULL_UNIVERSE = EQUITY_UNIVERSE + CRYPTO_UNIVERSE
 
@@ -42,7 +42,7 @@ SECTORS: dict[str, list[str]] = {
     "space":         ["ASTS", "RKLB", "LUNR"],
     "commodities":   ["GLD", "SLV"],
     "large_crypto":  ["BTC-USD", "ETH-USD"],
-    "alt_crypto":    ["SOL-USD", "XRP-USD", "AVAX-USD", "SUI-USD", "RENDER-USD"],
+    "alt_crypto":    ["SOL-USD", "XRP-USD", "HYPE-USD", "AVAX-USD", "SUI-USD", "RENDER-USD"],
     "etfs":          ["SPY", "QQQ", "SPUS"],
 }
 

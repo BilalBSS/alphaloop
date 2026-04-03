@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import dataclass
@@ -511,6 +512,48 @@ _CRYPTO_SYSTEM_MSG = (
 )
 
 
+def _dispatch_prompt(
+    symbol: str,
+    ratio: RatioScore | None,
+    dcf: DCFResult | None,
+    earnings: EarningsSignal | None,
+    insider: InsiderSignal | None,
+    regime: str | None,
+    indicators: dict | None,
+    sentiment: dict | None,
+    crypto_data: dict | None,
+    positions: list[dict] | None,
+    system_override: str | None = None,
+) -> tuple[str, str]:
+    # / build prompt + system message, dispatching crypto vs equity
+    if crypto_data is not None:
+        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
+        sys_msg = _CRYPTO_SYSTEM_MSG
+    else:
+        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
+                               indicators=indicators, sentiment=sentiment,
+                               positions=positions)
+        sys_msg = system_override or _EQUITY_SYSTEM_MSG
+    return prompt, sys_msg
+
+
+def _dispatch_fallback(
+    symbol: str,
+    ratio: RatioScore | None,
+    dcf: DCFResult | None,
+    earnings: EarningsSignal | None,
+    insider: InsiderSignal | None,
+    crypto_data: dict | None,
+) -> AnalysisSummary:
+    # / return structured fallback, dispatching crypto vs equity
+    if crypto_data is not None:
+        return _build_crypto_fallback_summary(
+            symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
+            price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
+        )
+    return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+
+
 class _RateLimited(Exception):
     pass
 
@@ -521,46 +564,46 @@ async def _call_llm(
     max_retries: int = 2,
 ) -> AnalysisSummary | None:
     # / single llm api call with retry on 429, raises _RateLimited after exhausting retries
-    import asyncio
-    import httpx
+    from src.data.llm_client import get_llm_client
+    client = await get_llm_client("groq")
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_message},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": MAX_TOKENS,
-                        "temperature": 0.3,
-                    },
-                )
-                if resp.status_code == 429:
-                    # / backoff: 4s, 8s between retries
-                    if attempt < max_retries:
-                        wait = (attempt + 1) * 4
-                        logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
-                        await asyncio.sleep(wait)
-                        continue
-                    logger.info("llm_rate_limited_exhausted", symbol=symbol, model=model)
-                    raise _RateLimited()
-                resp.raise_for_status()
-                data = resp.json()
-                choice = data["choices"][0]
-                summary_text = choice["message"]["content"].strip()
-                # / detect truncated output from max_tokens hit
-                if choice.get("finish_reason") == "length":
-                    logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
-                signal, confidence = _extract_signal(summary_text)
-                logger.info("ai_summary_generated", symbol=symbol, model=model)
-                return AnalysisSummary(
-                    symbol=symbol, date=date.today(), summary=summary_text,
-                    model_used=model, signal=signal, confidence=confidence,
-                )
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": MAX_TOKENS,
+                    "temperature": 0.3,
+                },
+                timeout=20.0,
+            )
+            if resp.status_code == 429:
+                # / backoff: 4s, 8s between retries
+                if attempt < max_retries:
+                    wait = (attempt + 1) * 4
+                    logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
+                    await asyncio.sleep(wait)
+                    continue
+                logger.info("llm_rate_limited_exhausted", symbol=symbol, model=model)
+                raise _RateLimited()
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+            summary_text = choice["message"]["content"].strip()
+            # / detect truncated output from max_tokens hit
+            if choice.get("finish_reason") == "length":
+                logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
+            signal, confidence = _extract_signal(summary_text)
+            logger.info("ai_summary_generated", symbol=symbol, model=model)
+            return AnalysisSummary(
+                symbol=symbol, date=date.today(), summary=summary_text,
+                model_used=model, signal=signal, confidence=confidence,
+            )
         except _RateLimited:
             raise
         except Exception as exc:
@@ -582,24 +625,15 @@ async def generate_summary(
     positions: list[dict] | None = None,
 ) -> AnalysisSummary:
     # / try groq llm, fall back to structured summary
-    if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
-        sys_msg = _CRYPTO_SYSTEM_MSG
-    else:
-        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment,
-                               positions=positions)
-        sys_msg = _EQUITY_SYSTEM_MSG
+    prompt, sys_msg = _dispatch_prompt(
+        symbol, ratio, dcf, earnings, insider, regime,
+        indicators, sentiment, crypto_data, positions,
+    )
 
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
-        if crypto_data is not None:
-            return _build_crypto_fallback_summary(
-                symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
-                price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
-            )
-        return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+        return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
     # / try models in order: 120b → default → fallback 20b
     # / _call_llm retries 429 internally; if still limited, try next model
@@ -613,12 +647,7 @@ async def generate_summary(
             continue
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)
-    if crypto_data is not None:
-        return _build_crypto_fallback_summary(
-            symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
-            price_change_7d=crypto_data.get("price_change_7d"), sentiment_score=crypto_data.get("sentiment_score"),
-        )
-    return _build_fallback_summary(symbol, ratio, dcf, earnings, insider)
+    return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
 
 async def _generate_deepseek_summary(
@@ -638,47 +667,44 @@ async def _generate_deepseek_summary(
     if not api_key:
         return None
 
-    if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
-        sys_msg = _CRYPTO_SYSTEM_MSG
-    else:
-        prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
-                               indicators=indicators, sentiment=sentiment,
-                               positions=positions)
-        sys_msg = _DEEPSEEK_SYSTEM_MSG
+    prompt, sys_msg = _dispatch_prompt(
+        symbol, ratio, dcf, earnings, insider, regime,
+        indicators, sentiment, crypto_data, positions,
+        system_override=_DEEPSEEK_SYSTEM_MSG,
+    )
 
     # / retry once on 429 or transient errors
-    import asyncio
-    import httpx
+    from src.data.llm_client import get_llm_client
+    client = await get_llm_client("deepseek")
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                resp = await client.post(
-                    f"{DEEPSEEK_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": DEEPSEEK_MODEL,
-                        "messages": [
-                            {"role": "system", "content": sys_msg},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": MAX_TOKENS,
-                        "temperature": 0.3,
-                    },
-                )
-                if resp.status_code == 429 and attempt == 0:
-                    logger.info("deepseek_rate_limited_retrying", symbol=symbol)
-                    await asyncio.sleep(5)
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                summary_text = data["choices"][0]["message"]["content"].strip()
-                signal, confidence = _extract_signal(summary_text)
-                logger.info("deepseek_summary_generated", symbol=symbol)
-                return AnalysisSummary(
-                    symbol=symbol, date=date.today(), summary=summary_text,
-                    model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
-                )
+            resp = await client.post(
+                f"{DEEPSEEK_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": DEEPSEEK_MODEL,
+                    "messages": [
+                        {"role": "system", "content": sys_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": MAX_TOKENS,
+                    "temperature": 0.3,
+                },
+                timeout=25.0,
+            )
+            if resp.status_code == 429 and attempt == 0:
+                logger.info("deepseek_rate_limited_retrying", symbol=symbol)
+                await asyncio.sleep(5)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            summary_text = data["choices"][0]["message"]["content"].strip()
+            signal, confidence = _extract_signal(summary_text)
+            logger.info("deepseek_summary_generated", symbol=symbol)
+            return AnalysisSummary(
+                symbol=symbol, date=date.today(), summary=summary_text,
+                model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
+            )
         except Exception as exc:
             if attempt == 0:
                 logger.info("deepseek_attempt_failed_retrying", symbol=symbol, error=str(exc)[:100])
@@ -724,7 +750,6 @@ async def generate_dual_analysis(
     positions: list[dict] | None = None,
 ) -> DualAnalysis:
     # / run groq + deepseek in parallel, compute consensus
-    import asyncio
     groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
                                  indicators=indicators, sentiment=sentiment,
                                  crypto_data=crypto_data, positions=positions)
@@ -829,22 +854,18 @@ Produce a JSON response with:
 Output ONLY valid JSON. No explanation outside the JSON."""
 
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "https://api.deepseek.com/chat/completions",
-                headers={"Authorization": f"Bearer {deepseek_key}"},
-                json={
-                    "model": "deepseek-reasoner",
-                    "messages": [
-                        {"role": "system", "content": "You are a senior portfolio analyst. Produce structured JSON assessments."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 2000,
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"]
+        from src.data.llm_client import llm_call
+        data = await llm_call(
+            "deepseek",
+            messages=[
+                {"role": "system", "content": "You are a senior portfolio analyst. Produce structured JSON assessments."},
+                {"role": "user", "content": prompt},
+            ],
+            model="deepseek-reasoner",
+            max_tokens=2000,
+            timeout=60.0,
+        )
+        raw = data["choices"][0]["message"]["content"]
 
         # / parse structured response
         text = raw.strip()

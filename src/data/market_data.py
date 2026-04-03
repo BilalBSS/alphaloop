@@ -1,4 +1,4 @@
-# / alpaca ohlcv via httpx (primary) + yfinance fallback for historical
+# / alpaca ohlcv via shared alpaca client + yfinance fallback for historical
 # / graceful degradation: warns on failure, returns what it can
 
 from __future__ import annotations
@@ -9,16 +9,14 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-import httpx
 import structlog
 
+from .alpaca_client import DATA_URL as ALPACA_DATA_URL, alpaca_headers, get_alpaca_client
 from .resilience import with_retry
 from .symbols import is_crypto, to_alpaca
 from .validators import validate_ohlcv
 
 logger = structlog.get_logger(__name__)
-
-ALPACA_DATA_URL = "https://data.alpaca.markets"
 
 # / rate limit: 200 req/min for alpaca free tier
 _rate_semaphore = asyncio.Semaphore(10)  # concurrency cap
@@ -26,14 +24,7 @@ _rate_delay = 0.3  # seconds between requests
 
 
 def _alpaca_headers() -> dict[str, str]:
-    key = os.environ.get("ALPACA_API_KEY", "")
-    secret = os.environ.get("ALPACA_SECRET_KEY", "")
-    if not key or not secret:
-        logger.warning("alpaca_credentials_missing")
-    return {
-        "APCA-API-KEY-ID": key,
-        "APCA-API-SECRET-KEY": secret,
-    }
+    return alpaca_headers()
 
 
 @with_retry(source="alpaca_bars", max_retries=3, base_delay=1.0)
@@ -69,30 +60,30 @@ async def fetch_bars_alpaca(
     all_bars: list[dict[str, Any]] = []
 
     async with _rate_semaphore:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            page_token = None
-            while True:
-                if page_token:
-                    params["page_token"] = page_token
+        client = await get_alpaca_client()
+        page_token = None
+        while True:
+            if page_token:
+                params["page_token"] = page_token
 
-                await asyncio.sleep(_rate_delay)
-                resp = await client.get(url, headers=_alpaca_headers(), params=params)
-                resp.raise_for_status()
-                data = resp.json()
+            await asyncio.sleep(_rate_delay)
+            resp = await client.get(url, headers=_alpaca_headers(), params=params, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
 
-                if crypto:
-                    bars = data.get("bars", {}).get(alpaca_sym, [])
-                else:
-                    bars = data.get("bars", [])
+            if crypto:
+                bars = data.get("bars", {}).get(alpaca_sym, [])
+            else:
+                bars = data.get("bars", [])
 
-                for bar in bars:
-                    parsed = _parse_bar(symbol, bar)
-                    if parsed is not None:
-                        all_bars.append(parsed)
+            for bar in bars:
+                parsed = _parse_bar(symbol, bar)
+                if parsed is not None:
+                    all_bars.append(parsed)
 
-                page_token = data.get("next_page_token")
-                if not page_token:
-                    break
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
 
     logger.info("fetched_bars_alpaca", symbol=symbol, count=len(all_bars))
     return all_bars
@@ -177,19 +168,19 @@ async def fetch_latest_quote(symbol: str) -> dict[str, Any] | None:
         url = f"{ALPACA_DATA_URL}/v2/stocks/{alpaca_sym}/trades/latest"
         params = {}
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url, headers=_alpaca_headers(), params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    client = await get_alpaca_client()
+    resp = await client.get(url, headers=_alpaca_headers(), params=params, timeout=10.0)
+    resp.raise_for_status()
+    data = resp.json()
 
-        if crypto:
-            trade = data.get("trades", {}).get(alpaca_sym)
-            if trade:
-                return {"symbol": symbol, "price": Decimal(str(trade["p"])), "timestamp": trade["t"]}
-        else:
-            trade = data.get("trade")
-            if trade:
-                return {"symbol": symbol, "price": Decimal(str(trade["p"])), "timestamp": trade["t"]}
+    if crypto:
+        trade = data.get("trades", {}).get(alpaca_sym)
+        if trade:
+            return {"symbol": symbol, "price": Decimal(str(trade["p"])), "timestamp": trade["t"]}
+    else:
+        trade = data.get("trade")
+        if trade:
+            return {"symbol": symbol, "price": Decimal(str(trade["p"])), "timestamp": trade["t"]}
 
     return None
 
