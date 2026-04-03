@@ -6,6 +6,7 @@
     "description": "Buy on bullish fair value gap near fibonacci 0.618 retracement with RSI oversold confirmation",
     "asset_class": "stocks",
     "universe": "all_stocks",
+    "tier": "sector",
 
     "fundamental_filters": {
         "pe_ratio_max": 50,

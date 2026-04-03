@@ -254,18 +254,14 @@ async def get_strategy_positions(
 
 async def sync_strategy_positions_from_alpaca(pool) -> int:
     # / bootstrap: insert untracked positions from alpaca not in strategy_positions
-    import httpx
-    import os
-    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    headers = {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
+    base = alpaca_base_url()
+    headers = alpaca_headers()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(f"{base}/v2/positions", headers=headers)
-            resp.raise_for_status()
-            alpaca_positions = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(f"{base}/v2/positions", headers=headers)
+        resp.raise_for_status()
+        alpaca_positions = resp.json()
     except Exception as exc:
         logger.warning("alpaca_position_sync_failed", error=str(exc))
         return 0
@@ -298,22 +294,18 @@ async def sync_strategy_positions_from_alpaca(pool) -> int:
 async def sync_trades_from_alpaca(pool) -> int:
     # / pull filled orders from alpaca and upsert into trade_log
     # / alpaca is source of truth — this keeps db in sync after restarts
-    import httpx
-    import os
-    base = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    headers = {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
+    base = alpaca_base_url()
+    headers = alpaca_headers()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{base}/v2/orders",
-                headers=headers,
-                params={"status": "filled", "limit": 200, "direction": "desc"},
-            )
-            resp.raise_for_status()
-            orders = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{base}/v2/orders",
+            headers=headers,
+            params={"status": "filled", "limit": 200, "direction": "desc"},
+        )
+        resp.raise_for_status()
+        orders = resp.json()
     except Exception as exc:
         logger.warning("alpaca_sync_fetch_failed", error=str(exc))
         return 0

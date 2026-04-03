@@ -6,6 +6,7 @@
     "description": "Relaxed entry conditions to force full pipeline in paper mode, bypasses consensus gate and signal threshold",
     "asset_class": "stocks",
     "universe": "all_stocks",
+    "tier": "sector",
     "bypass_consensus": true,
     "signal_threshold_override": 0.10,
 
@@ -37,7 +38,7 @@
     },
 
     "metadata": {
-        "status": "paper_trading",
+        "status": "testing",
         "generation": 0,
         "paper_trade_days": 0
     }

@@ -118,7 +118,7 @@ async def _reasoner_critique(
         return {"decision": "approve", "reason": "no api key"}
 
     try:
-        import httpx
+        from src.data.llm_client import llm_call
 
         trades_summary = ""
         for t in recent_trades[:5]:
@@ -146,18 +146,13 @@ REVIEW THE MUTATION. Consider:
 Output ONLY valid JSON:
 {{"decision": "approve" or "reject", "reason": "one sentence why", "alternative": null or a complete strategy config JSON if you have a better idea}}"""
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                "https://api.deepseek.com/chat/completions",
-                headers={"Authorization": f"Bearer {deepseek_key}"},
-                json={
-                    "model": "deepseek-reasoner",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 3000,
-                },
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"]
+        data = await llm_call(
+            "deepseek",
+            messages=[{"role": "user", "content": prompt}],
+            model="deepseek-reasoner",
+            max_tokens=3000,
+        )
+        text = data["choices"][0]["message"]["content"]
 
         result = _parse_json_response(text)
 

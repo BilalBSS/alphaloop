@@ -6,6 +6,7 @@
     "description": "Buy on bullish structure break confirmed by fair value gap and volume spike, classic ICT smart money entry",
     "asset_class": "stocks",
     "universe": "all_stocks",
+    "tier": "sector",
     "bypass_consensus": true,
 
     "fundamental_filters": {

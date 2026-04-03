@@ -6,6 +6,7 @@
     "description": "Buy when price bounces off pivot support with MACD turning positive and ADX confirming trend strength",
     "asset_class": "stocks",
     "universe": "all_stocks",
+    "tier": "sector",
 
     "fundamental_filters": {
         "pe_ratio_max": 55,

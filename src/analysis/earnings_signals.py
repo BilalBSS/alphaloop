@@ -106,15 +106,15 @@ async def _fetch_earnings_finnhub(symbol: str) -> dict[str, Any] | None:
         return None
 
     try:
-        import httpx
+        from src.data.resilience import get_http_client
         url = f"https://finnhub.io/api/v1/stock/earnings?symbol={symbol}&limit=4&token={key}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if not data or not isinstance(data, list):
-                return None
+        client = await get_http_client()
+        resp = await client.get(url, timeout=10.0)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data or not isinstance(data, list):
+            return None
 
         result: dict[str, Any] = {"symbol": symbol, "quarters": []}
         for item in data:

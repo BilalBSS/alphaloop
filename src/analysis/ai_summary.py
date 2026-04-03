@@ -522,45 +522,46 @@ async def _call_llm(
 ) -> AnalysisSummary | None:
     # / single llm api call with retry on 429, raises _RateLimited after exhausting retries
     import asyncio
-    import httpx
+    from src.data.llm_client import get_llm_client
+    client = await get_llm_client("groq")
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_message},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": MAX_TOKENS,
-                        "temperature": 0.3,
-                    },
-                )
-                if resp.status_code == 429:
-                    # / backoff: 4s, 8s between retries
-                    if attempt < max_retries:
-                        wait = (attempt + 1) * 4
-                        logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
-                        await asyncio.sleep(wait)
-                        continue
-                    logger.info("llm_rate_limited_exhausted", symbol=symbol, model=model)
-                    raise _RateLimited()
-                resp.raise_for_status()
-                data = resp.json()
-                choice = data["choices"][0]
-                summary_text = choice["message"]["content"].strip()
-                # / detect truncated output from max_tokens hit
-                if choice.get("finish_reason") == "length":
-                    logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
-                signal, confidence = _extract_signal(summary_text)
-                logger.info("ai_summary_generated", symbol=symbol, model=model)
-                return AnalysisSummary(
-                    symbol=symbol, date=date.today(), summary=summary_text,
-                    model_used=model, signal=signal, confidence=confidence,
-                )
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": MAX_TOKENS,
+                    "temperature": 0.3,
+                },
+                timeout=20.0,
+            )
+            if resp.status_code == 429:
+                # / backoff: 4s, 8s between retries
+                if attempt < max_retries:
+                    wait = (attempt + 1) * 4
+                    logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
+                    await asyncio.sleep(wait)
+                    continue
+                logger.info("llm_rate_limited_exhausted", symbol=symbol, model=model)
+                raise _RateLimited()
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+            summary_text = choice["message"]["content"].strip()
+            # / detect truncated output from max_tokens hit
+            if choice.get("finish_reason") == "length":
+                logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
+            signal, confidence = _extract_signal(summary_text)
+            logger.info("ai_summary_generated", symbol=symbol, model=model)
+            return AnalysisSummary(
+                symbol=symbol, date=date.today(), summary=summary_text,
+                model_used=model, signal=signal, confidence=confidence,
+            )
         except _RateLimited:
             raise
         except Exception as exc:
@@ -649,36 +650,37 @@ async def _generate_deepseek_summary(
 
     # / retry once on 429 or transient errors
     import asyncio
-    import httpx
+    from src.data.llm_client import get_llm_client
+    client = await get_llm_client("deepseek")
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                resp = await client.post(
-                    f"{DEEPSEEK_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": DEEPSEEK_MODEL,
-                        "messages": [
-                            {"role": "system", "content": sys_msg},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": MAX_TOKENS,
-                        "temperature": 0.3,
-                    },
-                )
-                if resp.status_code == 429 and attempt == 0:
-                    logger.info("deepseek_rate_limited_retrying", symbol=symbol)
-                    await asyncio.sleep(5)
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                summary_text = data["choices"][0]["message"]["content"].strip()
-                signal, confidence = _extract_signal(summary_text)
-                logger.info("deepseek_summary_generated", symbol=symbol)
-                return AnalysisSummary(
-                    symbol=symbol, date=date.today(), summary=summary_text,
-                    model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
-                )
+            resp = await client.post(
+                f"{DEEPSEEK_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": DEEPSEEK_MODEL,
+                    "messages": [
+                        {"role": "system", "content": sys_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": MAX_TOKENS,
+                    "temperature": 0.3,
+                },
+                timeout=25.0,
+            )
+            if resp.status_code == 429 and attempt == 0:
+                logger.info("deepseek_rate_limited_retrying", symbol=symbol)
+                await asyncio.sleep(5)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            summary_text = data["choices"][0]["message"]["content"].strip()
+            signal, confidence = _extract_signal(summary_text)
+            logger.info("deepseek_summary_generated", symbol=symbol)
+            return AnalysisSummary(
+                symbol=symbol, date=date.today(), summary=summary_text,
+                model_used=DEEPSEEK_MODEL, signal=signal, confidence=confidence,
+            )
         except Exception as exc:
             if attempt == 0:
                 logger.info("deepseek_attempt_failed_retrying", symbol=symbol, error=str(exc)[:100])
@@ -829,22 +831,18 @@ Produce a JSON response with:
 Output ONLY valid JSON. No explanation outside the JSON."""
 
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "https://api.deepseek.com/chat/completions",
-                headers={"Authorization": f"Bearer {deepseek_key}"},
-                json={
-                    "model": "deepseek-reasoner",
-                    "messages": [
-                        {"role": "system", "content": "You are a senior portfolio analyst. Produce structured JSON assessments."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 2000,
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"]
+        from src.data.llm_client import llm_call
+        data = await llm_call(
+            "deepseek",
+            messages=[
+                {"role": "system", "content": "You are a senior portfolio analyst. Produce structured JSON assessments."},
+                {"role": "user", "content": prompt},
+            ],
+            model="deepseek-reasoner",
+            max_tokens=2000,
+            timeout=60.0,
+        )
+        raw = data["choices"][0]["message"]["content"]
 
         # / parse structured response
         text = raw.strip()

@@ -139,6 +139,17 @@ class AgentOrchestrator:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
+        # / close shared http clients (best-effort, may already be torn down)
+        try:
+            from src.data.resilience import close_http_client
+            from src.data.llm_client import close_llm_clients
+            from src.data.alpaca_client import close_alpaca_client
+            await close_http_client()
+            await close_llm_clients()
+            await close_alpaca_client()
+        except Exception:
+            pass
+
         # / close db
         await close_db()
         logger.info("orchestrator_stopped")

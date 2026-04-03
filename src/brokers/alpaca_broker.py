@@ -1,17 +1,20 @@
 # / alpaca broker: rest api for stocks + crypto
-# / uses httpx for async requests, integrates with resilience module
+# / uses shared alpaca client for connection pooling
 # / supports market, limit, stop, stop_limit order types
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
 
-import httpx
 import structlog
 
+from src.data.alpaca_client import (
+    DATA_URL,
+    alpaca_base_url,
+    alpaca_headers,
+    get_alpaca_client,
+)
 from src.data.resilience import with_retry
 from src.data.symbols import to_alpaca, is_crypto
 
@@ -21,18 +24,14 @@ logger = structlog.get_logger(__name__)
 
 PAPER_URL = "https://paper-api.alpaca.markets"
 LIVE_URL = "https://api.alpaca.markets"
-DATA_URL = "https://data.alpaca.markets"
 
 
 def _headers() -> dict[str, str]:
-    return {
-        "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),
-    }
+    return alpaca_headers()
 
 
 def _base_url() -> str:
-    return os.environ.get("ALPACA_BASE_URL", PAPER_URL)
+    return alpaca_base_url()
 
 
 def _parse_order(data: dict[str, Any]) -> Order:
@@ -72,10 +71,10 @@ class AlpacaBroker(BrokerInterface):
         else:
             url = f"{DATA_URL}/v2/stocks/{alpaca_sym}/trades/latest"
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=_headers())
-            resp.raise_for_status()
-            data = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(url, headers=_headers(), timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
 
         if crypto:
             trades = data.get("trades", {})
@@ -122,14 +121,15 @@ class AlpacaBroker(BrokerInterface):
         if stop_price is not None:
             payload["stop_price"] = str(stop_price)
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{self._base}/v2/orders",
-                headers=_headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.post(
+            f"{self._base}/v2/orders",
+            headers=_headers(),
+            json=payload,
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         order = _parse_order(data)
         logger.info(
@@ -141,13 +141,14 @@ class AlpacaBroker(BrokerInterface):
 
     @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)
     async def get_positions(self) -> list[Position]:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{self._base}/v2/positions",
-                headers=_headers(),
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{self._base}/v2/positions",
+            headers=_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         positions = []
         for p in data:
@@ -164,13 +165,14 @@ class AlpacaBroker(BrokerInterface):
 
     @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)
     async def get_account_balance(self) -> AccountBalance:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{self._base}/v2/account",
-                headers=_headers(),
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{self._base}/v2/account",
+            headers=_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         return AccountBalance(
             equity=float(data["equity"]),
@@ -182,22 +184,24 @@ class AlpacaBroker(BrokerInterface):
 
     @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)
     async def cancel_order(self, order_id: str) -> bool:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.delete(
-                f"{self._base}/v2/orders/{order_id}",
-                headers=_headers(),
-            )
+        client = await get_alpaca_client()
+        resp = await client.delete(
+            f"{self._base}/v2/orders/{order_id}",
+            headers=_headers(),
+            timeout=10.0,
+        )
         return resp.status_code in (200, 204)
 
     @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)
     async def get_order_status(self, order_id: str) -> Order:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{self._base}/v2/orders/{order_id}",
-                headers=_headers(),
-            )
-            resp.raise_for_status()
-            return _parse_order(resp.json())
+        client = await get_alpaca_client()
+        resp = await client.get(
+            f"{self._base}/v2/orders/{order_id}",
+            headers=_headers(),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return _parse_order(resp.json())
 
     async def stream_prices(
         self,

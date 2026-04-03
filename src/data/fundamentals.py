@@ -235,26 +235,28 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
         return None
 
     try:
-        import httpx
+        from .resilience import get_http_client
         headers = {"X-Finnhub-Token": key}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # / basic financials
-            resp = await client.get(
-                f"https://finnhub.io/api/v1/stock/metric",
-                params={"symbol": symbol, "metric": "all"},
-                headers=headers,
-            )
-            if resp.status_code != 200:
-                return None
-            metrics = resp.json().get("metric", {})
+        client = await get_http_client()
+        # / basic financials
+        resp = await client.get(
+            f"https://finnhub.io/api/v1/stock/metric",
+            params={"symbol": symbol, "metric": "all"},
+            headers=headers,
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            return None
+        metrics = resp.json().get("metric", {})
 
-            # / company profile for sector + shares
-            resp2 = await client.get(
-                f"https://finnhub.io/api/v1/stock/profile2",
-                params={"symbol": symbol},
-                headers=headers,
-            )
-            profile = resp2.json() if resp2.status_code == 200 else {}
+        # / company profile for sector + shares
+        resp2 = await client.get(
+            f"https://finnhub.io/api/v1/stock/profile2",
+            params={"symbol": symbol},
+            headers=headers,
+            timeout=10.0,
+        )
+        profile = resp2.json() if resp2.status_code == 200 else {}
 
         if not metrics:
             return None
