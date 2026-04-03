@@ -169,6 +169,25 @@ class AgentOrchestrator:
             return [s.strip() for s in symbols_env.split(",") if s.strip()]
         return FULL_UNIVERSE
 
+    @staticmethod
+    def _et_tz():
+        # / dst-aware eastern time, fallback to fixed est
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo("America/New_York")
+        except Exception:
+            return timezone(timedelta(hours=-5))
+
+    async def _sleep_until_et_hour(self, hour: int):
+        # / wait until target hour in eastern time (dst-aware)
+        et = self._et_tz()
+        now = datetime.now(et)
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        wait = (target - now).total_seconds()
+        return await self._wait_or_stop(wait), target
+
     def _is_market_hours(self) -> bool:
         # / check if nyse is currently open
         try:
@@ -186,8 +205,7 @@ class AgentOrchestrator:
             return session_open <= now <= session_close
         except Exception:
             # / fallback: simple hour check (9:30-16:00 ET)
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
+            now = datetime.now(self._et_tz())
             return 9 <= now.hour < 16
 
     async def _wait_or_stop(self, seconds: float) -> bool:
@@ -241,21 +259,11 @@ class AgentOrchestrator:
         from src.analysis.ai_summary import generate_daily_synthesis
         from src.notifications.notifier import notify_daily_synthesis
         while not self._stop_event.is_set():
-            # / calculate seconds until 5PM ET (use zoneinfo for dst awareness)
-            try:
-                from zoneinfo import ZoneInfo
-                et_tz = ZoneInfo("America/New_York")
-            except ImportError:
-                et_tz = timezone(timedelta(hours=-5))
-            now = datetime.now(et_tz)
-            target = now.replace(hour=17, minute=0, second=0, microsecond=0)
-            if now >= target:
-                target += timedelta(days=1)
-            wait_seconds = (target - now).total_seconds()
+            stopped, target = await self._sleep_until_et_hour(17)
 
-            logger.info("reasoner_waiting", next_run=str(target), wait_seconds=wait_seconds)
+            logger.info("reasoner_waiting", next_run=str(target))
 
-            if await self._wait_or_stop(wait_seconds):
+            if stopped:
                 break
 
             try:
@@ -359,15 +367,11 @@ class AgentOrchestrator:
     async def _evolution_loop(self) -> None:
         # / run evolution engine at midnight et
         while not self._stop_event.is_set():
-            # / calculate seconds until midnight et
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
-            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            wait_seconds = (midnight - now).total_seconds()
+            stopped, target = await self._sleep_until_et_hour(0)
 
-            logger.info("evolution_waiting", next_run=str(midnight), wait_seconds=wait_seconds)
+            logger.info("evolution_waiting", next_run=str(target))
 
-            if await self._wait_or_stop(wait_seconds):
+            if stopped:
                 break
 
             try:
@@ -388,15 +392,11 @@ class AgentOrchestrator:
     async def _insider_backfill_loop(self) -> None:
         # / refresh insider trades from sec edgar daily at 6am et
         while not self._stop_event.is_set():
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
-            target = now.replace(hour=6, minute=0, second=0, microsecond=0)
-            if now >= target:
-                target += timedelta(days=1)
+            stopped, target = await self._sleep_until_et_hour(6)
 
             logger.info("insider_backfill_waiting", next_run=str(target))
 
-            if await self._wait_or_stop((target - now).total_seconds()):
+            if stopped:
                 break
 
             try:
@@ -417,15 +417,11 @@ class AgentOrchestrator:
     async def _fundamentals_backfill_loop(self) -> None:
         # / refresh fundamentals from edgar/finnhub/yfinance daily at 7am et
         while not self._stop_event.is_set():
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
-            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
-            if now >= target:
-                target += timedelta(days=1)
+            stopped, target = await self._sleep_until_et_hour(7)
 
             logger.info("fundamentals_backfill_waiting", next_run=str(target))
 
-            if await self._wait_or_stop((target - now).total_seconds()):
+            if stopped:
                 break
 
             try:
@@ -442,15 +438,11 @@ class AgentOrchestrator:
     async def _crypto_backfill_loop(self) -> None:
         # / refresh crypto market data daily at 8am et
         while not self._stop_event.is_set():
-            et = timezone(timedelta(hours=-5))
-            now = datetime.now(et)
-            target = now.replace(hour=8, minute=0, second=0, microsecond=0)
-            if now >= target:
-                target += timedelta(days=1)
+            stopped, target = await self._sleep_until_et_hour(8)
 
             logger.info("crypto_backfill_waiting", next_run=str(target))
 
-            if await self._wait_or_stop((target - now).total_seconds()):
+            if stopped:
                 break
 
             try:
