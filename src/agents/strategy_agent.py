@@ -490,6 +490,7 @@ class StrategyAgent:
     ) -> list[dict]:
         # / check exit conditions using strategy_positions (knows who owns what)
         signals: list[dict] = []
+        checked_symbols: set[str] = set()
 
         active = (
             strategy_pool.list_by_status("paper_trading")
@@ -501,40 +502,62 @@ class StrategyAgent:
             # / get this strategy's positions from db
             strat_positions = await tools.get_strategy_positions(pool, strategy_id=strategy.strategy_id)
             for sp in strat_positions:
-                try:
-                    df = await self._fetch_market_df(pool, sp["symbol"])
-                    if df is None:
-                        continue
+                checked_symbols.add(sp["symbol"])
+                exit_sig = await self._eval_exit(pool, strategy, sp)
+                if exit_sig:
+                    signals.append(exit_sig)
 
-                    exit_signal = strategy.should_exit(
-                        sp["symbol"], df, sp["avg_entry_price"] or 0,
-                        pd.Timestamp(df.index[0]), len(df) - 1,
-                    )
-
-                    if exit_signal.should_exit:
-                        signal_id = await tools.store_trade_signal(
-                            pool,
-                            strategy_id=strategy.strategy_id,
-                            symbol=sp["symbol"],
-                            signal_type="sell",
-                            strength=1.0,
-                            regime=None,
-                            details={
-                                "exit_reason": exit_signal.reason,
-                                "qty": sp["qty"],
-                            },
-                        )
-                        signals.append({
-                            "signal_id": signal_id,
-                            "strategy_id": strategy.strategy_id,
-                            "symbol": sp["symbol"],
-                            "signal_type": "sell",
-                            "qty": sp["qty"],
-                        })
-                except Exception as exc:
-                    logger.warning(
-                        "exit_check_symbol_failed",
-                        symbol=sp["symbol"], error=str(exc),
-                    )
+        # / also check untracked positions using the first active strategy's exit rules
+        if active:
+            default_strategy = active[0].strategy
+            untracked = await tools.get_strategy_positions(pool, strategy_id="untracked")
+            for sp in untracked:
+                if sp["symbol"] in checked_symbols:
+                    continue
+                exit_sig = await self._eval_exit(pool, default_strategy, sp, override_strategy_id="untracked")
+                if exit_sig:
+                    signals.append(exit_sig)
 
         return signals
+
+    async def _eval_exit(
+        self, pool, strategy, sp: dict, override_strategy_id: str | None = None,
+    ) -> dict | None:
+        # / evaluate exit for a single position
+        try:
+            df = await self._fetch_market_df(pool, sp["symbol"])
+            if df is None:
+                return None
+
+            exit_signal = strategy.should_exit(
+                sp["symbol"], df, sp["avg_entry_price"] or 0,
+                pd.Timestamp(df.index[0]), len(df) - 1,
+            )
+
+            if exit_signal.should_exit:
+                strat_id = override_strategy_id or strategy.strategy_id
+                signal_id = await tools.store_trade_signal(
+                    pool,
+                    strategy_id=strat_id,
+                    symbol=sp["symbol"],
+                    signal_type="sell",
+                    strength=1.0,
+                    regime=None,
+                    details={
+                        "exit_reason": exit_signal.reason,
+                        "qty": sp["qty"],
+                    },
+                )
+                return {
+                    "signal_id": signal_id,
+                    "strategy_id": strat_id,
+                    "symbol": sp["symbol"],
+                    "signal_type": "sell",
+                    "qty": sp["qty"],
+                }
+        except Exception as exc:
+            logger.warning(
+                "exit_check_symbol_failed",
+                symbol=sp["symbol"], error=str(exc),
+            )
+        return None
