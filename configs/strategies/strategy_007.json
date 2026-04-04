@@ -38,11 +38,12 @@
       "condition": "price_above_middle"
     },
     "stop_loss": {
-      "type": "fixed_pct",
-      "pct": 0.04
+      "type": "atr_trailing",
+      "multiplier": 2.0,
+      "period": 14
     },
     "time_exit": {
-      "max_holding_days": 15
+      "max_holding_days": 25
     }
   },
   "position_sizing": {

@@ -27,7 +27,7 @@
       {
         "indicator": "rsi",
         "condition": "below",
-        "threshold": 35,
+        "threshold": 30,
         "period": 14
       },
       {
@@ -35,21 +35,26 @@
         "condition": "above_average",
         "multiplier": 1.3,
         "period": 20
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 200
       }
     ]
   },
   "exit_conditions": {
     "take_profit": {
       "indicator": "bollinger_bands",
-      "condition": "price_above_middle"
+      "condition": "price_above_upper"
     },
     "stop_loss": {
       "type": "atr_trailing",
-      "multiplier": 2.0,
+      "multiplier": 1.5,
       "period": 14
     },
     "time_exit": {
-      "max_holding_days": 30
+      "max_holding_days": 45
     }
   },
   "position_sizing": {

@@ -28,8 +28,8 @@
 
     "exit_conditions": {
         "take_profit": {"indicator": "bollinger_bands", "condition": "price_above_upper"},
-        "stop_loss": {"type": "fixed_pct", "pct": 0.08},
-        "time_exit": {"max_holding_days": 14}
+        "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 14},
+        "time_exit": {"max_holding_days": 30}
     },
 
     "position_sizing": {
