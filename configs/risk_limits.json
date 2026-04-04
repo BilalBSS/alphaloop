@@ -1,6 +1,6 @@
 {
   "max_portfolio_risk": 0.25,
-  "max_correlated_positions": 3,
+  "max_open_positions": 15,
   "tail_dependence_threshold": 0.30,
   "max_drawdown_hard_stop": -0.20,
   "min_cash_reserve_pct": 0.10,

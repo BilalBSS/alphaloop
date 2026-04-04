@@ -21,14 +21,28 @@ class RiskAgent:
         max_position_pct: float | None = None,
         max_portfolio_risk: float | None = None,
         tail_dep_threshold: float = 0.30,
+        risk_limits: dict | None = None,
     ):
+        rl = risk_limits or self._load_risk_limits()
         self.max_position_pct = max_position_pct or float(
-            os.environ.get("MAX_POSITION_PCT", "0.08")
+            os.environ.get("MAX_POSITION_PCT", str(rl.get("max_position_pct", 0.08)))
         )
         self.max_portfolio_risk = max_portfolio_risk or float(
-            os.environ.get("MAX_PORTFOLIO_RISK", "0.25")
+            os.environ.get("MAX_PORTFOLIO_RISK", str(rl.get("max_portfolio_risk", 0.25)))
         )
         self.tail_dep_threshold = tail_dep_threshold
+        self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
+        self._max_daily_trades = rl.get("max_daily_trades", 20)
+        self._max_open_positions = rl.get("max_open_positions", 15)
+
+    @staticmethod
+    def _load_risk_limits() -> dict:
+        import json
+        from pathlib import Path
+        path = Path(__file__).parent.parent.parent / "configs" / "risk_limits.json"
+        if path.exists():
+            return json.loads(path.read_text())
+        return {}
 
     async def process_signal(
         self, pool, signal_id: int, broker: BrokerInterface,
@@ -111,6 +125,34 @@ class RiskAgent:
                 if existing_pos:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                     return {"status": "rejected", "reason": "already_holding"}
+
+        # / enforce risk limits for buys
+        if side == "buy":
+            # / cash reserve: keep min % of cash available
+            min_reserve = balance.cash * self._min_cash_reserve_pct
+            if balance.cash - min_reserve <= 0:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": "cash_reserve_insufficient"}
+
+            # / max open positions
+            if len(positions) >= self._max_open_positions:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": f"max_positions ({self._max_open_positions}) reached"}
+
+            # / max daily trades
+            today_count = await tools.count_today_approved_trades(pool)
+            if today_count >= self._max_daily_trades:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": f"max_daily_trades ({self._max_daily_trades}) reached"}
+
+            # / cross-strategy symbol concentration: cap at 2x single-strategy limit
+            all_sym_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+            if all_sym_positions:
+                total_held_value = sum(sp["qty"] for sp in all_sym_positions) * (await broker.get_price(symbol))
+                max_concentration = self.max_position_pct * 2 * balance.cash
+                if total_held_value >= max_concentration:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": f"cross_strategy_concentration: {symbol}"}
 
         # / get current price
         try:
