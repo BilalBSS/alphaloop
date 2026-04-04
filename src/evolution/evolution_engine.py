@@ -167,9 +167,9 @@ class EvolutionEngine:
         # / skip killing if strategies haven't accumulated enough trade data
         scored_count = sum(
             1 for e in strategy_pool.ranked()
-            if e.score and e.score.total_trades >= 5
+            if e.score and e.score.total_trades >= 3
         )
-        if scored_count < 4:
+        if scored_count < 3:
             logger.info("evolution_skip_kill", reason="not enough strategies with trades", scored=scored_count)
             bottom = []
         else:
