@@ -318,7 +318,7 @@ async def _process_entries(
             break
 
         broker.set_price(symbol, open_price)
-        sizing = strategy.position_size(balance.equity, open_price, strength)
+        sizing = strategy.position_size(balance.cash, open_price, strength)
         if sizing.qty <= 0:
             continue
 

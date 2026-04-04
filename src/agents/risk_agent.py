@@ -130,7 +130,7 @@ class RiskAgent:
                 qty = int(strat_pos[0]["qty"]) if strat_pos else 0
         else:
             max_pct = self.max_position_pct
-            qty = (balance.equity * max_pct * strength) / price
+            qty = (balance.cash * max_pct * strength) / price
             qty = max(0, int(qty))  # / whole shares
 
         if qty <= 0:
@@ -140,11 +140,11 @@ class RiskAgent:
         # / check total portfolio exposure
         total_position_value = sum(p.market_value for p in positions)
         new_position_value = qty * price
-        total_exposure = (total_position_value + new_position_value) / balance.equity
+        total_exposure = (total_position_value + new_position_value) / max(balance.cash, 1)
 
         if total_exposure > self.max_portfolio_risk:
             # / size down to fit within risk limit
-            available = (self.max_portfolio_risk * balance.equity) - total_position_value
+            available = (self.max_portfolio_risk * balance.cash) - total_position_value
             if available <= 0:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                 return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
