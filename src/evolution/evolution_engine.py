@@ -322,6 +322,26 @@ class EvolutionEngine:
                 )
                 strategy_pool.update_score(config["id"], score)
 
+                # / persist score to db for dashboard quant metrics
+                try:
+                    from datetime import date as dt_date
+                    p_start = bt_result.period_start.date() if bt_result.period_start else dt_date.today()
+                    p_end = bt_result.period_end.date() if bt_result.period_end else dt_date.today()
+                    import math
+                    sortino = bt_result.sortino_ratio if math.isfinite(bt_result.sortino_ratio) else (99.0 if bt_result.sortino_ratio > 0 else -99.0)
+                    await store_strategy_score(
+                        pool, config["id"], p_start, p_end,
+                        sharpe_ratio=bt_result.sharpe_ratio,
+                        max_drawdown=bt_result.max_drawdown_pct,
+                        win_rate=bt_result.win_rate,
+                        brier_score=None,
+                        total_trades=bt_result.total_trades,
+                        sortino_ratio=sortino,
+                        composite_score=composite,
+                    )
+                except Exception as exc:
+                    logger.error("store_strategy_score_failed", strategy_id=config["id"], error=str(exc))
+
                 mutation_entry["status"] = "paper_trading"
                 logger.info("mutation_added_to_pool", strategy_id=config["id"], composite=composite)
 

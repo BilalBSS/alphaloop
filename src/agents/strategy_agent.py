@@ -13,6 +13,7 @@ from src.agents import tools
 from src.indicators.momentum import rsi
 from src.indicators.trend import sma, macd, adx
 from src.indicators.volatility import bollinger_bands, atr
+from src.indicators.structure import fair_value_gaps, order_blocks, structure_breaks
 from src.notifications.notifier import notify_strategy_evaluation
 from src.quant.particle_filter import ParticleFilter
 from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy, EntrySignal
@@ -188,13 +189,52 @@ class StrategyAgent:
                 details = json.loads(details)
             analysis_data = tools.dict_to_analysis_data(details)
 
-        # / evaluate entry
-        entry_signal = strategy.should_enter(symbol, df, analysis_data)
+        # / fetch intraday df once for multi-timeframe eval + confirmation gate
+        intraday_df = await self._fetch_intraday_df(pool, symbol)
+
+        # / evaluate entry (passes intraday_df for multi-timeframe signals)
+        entry_signal = strategy.should_enter(symbol, df, analysis_data, intraday_df=intraday_df)
 
         if not entry_signal.should_enter:
             if stats is not None:
                 stats["no_entry"] += 1
             return None
+
+        # / 2h intraday confirmation gate
+        intraday_confirm = strategy.config.get("intraday_confirm", True)
+        if intraday_confirm:
+            if intraday_df is not None and len(intraday_df) >= 14:
+                try:
+                    ic = intraday_df["close"]
+                    rsi_2h = rsi(ic, 14)
+                    rsi_val = float(rsi_2h.iloc[-1]) if not rsi_2h.empty else 50.0
+                    # / check 2h macd alignment if enough bars
+                    macd_aligned = True
+                    if len(ic) >= 26:
+                        m = macd(ic, 12, 26, 9)
+                        if not m.histogram.empty:
+                            macd_aligned = float(m.histogram.iloc[-1]) > 0
+                    # / reject if 2h rsi overbought or macd bearish
+                    if rsi_val > 75 or not macd_aligned:
+                        entry_signal = EntrySignal(
+                            should_enter=True,
+                            strength=entry_signal.strength * 0.5,
+                            reasons=entry_signal.reasons + [
+                                f"2h misaligned (rsi={rsi_val:.0f}, macd_ok={macd_aligned}), halved",
+                            ],
+                        )
+                        logger.debug("intraday_gate_halved", symbol=symbol, rsi_2h=rsi_val, macd_aligned=macd_aligned)
+                    elif rsi_val < 30 and macd_aligned:
+                        # / 2h confirms oversold + momentum = boost
+                        entry_signal = EntrySignal(
+                            should_enter=True,
+                            strength=min(1.0, entry_signal.strength * 1.2),
+                            reasons=entry_signal.reasons + [
+                                f"2h confirms entry (rsi={rsi_val:.0f}, macd aligned), boosted 1.2x",
+                            ],
+                        )
+                except Exception as e:
+                    logger.debug("intraday_gate_error", symbol=symbol, error=str(e))
 
         # / classify symbol's own trend from price data
         symbol_trend = self._classify_symbol_trend(df)
@@ -305,27 +345,27 @@ class StrategyAgent:
                     ORDER BY timestamp DESC LIMIT 100""",
                     symbol,
                 )
+
+            if len(rows) < min_bars:
+                self._intraday_cache[symbol] = None
+                return None
+
+            rows = list(reversed(rows))
+            df = pd.DataFrame(
+                [{
+                    "open": float(r["open"]) if r["open"] else 0,
+                    "high": float(r["high"]) if r["high"] else 0,
+                    "low": float(r["low"]) if r["low"] else 0,
+                    "close": float(r["close"]) if r["close"] else 0,
+                    "volume": int(r["volume"]) if r["volume"] else 0,
+                } for r in rows],
+                index=pd.DatetimeIndex([r["timestamp"] for r in rows]),
+            )
+            self._intraday_cache[symbol] = df
+            return df
         except Exception:
             self._intraday_cache[symbol] = None
             return None
-
-        if len(rows) < min_bars:
-            self._intraday_cache[symbol] = None
-            return None
-
-        rows = list(reversed(rows))
-        df = pd.DataFrame(
-            [{
-                "open": float(r["open"]) if r["open"] else 0,
-                "high": float(r["high"]) if r["high"] else 0,
-                "low": float(r["low"]) if r["low"] else 0,
-                "close": float(r["close"]) if r["close"] else 0,
-                "volume": int(r["volume"]) if r["volume"] else 0,
-            } for r in rows],
-            index=pd.DatetimeIndex([r["timestamp"] for r in rows]),
-        )
-        self._intraday_cache[symbol] = df
-        return df
 
     async def _store_indicators(self, pool, symbol: str, df: pd.DataFrame) -> None:
         # / compute and store latest indicator values, once per symbol per cycle
@@ -390,6 +430,31 @@ class StrategyAgent:
                     await tools.store_computed_indicators(pool, symbol, intraday_ind, timeframe="2Hour")
                 except Exception as exc2:
                     logger.debug("intraday_indicator_compute_failed", symbol=symbol, error=str(exc2))
+
+            # / compute and store ict indicators (fvg, order blocks, structure breaks)
+            try:
+                open_ = df["open"] if "open" in df.columns else close
+                fvg_result = fair_value_gaps(high, low, close)
+                ob_result = order_blocks(high, low, close, open_)
+                sb_result = structure_breaks(high, low, close)
+
+                ict_data = {
+                    "fvgs": [
+                        {"type": g.type, "high": g.high, "low": g.low, "filled": g.filled}
+                        for g in fvg_result.gaps[-10:]
+                    ],
+                    "order_blocks": [
+                        {"type": b.type, "high": b.high, "low": b.low}
+                        for b in ob_result.blocks[-8:]
+                    ],
+                    "structure_breaks": [
+                        {"type": s.type, "direction": s.direction, "level": s.level}
+                        for s in sb_result.breaks[-8:]
+                    ],
+                }
+                await tools.store_ict_indicators(pool, symbol, ict_data)
+            except Exception as exc3:
+                logger.debug("ict_indicator_compute_failed", symbol=symbol, error=str(exc3))
         except Exception as exc:
             logger.debug("indicator_compute_failed", symbol=symbol, error=str(exc))
 

@@ -353,14 +353,17 @@ async def store_strategy_score(
     sharpe_ratio: float, max_drawdown: float, win_rate: float,
     brier_score: float | None, total_trades: int,
     regime_breakdown: dict | None = None,
+    sortino_ratio: float | None = None,
+    composite_score: float | None = None,
 ) -> int:
     # / store backtest/live performance score
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO strategy_scores
             (strategy_id, period_start, period_end, sharpe_ratio, max_drawdown,
-             win_rate, brier_score, total_trades, regime_breakdown)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             win_rate, brier_score, total_trades, regime_breakdown,
+             sortino_ratio, composite_score)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id""",
             strategy_id, period_start, period_end,
             Decimal(str(sharpe_ratio)), Decimal(str(max_drawdown)),
@@ -368,6 +371,8 @@ async def store_strategy_score(
             Decimal(str(brier_score)) if brier_score is not None else None,
             total_trades,
             regime_breakdown if regime_breakdown else None,
+            Decimal(str(sortino_ratio)) if sortino_ratio is not None else None,
+            Decimal(str(composite_score)) if composite_score is not None else None,
         )
         return row["id"]
 
@@ -552,6 +557,23 @@ async def store_computed_indicators(
             )
     except Exception as exc:
         logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))
+
+
+async def store_ict_indicators(
+    pool, symbol: str, ict_data: dict[str, Any],
+) -> None:
+    # / upsert ict smart money indicators as jsonb on computed_indicators
+    from datetime import date as dt_date
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO computed_indicators (symbol, date, timeframe, ict_data)
+                VALUES ($1, $2, '1Day', $3)
+                ON CONFLICT (symbol, date, timeframe) DO UPDATE SET ict_data = EXCLUDED.ict_data""",
+                symbol, dt_date.today(), json.dumps(ict_data),
+            )
+    except Exception as exc:
+        logger.warning("store_ict_failed", symbol=symbol, error=str(exc))
 
 
 async def fetch_latest_regime(pool, market: str = "equity") -> str | None:

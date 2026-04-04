@@ -67,10 +67,12 @@ class StrategyInterface(ABC):
         symbol: str,
         market_data: pd.DataFrame,
         analysis: AnalysisData | None = None,
+        intraday_df: pd.DataFrame | None = None,
     ) -> EntrySignal:
         # / evaluate entry conditions against current market state
-        # / market_data: ohlcv dataframe with columns [open, high, low, close, volume]
+        # / market_data: daily ohlcv dataframe with columns [open, high, low, close, volume]
         # / analysis: fundamental data (required for fundamental-gated strategies)
+        # / intraday_df: optional 2h ohlcv for multi-timeframe signal evaluation
         ...
 
     @abstractmethod
@@ -203,6 +205,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         symbol: str,
         market_data: pd.DataFrame,
         analysis: AnalysisData | None = None,
+        intraday_df: pd.DataFrame | None = None,
     ) -> EntrySignal:
         if len(market_data) < 2:
             return EntrySignal(should_enter=False, reasons=["insufficient data"])
@@ -217,7 +220,7 @@ class ConfigDrivenStrategy(StrategyInterface):
                 return EntrySignal(should_enter=False, reasons=fundamental_reasons)
 
         # / check technical entry conditions
-        passed, strength, tech_reasons = self._check_entry_technicals(market_data)
+        passed, strength, tech_reasons = self._check_entry_technicals(market_data, intraday_df)
         if not passed:
             return EntrySignal(should_enter=False, reasons=tech_reasons)
 
@@ -394,7 +397,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         return True, ["fundamentals passed"]
 
     def _check_entry_technicals(
-        self, market_data: pd.DataFrame,
+        self, market_data: pd.DataFrame, intraday_df: pd.DataFrame | None = None,
     ) -> tuple[bool, float, list[str]]:
         # / evaluate technical entry conditions from config
         signals = self._entry_conditions.get("signals", [])
@@ -405,6 +408,15 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         results: list[tuple[bool, float, str]] = []
         for sig in signals:
+            # / route to intraday df if signal specifies non-daily timeframe
+            tf = sig.get("timeframe")
+            if tf and tf.lower() not in ("1d", "daily", "1day"):
+                if intraday_df is not None and len(intraday_df) >= 14:
+                    passed, strength, reason = self._evaluate_signal(sig, intraday_df)
+                    results.append((passed, strength, f"[{tf}] {reason}"))
+                else:
+                    results.append((False, 0.0, f"{sig.get('indicator', '?')} skipped: no {tf} data"))
+                continue
             passed, strength, reason = self._evaluate_signal(sig, market_data)
             results.append((passed, strength, reason))
 

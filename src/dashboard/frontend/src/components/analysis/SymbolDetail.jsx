@@ -568,6 +568,99 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
   )
 }
 
+// / strategy positions: which strategies hold this symbol
+function PositionPanel({ symbol }) {
+  const { data, loading } = useApi(`/api/strategy-positions?symbol=${symbol}`, 30000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+  if (!data || data.length === 0) {
+    return <div className="text-text-muted text-sm py-2">No open positions for this symbol</div>
+  }
+
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-text-secondary text-[11px] uppercase">
+          <th className="text-left px-2 py-1">Strategy</th>
+          <th className="text-right px-2 py-1">Qty</th>
+          <th className="text-right px-2 py-1">Avg Entry</th>
+          <th className="text-right px-2 py-1">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((p, i) => (
+          <tr key={i} className="border-t border-border" style={{ height: 32 }}>
+            <td className="px-2 py-1 font-mono truncate max-w-[120px]" title={p.strategy_id}>
+              {p.strategy_id}
+            </td>
+            <td className="px-2 py-1 text-right font-mono">{parseFloat(p.qty).toFixed(0)}</td>
+            <td className="px-2 py-1 text-right font-mono">
+              ${parseFloat(p.avg_entry_price || 0).toFixed(2)}
+            </td>
+            <td className="px-2 py-1 text-right text-text-muted">
+              {p.updated_at?.split('T')[0] || '--'}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// / ict indicators: fair value gaps, order blocks, structure breaks
+function ICTPanel({ symbol }) {
+  const { data, loading } = useApi(`/api/ict-indicators/${symbol}`, 60000)
+
+  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
+  if (!data || (!data.fvgs?.length && !data.order_blocks?.length && !data.structure_breaks?.length)) {
+    return <div className="text-text-muted text-sm py-2">No ICT data yet — computed next cycle</div>
+  }
+
+  const typeColor = t => t === 'bullish' ? 'text-profit' : 'text-loss'
+
+  return (
+    <div className="space-y-3">
+      {data.fvgs?.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary mb-1">Fair Value Gaps</div>
+          <div className="flex flex-wrap gap-1">
+            {data.fvgs.slice(0, 8).map((g, i) => (
+              <div key={i} className={`text-xs px-2 py-0.5 border border-border ${typeColor(g.type)}`}>
+                {g.type[0].toUpperCase()} ${parseFloat(g.low).toFixed(2)}–${parseFloat(g.high).toFixed(2)}
+                {g.filled && <span className="text-text-muted ml-1">✓</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {data.order_blocks?.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary mb-1">Order Blocks</div>
+          <div className="flex flex-wrap gap-1">
+            {data.order_blocks.slice(0, 6).map((b, i) => (
+              <div key={i} className={`text-xs px-2 py-0.5 border border-border ${typeColor(b.type)}`}>
+                {b.type[0].toUpperCase()} ${parseFloat(b.low).toFixed(2)}–${parseFloat(b.high).toFixed(2)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {data.structure_breaks?.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary mb-1">Structure Breaks</div>
+          <div className="flex flex-wrap gap-1">
+            {data.structure_breaks.slice(0, 6).map((s, i) => (
+              <div key={i} className={`text-xs px-2 py-0.5 border border-border ${typeColor(s.direction)}`}>
+                {s.type.toUpperCase()} {s.direction[0].toUpperCase()} @${parseFloat(s.level).toFixed(2)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // / quant metrics: strategy performance for this symbol
 function QuantMetricsPanel({ symbol }) {
   const { data, loading } = useApi(`/api/quant-metrics/${symbol}`, 60000)
@@ -898,17 +991,27 @@ export default function SymbolDetail({ symbol, onBack }) {
         <AiAnalysisPanel score={d.score} />
       </Panel>
 
-      {/* row 6: quant metrics */}
+      {/* row 6: positions + ict */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <Panel title="Open Positions">
+          <PositionPanel symbol={symbol} />
+        </Panel>
+        <Panel title="ICT / Smart Money">
+          <ICTPanel symbol={symbol} />
+        </Panel>
+      </div>
+
+      {/* row 7: quant metrics */}
       <Panel title="Quant Metrics">
         <QuantMetricsPanel symbol={symbol} />
       </Panel>
 
-      {/* row 7: evolution history */}
+      {/* row 8: evolution history */}
       <Panel title="Evolution History">
         <EvolutionPanel evolution={d.evolution} />
       </Panel>
 
-      {/* row 8: trades + signals */}
+      {/* row 9: trades + signals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Trade History">
           <TradeHistoryPanel trades={d.trades} />
