@@ -328,7 +328,31 @@ async def get_strategies():
             GROUP BY strategy_id
             ORDER BY total_pnl DESC"""
         )
-    return _serialize(rows)
+    # / enrich with name/status/description from config files
+    result = _serialize(rows)
+    _enrich_strategy_metadata(result)
+    return result
+
+
+def _enrich_strategy_metadata(rows: list[dict]) -> None:
+    # / load strategy names and status from json configs on disk
+    from pathlib import Path
+    configs_dir = Path(__file__).parent.parent / "strategies" / ".." / ".." / "configs" / "strategies"
+    configs_dir = configs_dir.resolve()
+    for row in rows:
+        sid = row.get("strategy_id")
+        if not sid:
+            continue
+        config_path = (configs_dir / f"{sid}.json").resolve()
+        if not config_path.is_relative_to(configs_dir) or not config_path.exists():
+            continue
+        try:
+            cfg = json.loads(config_path.read_text())
+            row.setdefault("name", cfg.get("name"))
+            row.setdefault("status", cfg.get("metadata", {}).get("status"))
+            row.setdefault("description", cfg.get("description"))
+        except Exception as exc:
+            logger.warning("strategy_config_read_failed", strategy_id=sid, error=str(exc))
 
 
 @app.get("/api/evolution")

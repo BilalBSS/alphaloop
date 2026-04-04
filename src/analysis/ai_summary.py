@@ -867,12 +867,21 @@ Output ONLY valid JSON. No explanation outside the JSON."""
         )
         raw = data["choices"][0]["message"]["content"]
 
-        # / parse structured response
+        # / parse structured response — try multiple extraction strategies
         text = raw.strip()
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
         if match:
             text = match.group(1).strip()
-        result = json.loads(text)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            # / retry: find first { to last } in raw response
+            brace_start = raw.find("{")
+            brace_end = raw.rfind("}")
+            if brace_start >= 0 and brace_end > brace_start:
+                result = json.loads(raw[brace_start:brace_end + 1])
+            else:
+                raise
 
         # / store to db
         await store_daily_synthesis(
