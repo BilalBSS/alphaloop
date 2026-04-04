@@ -253,6 +253,73 @@ async def get_strategy_positions(
             for r in rows]
 
 
+async def reconcile_strategy_positions(pool, alpaca_map: dict[str, float]) -> None:
+    # / smart reconciliation: update quantities without destroying strategy attribution
+    # / alpaca_map: {symbol: qty} from broker.get_positions()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, strategy_id, symbol, qty FROM strategy_positions",
+        )
+
+        # / guard: if alpaca returns empty but we have positions, skip (api glitch)
+        if not alpaca_map and rows:
+            logger.warning("reconcile_skipped_empty_alpaca", tracked=len(rows))
+            return
+
+        db_by_symbol: dict[str, list[dict]] = {}
+        for r in rows:
+            s = r["symbol"]
+            db_by_symbol.setdefault(s, []).append(dict(r))
+
+        async with conn.transaction():
+            for symbol, alpaca_qty in alpaca_map.items():
+                entries = db_by_symbol.pop(symbol, [])
+                if not entries:
+                    # / new position not in db — add as untracked
+                    await conn.execute(
+                        """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
+                        VALUES ('untracked', $1, $2, 0, NOW())
+                        ON CONFLICT (strategy_id, symbol) DO UPDATE SET qty = $2, updated_at = NOW()""",
+                        symbol, Decimal(str(alpaca_qty)),
+                    )
+                    continue
+
+                # / if total tracked qty matches alpaca, no drift for this symbol
+                total_tracked = sum(float(e["qty"]) for e in entries)
+                if abs(total_tracked - alpaca_qty) < 0.0001:
+                    continue
+
+                # / drift detected — update keeping attribution
+                attributed = [e for e in entries if e["strategy_id"] != "untracked"]
+                if attributed:
+                    keep = attributed[0]
+                    await conn.execute(
+                        "UPDATE strategy_positions SET qty = $1, updated_at = NOW() WHERE id = $2",
+                        Decimal(str(alpaca_qty)), keep["id"],
+                    )
+                    remove_ids = [e["id"] for e in entries if e["id"] != keep["id"]]
+                else:
+                    keep = entries[0]
+                    await conn.execute(
+                        "UPDATE strategy_positions SET qty = $1, updated_at = NOW() WHERE id = $2",
+                        Decimal(str(alpaca_qty)), keep["id"],
+                    )
+                    remove_ids = [e["id"] for e in entries[1:]]
+
+                if remove_ids:
+                    await conn.execute(
+                        "DELETE FROM strategy_positions WHERE id = ANY($1::bigint[])", remove_ids,
+                    )
+
+            # / remove db entries for symbols no longer in alpaca
+            for symbol, entries in db_by_symbol.items():
+                ids = [e["id"] for e in entries]
+                await conn.execute(
+                    "DELETE FROM strategy_positions WHERE id = ANY($1::bigint[])", ids,
+                )
+                logger.info("position_closed_externally", symbol=symbol)
+
+
 async def sync_strategy_positions_from_alpaca(pool) -> int:
     # / bootstrap: insert untracked positions from alpaca not in strategy_positions
     from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client

@@ -520,16 +520,14 @@ class AgentOrchestrator:
                         notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
                         drift_found = True
 
-                # / auto-fix: wipe stale strategy_positions and re-bootstrap from alpaca
+                # / auto-fix: update drifted positions without destroying attribution
                 if drift_found:
-                    async with self._pool.acquire() as conn:
-                        await conn.execute("DELETE FROM strategy_positions")
-                    await tools.sync_strategy_positions_from_alpaca(self._pool)
+                    await tools.reconcile_strategy_positions(self._pool, alpaca_map)
                     logger.info("position_reconciliation_auto_fixed")
                 else:
                     logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
             except Exception:
-                logger.debug("position_reconciliation_error", exc_info=True)
+                logger.warning("position_reconciliation_error", exc_info=True)
 
             # / sync every 5 minutes
             if await self._wait_or_stop(300):
