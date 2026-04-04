@@ -8,6 +8,7 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
+    "strict_data": false,
     "pe_ratio_max": 35,
     "fcf_margin_min": 0.08,
     "dcf_upside_min": 0.05
