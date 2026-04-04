@@ -135,7 +135,7 @@ function PositionsTable({ positions, loading }) {
                 ${parseFloat(p.current_price || 0).toFixed(2)}
               </td>
               <td className={`px-2 py-1 text-right font-mono font-semibold ${pl >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {pl >= 0 ? '+' : ''}${pl.toFixed(2)}
+                {pl >= 0 ? '+$' : '-$'}{Math.abs(pl).toFixed(2)}
               </td>
             </tr>
           )

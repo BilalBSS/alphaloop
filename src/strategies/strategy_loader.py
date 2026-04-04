@@ -28,6 +28,7 @@ class SignalConfig(BaseModel):
     std_dev: float | None = None
     multiplier: float | None = None
     level: float | None = None  # / fibonacci level (0.236, 0.382, etc)
+    timeframe: str | None = None  # / "2h" for intraday, None/"1d" for daily
 
 
 class EntryConditionsConfig(BaseModel):

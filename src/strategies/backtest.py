@@ -103,10 +103,12 @@ async def run_backtest(
     analysis_data: dict[str, AnalysisData] | None = None,
     initial_cash: float = 100_000.0,
     max_open_positions: int = 10,
+    intraday_data: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     # / run a full backtest of a strategy against historical data
-    # / market_data: dict of symbol -> ohlcv dataframe (index=datetime, cols=open,high,low,close,volume)
+    # / market_data: dict of symbol -> daily ohlcv dataframe (index=datetime, cols=open,high,low,close,volume)
     # / analysis_data: optional dict of symbol -> AnalysisData for fundamental checks
+    # / intraday_data: optional dict of symbol -> 2h ohlcv for multi-timeframe strategies
     #
     # / flow per bar:
     # /   1. update broker prices to current bar
@@ -176,6 +178,7 @@ async def run_backtest(
         await _process_entries(
             strategy, market_data, analysis_data, current_date, date_idx,
             warmup_bars, max_open_positions, universe, open_positions, broker,
+            intraday_data,
         )
 
         # / update prices to close for equity tracking
@@ -276,6 +279,7 @@ async def _process_entries(
     universe: list[str],
     open_positions: dict[str, OpenPosition],
     broker: PaperBroker,
+    intraday_data: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     # / 4. check entries (evaluate using data up to previous bar close)
     entries_to_process: list[tuple[str, float, float]] = []  # (symbol, strength, open_price)
@@ -295,7 +299,11 @@ async def _process_entries(
             data_for_eval = df.iloc[:bar_idx]  # / everything before current bar
 
             analysis = analysis_data.get(symbol) if analysis_data else None
-            entry_signal = strategy.should_enter(symbol, data_for_eval, analysis)
+            # / slice intraday to before current bar to prevent lookahead
+            intraday_df = intraday_data.get(symbol) if intraday_data else None
+            if intraday_df is not None:
+                intraday_df = intraday_df[intraday_df.index < current_date]
+            entry_signal = strategy.should_enter(symbol, data_for_eval, analysis, intraday_df=intraday_df)
 
             if entry_signal.should_enter:
                 open_price = float(df.loc[current_date, "open"])

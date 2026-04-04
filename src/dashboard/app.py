@@ -576,6 +576,22 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "2Hour"):
     return _serialize(rows)
 
 
+@app.get("/api/ict-indicators/{symbol}")
+async def get_ict_indicators(symbol: str):
+    rows = await _query(
+        """SELECT ict_data FROM computed_indicators
+        WHERE symbol = $1 AND timeframe = '1Day' AND ict_data IS NOT NULL
+        ORDER BY date DESC LIMIT 1""",
+        symbol,
+    )
+    if rows and rows[0].get("ict_data"):
+        data = rows[0]["ict_data"]
+        if isinstance(data, dict):
+            return data
+        return json.loads(data) if isinstance(data, str) else {}
+    return {"fvgs": [], "order_blocks": [], "structure_breaks": []}
+
+
 @app.get("/api/quant-metrics/{symbol}")
 async def get_quant_metrics(symbol: str):
     rows = await _query(
