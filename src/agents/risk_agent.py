@@ -126,11 +126,17 @@ class RiskAgent:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                     return {"status": "rejected", "reason": "already_holding"}
 
+        # / get current price (needed for concentration check and sizing)
+        try:
+            price = await broker.get_price(symbol)
+        except Exception:
+            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+            return {"status": "rejected", "reason": "no_price"}
+
         # / enforce risk limits for buys
         if side == "buy":
-            # / cash reserve: keep min % of cash available
-            min_reserve = balance.cash * self._min_cash_reserve_pct
-            if balance.cash - min_reserve <= 0:
+            # / cash reserve: current cash must be at least N% of equity
+            if balance.cash < balance.equity * self._min_cash_reserve_pct:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                 return {"status": "rejected", "reason": "cash_reserve_insufficient"}
 
@@ -148,18 +154,11 @@ class RiskAgent:
             # / cross-strategy symbol concentration: cap at 2x single-strategy limit
             all_sym_positions = await tools.get_strategy_positions(pool, symbol=symbol)
             if all_sym_positions:
-                total_held_value = sum(sp["qty"] for sp in all_sym_positions) * (await broker.get_price(symbol))
-                max_concentration = self.max_position_pct * 2 * balance.cash
+                total_held_value = sum(sp["qty"] for sp in all_sym_positions) * price
+                max_concentration = self.max_position_pct * 2 * balance.equity
                 if total_held_value >= max_concentration:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                     return {"status": "rejected", "reason": f"cross_strategy_concentration: {symbol}"}
-
-        # / get current price
-        try:
-            price = await broker.get_price(symbol)
-        except Exception:
-            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
-            return {"status": "rejected", "reason": "no_price"}
 
         # / compute position size
         if side == "sell":
@@ -179,14 +178,14 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "qty_zero"}
 
-        # / check total portfolio exposure
+        # / check total portfolio exposure (equity-based ratio)
         total_position_value = sum(p.market_value for p in positions)
         new_position_value = qty * price
-        total_exposure = (total_position_value + new_position_value) / max(balance.cash, 1)
+        total_exposure = (total_position_value + new_position_value) / max(balance.equity, 1)
 
         if total_exposure > self.max_portfolio_risk:
             # / size down to fit within risk limit
-            available = (self.max_portfolio_risk * balance.cash) - total_position_value
+            available = (self.max_portfolio_risk * balance.equity) - total_position_value
             if available <= 0:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                 return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
