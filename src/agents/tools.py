@@ -138,6 +138,16 @@ async def fetch_pending_trades(pool, limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def count_today_approved_trades(pool) -> int:
+    # / count trades approved today for daily trade limit
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            """SELECT COUNT(*) FROM approved_trades
+            WHERE created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'""",
+        )
+        return int(count or 0)
+
+
 async def update_trade_status(pool, table: str, row_id: int, status: str) -> bool:
     # / update status column on trade_signals or approved_trades
     if table not in _STATUS_TABLES:

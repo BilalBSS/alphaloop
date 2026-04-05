@@ -312,16 +312,19 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_fundamentals(self, analysis: AnalysisData, filters=None) -> tuple[bool, list[str]]:
         # / evaluate fundamental filters from config against analysis data
-        # / if a filter is configured but the data is unavailable, reject (not silently pass)
+        # / strict_data=true (default): reject if data unavailable
+        # / strict_data=false: skip filter when data is missing
         filters = filters or self._fundamental_filters
         reasons: list[str] = []
+        strict = filters.get("strict_data", True)
 
         # / pe ratio max
         pe_max = filters.get("pe_ratio_max")
         if pe_max is not None:
             if analysis.pe_ratio is None:
-                return False, ["pe_ratio data unavailable"]
-            if analysis.pe_ratio > pe_max:
+                if strict:
+                    return False, ["pe_ratio data unavailable"]
+            elif analysis.pe_ratio > pe_max:
                 reasons.append(f"pe {analysis.pe_ratio:.1f} > max {pe_max}")
                 return False, reasons
 
@@ -329,8 +332,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         pe_vs = filters.get("pe_vs_sector")
         if pe_vs == "below_average":
             if analysis.pe_ratio is None or analysis.sector_pe_avg is None:
-                return False, ["pe or sector_pe data unavailable"]
-            if analysis.pe_ratio > analysis.sector_pe_avg:
+                if strict:
+                    return False, ["pe or sector_pe data unavailable"]
+            elif analysis.pe_ratio > analysis.sector_pe_avg:
                 reasons.append(f"pe {analysis.pe_ratio:.1f} above sector avg {analysis.sector_pe_avg:.1f}")
                 return False, reasons
 
@@ -338,8 +342,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         rev_min = filters.get("revenue_growth_min")
         if rev_min is not None:
             if analysis.revenue_growth is None:
-                return False, ["revenue_growth data unavailable"]
-            if analysis.revenue_growth < rev_min:
+                if strict:
+                    return False, ["revenue_growth data unavailable"]
+            elif analysis.revenue_growth < rev_min:
                 reasons.append(f"revenue growth {analysis.revenue_growth:.2%} < min {rev_min:.2%}")
                 return False, reasons
 
@@ -347,8 +352,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         fcf_min = filters.get("fcf_margin_min")
         if fcf_min is not None:
             if analysis.fcf_margin is None:
-                return False, ["fcf_margin data unavailable"]
-            if analysis.fcf_margin < fcf_min:
+                if strict:
+                    return False, ["fcf_margin data unavailable"]
+            elif analysis.fcf_margin < fcf_min:
                 reasons.append(f"fcf margin {analysis.fcf_margin:.2%} < min {fcf_min:.2%}")
                 return False, reasons
 
@@ -356,8 +362,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         de_max = filters.get("debt_to_equity_max")
         if de_max is not None:
             if analysis.debt_to_equity is None:
-                return False, ["debt_to_equity data unavailable"]
-            if analysis.debt_to_equity > de_max:
+                if strict:
+                    return False, ["debt_to_equity data unavailable"]
+            elif analysis.debt_to_equity > de_max:
                 reasons.append(f"d/e {analysis.debt_to_equity:.2f} > max {de_max}")
                 return False, reasons
 
@@ -365,8 +372,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         dcf_min = filters.get("dcf_upside_min")
         if dcf_min is not None:
             if analysis.dcf_upside is None:
-                return False, ["dcf_upside data unavailable"]
-            if analysis.dcf_upside < dcf_min:
+                if strict:
+                    return False, ["dcf_upside data unavailable"]
+            elif analysis.dcf_upside < dcf_min:
                 reasons.append(f"dcf upside {analysis.dcf_upside:.2%} < min {dcf_min:.2%}")
                 return False, reasons
 
@@ -374,8 +382,9 @@ class ConfigDrivenStrategy(StrategyInterface):
         insider_req = filters.get("insider_buying_recent")
         if insider_req is True:
             if analysis.insider_net_buy_ratio is None:
-                return False, ["insider_activity data unavailable"]
-            if analysis.insider_net_buy_ratio <= 0:
+                if strict:
+                    return False, ["insider_activity data unavailable"]
+            elif analysis.insider_net_buy_ratio <= 0:
                 return False, [f"no recent insider buying (ratio={analysis.insider_net_buy_ratio:.2f})"]
 
         # / crypto filters (phase 8)

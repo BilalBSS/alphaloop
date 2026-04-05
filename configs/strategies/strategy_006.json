@@ -8,6 +8,7 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
+    "strict_data": false,
     "pe_ratio_max": 50,
     "revenue_growth_min": 0.0,
     "debt_to_equity_max": 3.0

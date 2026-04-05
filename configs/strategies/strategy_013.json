@@ -9,6 +9,7 @@
     "tier": "sector",
 
     "fundamental_filters": {
+        "strict_data": false,
         "pe_ratio_max": 55,
         "revenue_growth_min": -0.02,
         "fcf_margin_min": 0.05,
@@ -27,8 +28,8 @@
 
     "exit_conditions": {
         "take_profit": {"indicator": "pivot_points", "condition": "above_r1"},
-        "stop_loss": {"type": "fixed_pct", "pct": 0.06},
-        "time_exit": {"max_holding_days": 14}
+        "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 14},
+        "time_exit": {"max_holding_days": 25}
     },
 
     "position_sizing": {

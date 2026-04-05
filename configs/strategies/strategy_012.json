@@ -9,6 +9,7 @@
     "tier": "sector",
 
     "fundamental_filters": {
+        "strict_data": false,
         "pe_ratio_max": 50,
         "revenue_growth_min": 0.0,
         "fcf_margin_min": 0.05,

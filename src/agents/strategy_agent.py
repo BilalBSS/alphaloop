@@ -22,7 +22,7 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / minimum smoothed strength to generate a signal
-SIGNAL_THRESHOLD = 0.20
+SIGNAL_THRESHOLD = 0.15
 
 
 class StrategyAgent:
@@ -462,7 +462,7 @@ class StrategyAgent:
         # / use particle filter to smooth noisy entry signals
         if symbol not in self._filters:
             self._filters[symbol] = ParticleFilter(
-                n_particles=500, process_noise=0.05, observation_noise=0.15,
+                n_particles=500, process_noise=0.05, observation_noise=0.10,
             )
 
         pf = self._filters[symbol]

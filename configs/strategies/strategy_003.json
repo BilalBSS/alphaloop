@@ -8,12 +8,12 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
-    "pe_ratio_max": 30,
-    "pe_vs_sector": "below_average",
-    "revenue_growth_min": 0.05,
-    "fcf_margin_min": 0.15,
-    "debt_to_equity_max": 1.0,
-    "dcf_upside_min": 0.15
+    "strict_data": false,
+    "pe_ratio_max": 40,
+    "revenue_growth_min": 0.02,
+    "fcf_margin_min": 0.10,
+    "debt_to_equity_max": 1.5,
+    "dcf_upside_min": 0.05
   },
   "entry_conditions": {
     "operator": "AND",
@@ -21,14 +21,18 @@
       {
         "indicator": "rsi",
         "condition": "below",
-        "threshold": 30,
+        "threshold": 35,
         "period": 14
       },
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 1.5,
+        "multiplier": 1.2,
         "period": 20
+      },
+      {
+        "indicator": "macd",
+        "condition": "crossover_bullish"
       }
     ]
   },
@@ -40,8 +44,9 @@
       "std_dev": 2.0
     },
     "stop_loss": {
-      "type": "fixed_pct",
-      "pct": 0.06
+      "type": "atr_trailing",
+      "multiplier": 2.0,
+      "period": 14
     },
     "time_exit": {
       "max_holding_days": 45

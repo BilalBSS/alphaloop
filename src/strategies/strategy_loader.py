@@ -90,6 +90,7 @@ class PositionSizingConfig(BaseModel):
 
 
 class FundamentalFiltersConfig(BaseModel):
+    strict_data: bool = True  # / reject when data missing vs skip filter
     pe_ratio_max: float | None = None
     pe_vs_sector: str | None = None
     revenue_growth_min: float | None = None

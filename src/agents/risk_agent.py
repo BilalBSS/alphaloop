@@ -21,14 +21,28 @@ class RiskAgent:
         max_position_pct: float | None = None,
         max_portfolio_risk: float | None = None,
         tail_dep_threshold: float = 0.30,
+        risk_limits: dict | None = None,
     ):
+        rl = risk_limits or self._load_risk_limits()
         self.max_position_pct = max_position_pct or float(
-            os.environ.get("MAX_POSITION_PCT", "0.08")
+            os.environ.get("MAX_POSITION_PCT", str(rl.get("max_position_pct", 0.08)))
         )
         self.max_portfolio_risk = max_portfolio_risk or float(
-            os.environ.get("MAX_PORTFOLIO_RISK", "0.25")
+            os.environ.get("MAX_PORTFOLIO_RISK", str(rl.get("max_portfolio_risk", 0.25)))
         )
         self.tail_dep_threshold = tail_dep_threshold
+        self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
+        self._max_daily_trades = rl.get("max_daily_trades", 20)
+        self._max_open_positions = rl.get("max_open_positions", 15)
+
+    @staticmethod
+    def _load_risk_limits() -> dict:
+        import json
+        from pathlib import Path
+        path = Path(__file__).parent.parent.parent / "configs" / "risk_limits.json"
+        if path.exists():
+            return json.loads(path.read_text())
+        return {}
 
     async def process_signal(
         self, pool, signal_id: int, broker: BrokerInterface,
@@ -112,12 +126,39 @@ class RiskAgent:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
                     return {"status": "rejected", "reason": "already_holding"}
 
-        # / get current price
+        # / get current price (needed for concentration check and sizing)
         try:
             price = await broker.get_price(symbol)
         except Exception:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "no_price"}
+
+        # / enforce risk limits for buys
+        if side == "buy":
+            # / cash reserve: current cash must be at least N% of equity
+            if balance.cash < balance.equity * self._min_cash_reserve_pct:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": "cash_reserve_insufficient"}
+
+            # / max open positions
+            if len(positions) >= self._max_open_positions:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": f"max_positions ({self._max_open_positions}) reached"}
+
+            # / max daily trades
+            today_count = await tools.count_today_approved_trades(pool)
+            if today_count >= self._max_daily_trades:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": f"max_daily_trades ({self._max_daily_trades}) reached"}
+
+            # / cross-strategy symbol concentration: cap at 2x single-strategy limit
+            all_sym_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+            if all_sym_positions:
+                total_held_value = sum(sp["qty"] for sp in all_sym_positions) * price
+                max_concentration = self.max_position_pct * 2 * balance.equity
+                if total_held_value >= max_concentration:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": f"cross_strategy_concentration: {symbol}"}
 
         # / compute position size
         if side == "sell":
@@ -130,17 +171,17 @@ class RiskAgent:
                 qty = int(strat_pos[0]["qty"]) if strat_pos else 0
         else:
             max_pct = self.max_position_pct
-            qty = (balance.equity * max_pct * strength) / price
+            qty = (balance.cash * max_pct * strength) / price
             qty = max(0, int(qty))  # / whole shares
 
         if qty <= 0:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "qty_zero"}
 
-        # / check total portfolio exposure
+        # / check total portfolio exposure (equity-based ratio)
         total_position_value = sum(p.market_value for p in positions)
         new_position_value = qty * price
-        total_exposure = (total_position_value + new_position_value) / balance.equity
+        total_exposure = (total_position_value + new_position_value) / max(balance.equity, 1)
 
         if total_exposure > self.max_portfolio_risk:
             # / size down to fit within risk limit

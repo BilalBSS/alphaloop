@@ -29,7 +29,7 @@
     "exit_conditions": {
         "take_profit": {"indicator": "structure_break", "condition": "bearish", "lookback": 5},
         "stop_loss": {"type": "atr_trailing", "multiplier": 2.0, "period": 14},
-        "time_exit": {"max_holding_days": 10}
+        "time_exit": {"max_holding_days": 20}
     },
 
     "position_sizing": {
