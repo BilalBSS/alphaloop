@@ -529,9 +529,14 @@ class StrategyAgent:
             if df is None:
                 return None
 
+            # / use position's updated_at as entry proxy, fallback to oldest bar
+            entry_ts = sp.get("updated_at")
+            entry_date = pd.Timestamp(entry_ts) if entry_ts else pd.Timestamp(df.index[0])
+            if entry_date.tz is not None:
+                entry_date = entry_date.tz_convert(None)
             exit_signal = strategy.should_exit(
                 sp["symbol"], df, sp["avg_entry_price"] or 0,
-                pd.Timestamp(df.index[0]), len(df) - 1,
+                entry_date, len(df) - 1,
             )
 
             if exit_signal.should_exit:

@@ -178,24 +178,25 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "qty_zero"}
 
-        # / check total portfolio exposure (equity-based ratio)
-        total_position_value = sum(p.market_value for p in positions)
-        new_position_value = qty * price
-        total_exposure = (total_position_value + new_position_value) / max(balance.equity, 1)
+        # / check total portfolio exposure (buys only — sells reduce exposure)
+        if side == "buy":
+            total_position_value = sum(p.market_value for p in positions)
+            new_position_value = qty * price
+            total_exposure = (total_position_value + new_position_value) / max(balance.equity, 1)
 
-        if total_exposure > self.max_portfolio_risk:
-            # / size down to fit within risk limit
-            available = (self.max_portfolio_risk * balance.equity) - total_position_value
-            if available <= 0:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
-                return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
-            qty = max(0, int(available / price))
-            if qty <= 0:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
-                return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
+            if total_exposure > self.max_portfolio_risk:
+                # / size down to fit within risk limit
+                available = (self.max_portfolio_risk * balance.equity) - total_position_value
+                if available <= 0:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
+                qty = max(0, int(available / price))
+                if qty <= 0:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
 
-        # / copula tail dependence check (skip on small portfolios)
-        if len(positions) >= 5:
+        # / copula tail dependence check (skip on small portfolios, buys only)
+        if side == "buy" and len(positions) >= 5:
             try:
                 tail_dep = await self._check_tail_dependence(pool, symbol, positions)
                 if tail_dep is not None and tail_dep > self.tail_dep_threshold:
