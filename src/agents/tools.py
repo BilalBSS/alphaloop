@@ -445,6 +445,15 @@ async def store_strategy_score(
              win_rate, brier_score, total_trades, regime_breakdown,
              sortino_ratio, composite_score)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (strategy_id, period_start, period_end)
+            DO UPDATE SET sharpe_ratio = EXCLUDED.sharpe_ratio,
+                max_drawdown = EXCLUDED.max_drawdown,
+                win_rate = EXCLUDED.win_rate,
+                brier_score = EXCLUDED.brier_score,
+                total_trades = EXCLUDED.total_trades,
+                regime_breakdown = EXCLUDED.regime_breakdown,
+                sortino_ratio = EXCLUDED.sortino_ratio,
+                composite_score = EXCLUDED.composite_score
             RETURNING id""",
             strategy_id, period_start, period_end,
             Decimal(str(sharpe_ratio)), Decimal(str(max_drawdown)),

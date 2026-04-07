@@ -25,6 +25,7 @@ _ws_clients: set[WebSocket] = set()
 _broker = None
 
 STATIC_DIR = Path(__file__).parent / "static"
+STRATEGY_CONFIGS_DIR = (Path(__file__).parent.parent.parent / "configs" / "strategies").resolve()
 
 
 @asynccontextmanager
@@ -308,51 +309,73 @@ async def get_symbols():
 
 @app.get("/api/strategies")
 async def get_strategies():
-    rows = await _query(
-        """SELECT * FROM strategy_scores
-        ORDER BY sharpe_ratio DESC NULLS LAST"""
-    )
-    # / fallback: compute basic metrics from trade_log when strategy_scores is empty
-    if not rows:
-        rows = await _query(
-            """SELECT strategy_id,
-                COUNT(*) as total_trades,
-                COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                COUNT(*) FILTER (WHERE pnl < 0) as losses,
-                COALESCE(ROUND(AVG(pnl)::numeric, 2), 0) as avg_pnl,
-                COALESCE(ROUND(SUM(pnl)::numeric, 2), 0) as total_pnl,
-                ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 3) as win_rate,
-                MAX(created_at) as last_trade_at
-            FROM trade_log
-            WHERE strategy_id IS NOT NULL
-            GROUP BY strategy_id
-            ORDER BY total_pnl DESC"""
-        )
-    # / enrich with name/status/description from config files
-    result = _serialize(rows)
-    _enrich_strategy_metadata(result)
-    return result
-
-
-def _enrich_strategy_metadata(rows: list[dict]) -> None:
-    # / load strategy names and status from json configs on disk
-    from pathlib import Path
-    configs_dir = Path(__file__).parent.parent / "strategies" / ".." / ".." / "configs" / "strategies"
-    configs_dir = configs_dir.resolve()
-    for row in rows:
-        sid = row.get("strategy_id")
-        if not sid:
-            continue
-        config_path = (configs_dir / f"{sid}.json").resolve()
-        if not config_path.is_relative_to(configs_dir) or not config_path.exists():
-            continue
+    # / build baseline from config files — all strategies appear even if never traded
+    strategies_by_id = {}
+    for config_path in sorted(STRATEGY_CONFIGS_DIR.glob("*.json")):
         try:
             cfg = json.loads(config_path.read_text())
-            row.setdefault("name", cfg.get("name"))
-            row.setdefault("status", cfg.get("metadata", {}).get("status"))
-            row.setdefault("description", cfg.get("description"))
+            sid = cfg.get("id", config_path.stem)
+            entry_signals = cfg.get("entry_conditions", {}).get("signals", [])
+            exit_conds = cfg.get("exit_conditions", {})
+            strategies_by_id[sid] = {
+                "strategy_id": sid,
+                "name": cfg.get("name"),
+                "status": cfg.get("metadata", {}).get("status"),
+                "description": cfg.get("description"),
+                "universe": cfg.get("universe"),
+                "asset_class": cfg.get("asset_class"),
+                "entry_conditions_count": len(entry_signals),
+                "exit_conditions_count": len(exit_conds),
+                "total_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_pnl": 0,
+                "avg_pnl": 0,
+                "win_rate": None,
+                "sharpe_ratio": None,
+                "max_drawdown": None,
+                "last_trade_at": None,
+            }
         except Exception as exc:
-            logger.warning("strategy_config_read_failed", strategy_id=sid, error=str(exc))
+            logger.warning("strategy_config_read_failed", path=str(config_path), error=str(exc))
+
+    # / overlay strategy_scores where available (most recent per strategy)
+    score_rows = await _query(
+        """SELECT DISTINCT ON (strategy_id) *
+        FROM strategy_scores
+        ORDER BY strategy_id, created_at DESC"""
+    )
+    for row in score_rows:
+        sid = row.get("strategy_id")
+        if sid and sid in strategies_by_id:
+            strategies_by_id[sid].update({k: v for k, v in dict(row).items() if k != "strategy_id"})
+        elif sid:
+            strategies_by_id[sid] = dict(row)
+
+    # / overlay trade_log aggregates where available
+    trade_rows = await _query(
+        """SELECT strategy_id,
+            COUNT(*) as total_trades,
+            COUNT(*) FILTER (WHERE pnl > 0) as wins,
+            COUNT(*) FILTER (WHERE pnl < 0) as losses,
+            COALESCE(ROUND(AVG(pnl)::numeric, 2), 0) as avg_pnl,
+            COALESCE(ROUND(SUM(pnl)::numeric, 2), 0) as total_pnl,
+            ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 3) as win_rate,
+            MAX(created_at) as last_trade_at
+        FROM trade_log
+        WHERE strategy_id IS NOT NULL
+        GROUP BY strategy_id"""
+    )
+    for row in trade_rows:
+        sid = row.get("strategy_id")
+        if sid and sid in strategies_by_id:
+            strategies_by_id[sid].update({k: v for k, v in dict(row).items() if k != "strategy_id"})
+        elif sid:
+            strategies_by_id[sid] = dict(row)
+
+    # / sort by total_pnl desc, nulls/zeros last
+    result = sorted(strategies_by_id.values(), key=lambda s: (s.get("total_pnl") or 0), reverse=True)
+    return _serialize(result)
 
 
 @app.get("/api/evolution")
