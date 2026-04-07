@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import structlog
+import pandas as pd
 
 from src.agents import tools
 from src.agents.analyst_agent import AnalystAgent
@@ -34,6 +37,7 @@ DEEPSEEK_INTERVAL = 3600         # / 1 hour
 INTRADAY_INTERVAL = 7200         # / 2 hours
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
+STRATEGY_METRICS_INTERVAL = 3600 # / 1 hour
 
 
 class AgentOrchestrator:
@@ -119,6 +123,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
             asyncio.create_task(self._alpaca_sync_loop(), name="alpaca_sync"),
+            asyncio.create_task(self._strategy_metrics_loop(), name="strategy_metrics"),
         ]
 
         try:
@@ -379,7 +384,10 @@ class AgentOrchestrator:
                 if self._strategy_pool.size < 3:
                     logger.info("evolution_skipped_small_pool", pool_size=self._strategy_pool.size)
                     continue
-                await self._evolution.run(self._pool, self._strategy_pool)
+
+                # / fetch market data for backtesting mutations
+                market_data = await self._fetch_evolution_market_data()
+                await self._evolution.run(self._pool, self._strategy_pool, market_data=market_data)
             except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
                 notify_system_error(str(exc), "evolution_loop")
@@ -527,3 +535,100 @@ class AgentOrchestrator:
             # / sync every 5 minutes
             if await self._wait_or_stop(300):
                 break
+
+    async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:
+        # / load daily ohlcv from db for all symbols, used by evolution backtesting
+        symbols = self._get_symbols()
+        market_data: dict[str, pd.DataFrame] = {}
+        async with self._pool.acquire() as conn:
+            for symbol in symbols:
+                try:
+                    rows = await conn.fetch(
+                        """SELECT date, open, high, low, close, volume
+                        FROM market_data WHERE symbol = $1
+                        ORDER BY date ASC""",
+                        symbol,
+                    )
+                    if len(rows) < 50:
+                        continue
+                    df = pd.DataFrame(
+                        [{
+                            "open": float(r["open"]) if r["open"] else 0,
+                            "high": float(r["high"]) if r["high"] else 0,
+                            "low": float(r["low"]) if r["low"] else 0,
+                            "close": float(r["close"]) if r["close"] else 0,
+                            "volume": int(r["volume"]) if r["volume"] else 0,
+                        } for r in rows],
+                        index=pd.DatetimeIndex([r["date"] for r in rows]),
+                    )
+                    market_data[symbol] = df
+                except Exception as exc:
+                    logger.warning("evolution_market_data_failed", symbol=symbol, error=str(exc))
+        logger.info("evolution_market_data_loaded", symbols=len(market_data))
+        return market_data
+
+    async def _strategy_metrics_loop(self) -> None:
+        # / compute live strategy metrics from trade_log every hour
+        while not self._stop_event.is_set():
+            # / initial delay to let other loops populate data
+            if await self._wait_or_stop(STRATEGY_METRICS_INTERVAL):
+                break
+            try:
+                await self._compute_strategy_metrics()
+            except Exception as exc:
+                logger.error("strategy_metrics_loop_error", exc_info=True)
+                notify_system_error(str(exc), "strategy_metrics_loop")
+
+    async def _compute_strategy_metrics(self) -> None:
+        # / query trade_log for per-strategy metrics, write to strategy_scores
+        from datetime import date as dt_date
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT strategy_id,
+                    COUNT(*) as trade_count,
+                    COUNT(*) FILTER (WHERE pnl > 0) as win_count,
+                    COALESCE(SUM(pnl), 0) as total_pnl,
+                    COALESCE(AVG(pnl), 0) as avg_pnl,
+                    MIN(created_at)::date as first_trade,
+                    MAX(created_at)::date as last_trade
+                FROM trade_log
+                WHERE strategy_id IS NOT NULL AND pnl IS NOT NULL
+                GROUP BY strategy_id
+                HAVING COUNT(*) >= 1""",
+            )
+
+        if not rows:
+            logger.debug("strategy_metrics_no_data")
+            return
+
+        updated = 0
+        async with self._pool.acquire() as conn:
+            for row in rows:
+                strategy_id = row["strategy_id"]
+                trade_count = int(row["trade_count"])
+                win_count = int(row["win_count"])
+                total_pnl = float(row["total_pnl"])
+                win_rate = win_count / trade_count if trade_count > 0 else 0.0
+                period_start = row["first_trade"] or dt_date.today()
+                period_end = row["last_trade"] or dt_date.today()
+
+                try:
+                    # / upsert live metrics — avoids unbounded row growth
+                    await conn.execute(
+                        """INSERT INTO strategy_scores
+                        (strategy_id, period_start, period_end, win_rate, total_trades,
+                         regime_breakdown)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (strategy_id, period_start, period_end)
+                        DO UPDATE SET win_rate = EXCLUDED.win_rate,
+                            total_trades = EXCLUDED.total_trades,
+                            regime_breakdown = EXCLUDED.regime_breakdown""",
+                        strategy_id, period_start, period_end,
+                        Decimal(str(win_rate)), trade_count,
+                        json.dumps({"total_pnl": total_pnl, "source": "live_metrics"}),
+                    )
+                    updated += 1
+                except Exception as exc:
+                    logger.warning("strategy_metrics_store_failed", strategy_id=strategy_id, error=str(exc))
+
+        logger.info("strategy_metrics_computed", strategies=updated, total_rows=len(rows))
