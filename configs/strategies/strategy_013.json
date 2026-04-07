@@ -21,7 +21,7 @@
         "operator": "AND",
         "signals": [
             {"indicator": "pivot_points", "condition": "below_s1"},
-            {"indicator": "macd", "condition": "crossover_up", "fast": 12, "slow": 26, "signal": 9},
+            {"indicator": "macd", "condition": "crossover_bullish", "fast": 12, "slow": 26, "signal": 9},
             {"indicator": "adx", "condition": "above", "threshold": 20, "period": 14}
         ]
     },

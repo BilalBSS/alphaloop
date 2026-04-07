@@ -44,6 +44,7 @@
     },
 
     "bear_market_overrides": {
+        "bypass_consensus": true,
         "fundamental_filters": {
             "pe_ratio_max": 60,
             "revenue_growth_min": -0.10,
