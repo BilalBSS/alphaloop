@@ -71,21 +71,24 @@ async def store_trade_signal(
 ) -> int:
     # / upsert trade signal — one pending per strategy+symbol+type per day
     async with pool.acquire() as conn:
-        # / check for existing pending signal today
+        # / check for existing signal today (any status — prevents re-creation after rejection)
         existing = await conn.fetchrow(
-            """SELECT id FROM trade_signals
+            """SELECT id, status FROM trade_signals
             WHERE strategy_id = $1 AND symbol = $2 AND signal_type = $3
             AND created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'
-            AND status = 'pending'""",
+            ORDER BY created_at DESC LIMIT 1""",
             strategy_id, symbol, signal_type,
         )
         if existing:
-            await conn.execute(
-                """UPDATE trade_signals SET strength = $1, regime = $2, details = $3
-                WHERE id = $4""",
-                Decimal(str(strength)), regime,
-                details if details else None, existing["id"],
-            )
+            if existing["status"] == "pending":
+                # / still pending — update strength in place
+                await conn.execute(
+                    """UPDATE trade_signals SET strength = $1, regime = $2, details = $3
+                    WHERE id = $4""",
+                    Decimal(str(strength)), regime,
+                    details if details else None, existing["id"],
+                )
+            # / already rejected/processed/error — skip, return existing id
             return existing["id"]
         row = await conn.fetchrow(
             """INSERT INTO trade_signals (strategy_id, symbol, signal_type, strength, regime, details, status)

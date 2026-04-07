@@ -10,6 +10,7 @@
     "bypass_consensus": true,
 
     "fundamental_filters": {
+        "strict_data": false,
         "pe_ratio_max": 60,
         "revenue_growth_min": -0.05,
         "fcf_margin_min": 0.0,

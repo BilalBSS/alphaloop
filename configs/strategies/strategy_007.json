@@ -56,6 +56,7 @@
     "status": "paper_trading"
   },
   "bear_market_overrides": {
+    "bypass_consensus": true,
     "fundamental_filters": {
       "pe_ratio_max": 55,
       "revenue_growth_min": -0.05,

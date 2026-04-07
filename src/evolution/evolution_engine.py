@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -110,6 +111,16 @@ class EvolutionEngine:
 
         # / 12. DOCUMENT: generate report and update docs
         await self._document(pool, generation, strategy_pool, summary)
+
+        # / 13. LOG CYCLE: ensure every evolution run writes at least one log row
+        # / dashboard queries MAX(created_at) from evolution_log to show "last evolution"
+        try:
+            await store_evolution_log(
+                pool, generation, "cycle_complete", "system", None,
+                f"evolution cycle: {len(summary['killed'])} killed, {len(summary['mutated'])} mutated, {len(summary['promoted'])} promoted",
+            )
+        except Exception as exc:
+            logger.error("evolution_log_cycle_failed", error=str(exc))
 
         notify_evolution_summary(summary)
         logger.info(
@@ -369,7 +380,9 @@ class EvolutionEngine:
         # / 8. PROMOTE: paper_trading strategies with 14+ days and sharpe >= 0.8
         paper_strategies = strategy_pool.list_by_status("paper_trading")
         for entry in paper_strategies:
-            paper_days = entry.strategy.config.get("metadata", {}).get("paper_trade_days", 0)
+            # / compute paper_days dynamically from status_changed_at instead of
+            # / static config value which is never incremented
+            paper_days = (datetime.now(timezone.utc) - entry.status_changed_at).days
             if entry.score and paper_days >= 14 and entry.score.sharpe_ratio >= 0.8:
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "live")
