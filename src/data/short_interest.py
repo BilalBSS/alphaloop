@@ -1,8 +1,9 @@
-# / short interest: finnhub short interest + finra regsho daily short volume
+# / short interest: yfinance (free) + finnhub + finra regsho fallbacks
 # / computes short_pct = short_volume / total_volume
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date
 from typing import Any
@@ -24,8 +25,28 @@ def _finnhub_headers() -> dict[str, str]:
     return {"X-Finnhub-Token": key}
 
 
+async def _fetch_short_yfinance(symbol: str) -> dict[str, Any] | None:
+    # / yfinance short percent of float (free, no auth)
+    def _fetch():
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        info = ticker.info or {}
+        short_pct = info.get("shortPercentOfFloat")
+        if short_pct is None:
+            return None
+        return {
+            "symbol": symbol,
+            "date": str(date.today()),
+            "short_volume": int(info.get("sharesShort", 0)),
+            "total_volume": int(info.get("averageVolume", 0)),
+            "short_ratio": float(info.get("shortRatio", 0) or 0),
+            "short_percent_float": float(short_pct),
+        }
+    return await asyncio.to_thread(_fetch)
+
+
 @with_retry(source="finnhub", max_retries=2, base_delay=1.0)
-async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
+async def _fetch_short_finnhub(symbol: str) -> dict[str, Any] | None:
     if not os.environ.get("FINNHUB_API_KEY"):
         return None
     url = f"{FINNHUB_BASE}/stock/short-interest"
@@ -45,6 +66,25 @@ async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
     except Exception as exc:
         logger.debug("finnhub_short_interest_failed", symbol=symbol, error=str(exc))
         return None
+
+
+async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
+    # / primary: yfinance (free, no auth)
+    try:
+        result = await _fetch_short_yfinance(symbol)
+        if result:
+            return result
+    except Exception as exc:
+        logger.debug("yfinance_short_failed", symbol=symbol, error=str(exc))
+    # / fallback: finnhub
+    try:
+        result = await _fetch_short_finnhub(symbol)
+        if result:
+            return result
+    except Exception:
+        pass
+    # / fallback: finra
+    return await fetch_finra_short_volume(symbol)
 
 
 @with_retry(source="finra", max_retries=2, base_delay=2.0)

@@ -1,8 +1,9 @@
-# / analyst ratings: finnhub recommendation trends + price targets
+# / analyst ratings: yfinance (free) + finnhub fallback
 # / computes consensus score and target upside
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date
 from typing import Any
@@ -41,6 +42,33 @@ async def _fetch_price_target(symbol: str) -> dict[str, Any]:
     return resp.json()
 
 
+async def _fetch_analyst_yfinance(symbol: str) -> dict[str, Any]:
+    # / yfinance recommendations + price targets (free, no auth)
+    def _fetch():
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        result = {}
+        # / recommendations
+        recs = ticker.recommendations
+        if recs is not None and not recs.empty:
+            latest = recs.iloc[-1]
+            result["strongBuy"] = int(latest.get("strongBuy", 0))
+            result["buy"] = int(latest.get("buy", 0))
+            result["hold"] = int(latest.get("hold", 0))
+            result["sell"] = int(latest.get("sell", 0))
+            result["strongSell"] = int(latest.get("strongSell", 0))
+        # / price targets
+        targets = ticker.analyst_price_targets
+        if targets:
+            result["targetHigh"] = targets.get("high")
+            result["targetLow"] = targets.get("low")
+            result["targetMean"] = targets.get("mean")
+            result["targetMedian"] = targets.get("median")
+            result["currentPrice"] = targets.get("current")
+        return result
+    return await asyncio.to_thread(_fetch)
+
+
 def compute_consensus_score(rec: dict[str, Any]) -> float:
     # / weighted average: strong_buy=1.0, buy=0.5, hold=0, sell=-0.5, strong_sell=-1.0
     sb = rec.get("strongBuy", 0) or 0
@@ -62,7 +90,29 @@ def compute_target_upside(target_mean: float | None, current_price: float | None
 
 
 async def fetch_analyst_ratings(symbol: str) -> dict[str, Any]:
-    result: dict[str, Any] = {"symbol": symbol}
+    # / primary: yfinance (free, no auth)
+    try:
+        data = await _fetch_analyst_yfinance(symbol)
+        if data and ("strongBuy" in data or "targetMean" in data):
+            result: dict[str, Any] = {"symbol": symbol, "source": "yfinance"}
+            if "strongBuy" in data:
+                result["strong_buy"] = data["strongBuy"]
+                result["buy"] = data.get("buy", 0)
+                result["hold"] = data.get("hold", 0)
+                result["sell"] = data.get("sell", 0)
+                result["strong_sell"] = data.get("strongSell", 0)
+                result["consensus_score"] = compute_consensus_score(data)
+            if "targetMean" in data:
+                result["target_high"] = data.get("targetHigh")
+                result["target_low"] = data.get("targetLow")
+                result["target_mean"] = data.get("targetMean")
+            logger.info("analyst_ratings_fetched", symbol=symbol, source="yfinance")
+            return result
+    except Exception as exc:
+        logger.debug("yfinance_analyst_failed", symbol=symbol, error=str(exc))
+
+    # / fallback: finnhub
+    result: dict[str, Any] = {"symbol": symbol, "source": "finnhub"}
     try:
         recs = await _fetch_recommendations(symbol)
         if recs:
@@ -86,7 +136,7 @@ async def fetch_analyst_ratings(symbol: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("analyst_targets_failed", symbol=symbol, error=str(exc))
 
-    logger.info("analyst_ratings_fetched", symbol=symbol)
+    logger.info("analyst_ratings_fetched", symbol=symbol, source="finnhub")
     return result
 
 

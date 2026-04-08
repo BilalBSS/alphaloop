@@ -288,6 +288,42 @@ async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str =
         return inserted
 
 
+async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[dict[str, Any]]:
+    # / yfinance 1h bars — free, 730 day lookback
+    def _fetch():
+        import yfinance as yf
+        earliest = date.today() - timedelta(days=729)
+        fetch_start = max(start, earliest)
+        df = yf.download(
+            symbol, start=fetch_start.isoformat(), end=end.isoformat(),
+            interval="1h", progress=False, auto_adjust=True,
+        )
+        if df is None or df.empty:
+            return []
+        bars = []
+        for idx, row in df.iterrows():
+            ts = idx.to_pydatetime()
+            bars.append({
+                "symbol": symbol,
+                "date": ts.date(),
+                "timestamp": ts,
+                "open": Decimal(str(round(float(row["Open"]), 4))),
+                "high": Decimal(str(round(float(row["High"]), 4))),
+                "low": Decimal(str(round(float(row["Low"]), 4))),
+                "close": Decimal(str(round(float(row["Close"]), 4))),
+                "volume": int(row.get("Volume", 0)),
+                "vwap": None,
+            })
+        return bars
+    try:
+        bars = await asyncio.to_thread(_fetch)
+        logger.info("fetched_bars_yfinance_1h", symbol=symbol, count=len(bars))
+        return bars
+    except Exception as exc:
+        logger.warning("yfinance_1h_fetch_failed", symbol=symbol, error=str(exc))
+        return []
+
+
 async def backfill_intraday(
     pool,
     symbols: list[str],
@@ -316,7 +352,16 @@ async def backfill_intraday(
                 else:
                     fetch_start = start
 
-            bars = await fetch_bars_alpaca(symbol, fetch_start, end, timeframe=timeframe)
+            try:
+                bars = await fetch_bars_alpaca(symbol, fetch_start, end, timeframe=timeframe)
+            except Exception:
+                bars = []
+            if not bars:
+                # / fallback: yfinance 1h bars
+                try:
+                    bars = await fetch_bars_yfinance_1h(symbol, fetch_start, end)
+                except Exception:
+                    bars = []
             count = await store_intraday_bars(pool, bars, timeframe=timeframe)
             results[symbol] = count
             logger.info("intraday_backfill_complete", symbol=symbol, bars=count)
