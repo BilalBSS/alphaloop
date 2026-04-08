@@ -21,8 +21,9 @@ from .ratio_analysis import RatioScore
 logger = structlog.get_logger(__name__)
 
 # / groq free tier: separate rate limit pools per model
-DEFAULT_MODEL = "llama-3.1-8b-instant"
-FALLBACK_MODEL = "openai/gpt-oss-20b"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+FAST_MODEL = "llama-3.1-8b-instant"
+FALLBACK_MODEL = "llama-3.1-8b-instant"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 MAX_TOKENS = 1200
