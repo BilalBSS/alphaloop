@@ -6,13 +6,20 @@ from __future__ import annotations
 
 import os
 
+import time
+
 import numpy as np
 import structlog
 
 from src.agents import tools
 from src.brokers.base import BrokerInterface
+from src.data.symbols import get_sector
 
 logger = structlog.get_logger(__name__)
+
+# / circuit breaker state (module-level)
+_peak_equity: float = 0.0
+_circuit_breaker_until: float = 0.0
 
 
 class RiskAgent:
@@ -34,6 +41,14 @@ class RiskAgent:
         self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
         self._max_daily_trades = rl.get("max_daily_trades", 20)
         self._max_open_positions = rl.get("max_open_positions", 15)
+        self._max_drawdown_hard_stop = rl.get("max_drawdown_hard_stop", -0.20)
+        self._consecutive_loss_pause = rl.get("consecutive_loss_pause_count", 3)
+        self._consecutive_loss_seconds = rl.get("consecutive_loss_pause_seconds", 3600)
+        self._max_sector_pct = rl.get("max_sector_concentration_pct", 0.30)
+        self._max_liquidity_pct = rl.get("max_liquidity_pct", 0.01)
+        self._regime_multipliers = rl.get("regime_sizing_multipliers", {
+            "bull": 1.0, "sideways": 0.75, "bear": 0.5, "high_vol": 0.5, "insufficient_data": 0.5,
+        })
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -133,6 +148,49 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "no_price"}
 
+        # / circuit breaker: drawdown from peak
+        if side == "buy":
+            global _peak_equity, _circuit_breaker_until
+            _peak_equity = max(_peak_equity, balance.equity)
+            if _peak_equity > 0:
+                drawdown = (balance.equity - _peak_equity) / _peak_equity
+                if drawdown < self._max_drawdown_hard_stop:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    logger.warning("circuit_breaker_drawdown", drawdown=drawdown, threshold=self._max_drawdown_hard_stop)
+                    return {"status": "rejected", "reason": f"circuit_breaker_drawdown ({drawdown:.2%})"}
+
+            # / circuit breaker: consecutive losses
+            if time.time() < _circuit_breaker_until:
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
+            recent_pnl = await tools.fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
+            if len(recent_pnl) >= self._consecutive_loss_pause and all(p < 0 for p in recent_pnl):
+                _circuit_breaker_until = time.time() + self._consecutive_loss_seconds
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                logger.warning("circuit_breaker_consecutive_losses", count=len(recent_pnl))
+                return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
+
+            # / liquidity check
+            avg_vol = await tools.fetch_avg_volume(pool, symbol)
+            if avg_vol and avg_vol > 0 and price > 0:
+                trade_value = (balance.cash * self.max_position_pct * strength)
+                daily_dollar_vol = avg_vol * price
+                if trade_value > daily_dollar_vol * self._max_liquidity_pct:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": "insufficient_liquidity"}
+
+            # / sector concentration check
+            sector = get_sector(symbol)
+            if sector:
+                sector_value = 0.0
+                for p in positions:
+                    p_sym = p.symbol if hasattr(p, "symbol") else p.get("symbol")
+                    if get_sector(p_sym) == sector:
+                        sector_value += p.market_value if hasattr(p, "market_value") else 0
+                if balance.equity > 0 and sector_value / balance.equity > self._max_sector_pct:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    return {"status": "rejected", "reason": f"sector_concentration ({sector})"}
+
         # / enforce risk limits for buys
         if side == "buy":
             # / cash reserve: current cash must be at least N% of equity
@@ -173,6 +231,27 @@ class RiskAgent:
             max_pct = self.max_position_pct
             qty = (balance.cash * max_pct * strength) / price
             qty = max(0, int(qty))  # / whole shares
+
+        # / regime-aware sizing multiplier (buys only)
+        regime_mult = 1.0
+        if side == "buy":
+            try:
+                regime = await tools.fetch_latest_regime(pool)
+                regime_label = regime.get("regime", "insufficient_data") if regime else "insufficient_data"
+                regime_mult = self._regime_multipliers.get(regime_label, 0.5)
+                qty = int(qty * regime_mult)
+            except Exception:
+                pass
+
+        # / beta-adjusted sizing (buys only)
+        if side == "buy":
+            try:
+                beta = await tools.fetch_symbol_beta(pool, symbol)
+                if beta is not None and beta > 1.5:
+                    qty = max(1, int(qty * (1.0 / beta)))
+                    logger.info("beta_adjusted", symbol=symbol, beta=beta, qty=qty)
+            except Exception:
+                pass
 
         if qty <= 0:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")

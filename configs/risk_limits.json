@@ -19,6 +19,19 @@
     "tier2_param_freedom": 0.20
   },
 
+  "consecutive_loss_pause_count": 3,
+  "consecutive_loss_pause_seconds": 3600,
+  "max_sector_concentration_pct": 0.30,
+  "max_liquidity_pct": 0.01,
+  "regime_sizing_multipliers": {
+    "bull": 1.0,
+    "sideways": 0.75,
+    "bear": 0.5,
+    "high_vol": 0.5,
+    "insufficient_data": 0.5
+  },
+  "twap_threshold_usd": 5000,
+
   "tracks": {
     "fundamental_gated": {
       "max_position_pct": 0.08,

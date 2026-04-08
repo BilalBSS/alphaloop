@@ -703,3 +703,52 @@ async def log_event(
             )
     except Exception as exc:
         logger.warning("log_event_failed", source=source, error=str(exc))
+
+
+async def fetch_recent_pnl(pool, limit: int = 5) -> list[float]:
+    # / fetch most recent realized PnL values from trade_log
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT pnl FROM trade_log
+            WHERE pnl IS NOT NULL
+            ORDER BY created_at DESC LIMIT $1""", limit)
+    return [float(r["pnl"]) for r in rows]
+
+
+async def fetch_avg_volume(pool, symbol: str, days: int = 20) -> float | None:
+    # / fetch average daily volume for a symbol
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT AVG(volume) as avg_vol FROM (
+                SELECT volume FROM market_data
+                WHERE symbol = $1 AND volume > 0
+                ORDER BY date DESC LIMIT $2
+            ) sub""", symbol, days)
+    return float(row["avg_vol"]) if row and row["avg_vol"] else None
+
+
+async def fetch_symbol_beta(pool, symbol: str, benchmark: str = "SPY", window: int = 60) -> float | None:
+    # / compute rolling beta of symbol vs benchmark
+    import numpy as np
+    async with pool.acquire() as conn:
+        sym_rows = await conn.fetch(
+            "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT $2",
+            symbol, window + 1)
+        bench_rows = await conn.fetch(
+            "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT $2",
+            benchmark, window + 1)
+    if len(sym_rows) < 20 or len(bench_rows) < 20:
+        return None
+    sym_map = {r["date"]: float(r["close"]) for r in sym_rows}
+    bench_map = {r["date"]: float(r["close"]) for r in bench_rows}
+    common = sorted(set(sym_map) & set(bench_map))
+    if len(common) < 20:
+        return None
+    sym_prices = [sym_map[d] for d in common]
+    bench_prices = [bench_map[d] for d in common]
+    sym_ret = np.diff(sym_prices) / np.array(sym_prices[:-1])
+    bench_ret = np.diff(bench_prices) / np.array(bench_prices[:-1])
+    cov = np.cov(sym_ret, bench_ret)
+    if cov[1, 1] == 0:
+        return None
+    return float(cov[0, 1] / cov[1, 1])
