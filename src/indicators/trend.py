@@ -153,3 +153,18 @@ def supertrend(
                 direction.iloc[i] = 1
 
     return SupertrendResult(supertrend=st, direction=direction)
+
+
+@dataclass
+class DonchianResult:
+    upper: pd.Series
+    lower: pd.Series
+    middle: pd.Series
+
+
+def donchian_channel(high: pd.Series, low: pd.Series, period: int = 20) -> DonchianResult:
+    # / donchian channel: N-period highest high and lowest low
+    upper = high.rolling(window=period).max()
+    lower = low.rolling(window=period).min()
+    middle = (upper + lower) / 2
+    return DonchianResult(upper=upper, lower=lower, middle=middle)
