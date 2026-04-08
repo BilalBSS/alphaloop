@@ -87,6 +87,13 @@ class _CircuitBreaker:
         return max(0.0, self.reset_timeout - elapsed)
 
 
+def _is_403(exc: Exception) -> bool:
+    # / check if exception is an http 403 auth error
+    if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+        return exc.response.status_code == 403
+    return "403" in str(exc)
+
+
 # / global registry of breakers keyed by source name
 _breakers: dict[str, _CircuitBreaker] = {}
 
@@ -119,6 +126,9 @@ def with_retry(
                     raise
                 except Exception as exc:
                     last_exc = exc
+                    # / don't count 403 auth errors as circuit breaker failures
+                    if _is_403(exc):
+                        raise
                     breaker.record_failure()
 
                     if not await breaker.can_execute_async():

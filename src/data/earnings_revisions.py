@@ -1,8 +1,9 @@
-# / earnings revisions: finnhub eps estimates + revision momentum
+# / earnings revisions: yfinance (free) + finnhub fallback
 # / tracks estimate changes over time to detect analyst sentiment shifts
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date
 from typing import Any
@@ -21,8 +22,30 @@ def _finnhub_headers() -> dict[str, str]:
     return {"X-Finnhub-Token": key}
 
 
+async def _fetch_estimates_yfinance(symbol: str) -> list[dict[str, Any]]:
+    # / yfinance earnings estimates (free, no auth)
+    def _fetch():
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        result = []
+        est = ticker.earnings_estimate
+        if est is not None and not est.empty:
+            for period in est.index:
+                row = est.loc[period]
+                result.append({
+                    "symbol": symbol,
+                    "period": str(period),
+                    "eps_avg": float(row["avg"]) if row.get("avg") is not None else None,
+                    "eps_high": float(row["high"]) if row.get("high") is not None else None,
+                    "eps_low": float(row["low"]) if row.get("low") is not None else None,
+                    "source": "yfinance",
+                })
+        return result
+    return await asyncio.to_thread(_fetch)
+
+
 @with_retry(source="finnhub", max_retries=2, base_delay=1.0)
-async def fetch_earnings_estimates(symbol: str) -> list[dict[str, Any]]:
+async def _fetch_estimates_finnhub(symbol: str) -> list[dict[str, Any]]:
     if not os.environ.get("FINNHUB_API_KEY"):
         return []
     url = f"{FINNHUB_BASE}/stock/eps-estimate"
@@ -41,8 +64,25 @@ async def fetch_earnings_estimates(symbol: str) -> list[dict[str, Any]]:
             "number_analysts": est.get("numberAnalysts", 0),
             "revenue_avg": est.get("revenueAvg"),
         })
-    logger.info("earnings_estimates_fetched", symbol=symbol, count=len(result))
+    logger.info("earnings_estimates_fetched_finnhub", symbol=symbol, count=len(result))
     return result
+
+
+async def fetch_earnings_estimates(symbol: str) -> list[dict[str, Any]]:
+    # / primary: yfinance (free, no auth)
+    try:
+        estimates = await _fetch_estimates_yfinance(symbol)
+        if estimates:
+            logger.info("earnings_estimates_fetched", symbol=symbol, count=len(estimates), source="yfinance")
+            return estimates
+    except Exception as exc:
+        logger.debug("yfinance_earnings_failed", symbol=symbol, error=str(exc))
+    # / fallback: finnhub
+    try:
+        return await _fetch_estimates_finnhub(symbol)
+    except Exception as exc:
+        logger.warning("finnhub_earnings_failed", symbol=symbol, error=str(exc))
+        return []
 
 
 def compute_revision_momentum(estimates: list[dict[str, Any]]) -> float:
