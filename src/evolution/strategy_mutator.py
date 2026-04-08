@@ -38,12 +38,12 @@ async def mutate_strategy(
     # / falls back to random tweak if llm unavailable or fails
     rng = rng or np.random.default_rng()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        logger.info("no_anthropic_key_using_random_tweak")
+        logger.info("no_llm_key_using_random_tweak")
         return [_random_tweak(killed_config, rng)]
 
-    # / 1. haiku proposes
+    # / 1. deepseek v3 proposes (replaced haiku)
     haiku_config = await _haiku_propose(api_key, killed_config, top_config, recent_trades, rng)
 
     # / 2. deepseek reasoner critiques
@@ -72,7 +72,7 @@ async def _haiku_propose(
 
     for attempt in range(3):
         try:
-            response_text = await _call_haiku(api_key, prompt)
+            response_text = await _call_deepseek_v3(prompt)
             config = _parse_json_response(response_text)
 
             from src.strategies.strategy_loader import validate_config
@@ -182,21 +182,16 @@ Output ONLY valid JSON:
         return {"decision": "approve", "reason": f"critique failed: {exc}"}
 
 
-async def _call_haiku(api_key: str, prompt: str) -> str:
-    # / call claude haiku via anthropic api
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise RuntimeError("anthropic package not installed")
-
-    client = AsyncAnthropic(api_key=api_key)
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
+async def _call_deepseek_v3(prompt: str) -> str:
+    # / call deepseek v3 via shared llm client (replaced haiku)
+    data = await llm_call(
+        "deepseek",
+        messages=[{"role": "user", "content": prompt}],
+        model="deepseek-chat",
         max_tokens=2000,
         temperature=0.7,
-        messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    return data["choices"][0]["message"]["content"]
 
 
 def _build_mutation_prompt(
