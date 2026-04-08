@@ -145,3 +145,20 @@ def mfi(
 
     mf_ratio = pos_sum / neg_sum.replace(0, np.nan)
     return 100 - (100 / (1 + mf_ratio))
+
+
+def anchored_vwap(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    volume: pd.Series, anchor_idx: int = 0,
+) -> pd.Series:
+    # / vwap anchored from a specific bar index
+    typical = (high + low + close) / 3
+    result = pd.Series(index=close.index, dtype=float)
+    result[:] = np.nan
+    cum_vol = 0.0
+    cum_tp_vol = 0.0
+    for i in range(anchor_idx, len(close)):
+        cum_vol += volume.iloc[i]
+        cum_tp_vol += typical.iloc[i] * volume.iloc[i]
+        result.iloc[i] = cum_tp_vol / cum_vol if cum_vol > 0 else typical.iloc[i]
+    return result
