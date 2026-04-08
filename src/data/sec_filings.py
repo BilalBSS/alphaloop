@@ -192,6 +192,102 @@ async def fetch_all_insider_trades(
     return all_trades
 
 
+
+def _fetch_13f_holdings_sync(symbol: str) -> dict[str, Any] | None:
+    # / fetch 13f institutional holdings via edgartools
+    try:
+        from edgar import Company
+    except ImportError:
+        logger.warning("edgartools_not_installed")
+        return None
+
+    try:
+        os.environ.setdefault("EDGAR_IDENTITY", _get_user_agent())
+        company = Company(symbol)
+        filings = company.get_filings(form="13F-HR")
+
+        if filings is None or len(filings) == 0:
+            return None
+
+        latest = filings[0]
+        filing_date = latest.filing_date
+        if hasattr(filing_date, "date"):
+            filing_date = filing_date.date()
+
+        try:
+            obj = latest.obj()
+            if obj is None:
+                return None
+
+            holdings = getattr(obj, "holdings", None)
+            if holdings is None:
+                return None
+
+            if hasattr(holdings, "__len__"):
+                institution_count = len(holdings)
+            else:
+                institution_count = 0
+
+            total_shares = 0
+            if hasattr(holdings, "iterrows"):
+                for _, row in holdings.iterrows():
+                    shares = _to_float(row.get("Shares", 0))
+                    total_shares += int(shares)
+            elif isinstance(holdings, list):
+                for h in holdings:
+                    total_shares += int(_to_float(h.get("shares", 0)))
+
+            return {
+                "symbol": symbol,
+                "filing_date": filing_date,
+                "institution_count": institution_count,
+                "total_shares": total_shares,
+                "shares_change": 0,
+            }
+        except Exception as exc:
+            logger.warning("13f_parse_error", symbol=symbol, error=str(exc))
+            return None
+
+    except Exception as exc:
+        logger.warning("13f_fetch_error", symbol=symbol, error=str(exc))
+        return None
+
+
+async def fetch_13f_holdings(symbol: str) -> dict[str, Any] | None:
+    # / async wrapper for 13f holdings fetch
+    async with _edgar_semaphore:
+        await asyncio.sleep(_edgar_delay)
+        try:
+            result = await asyncio.to_thread(_fetch_13f_holdings_sync, symbol)
+            if result:
+                logger.info("fetched_13f_holdings", symbol=symbol)
+            return result
+        except Exception as exc:
+            logger.warning("13f_holdings_failed", symbol=symbol, error=str(exc))
+            return None
+
+
+async def store_13f_holdings(pool, data: dict[str, Any]) -> None:
+    if not data:
+        return
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO institutional_holdings
+                (symbol, filing_date, institution_count, total_shares, shares_change)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (symbol, filing_date) DO UPDATE SET
+                institution_count = EXCLUDED.institution_count,
+                total_shares = EXCLUDED.total_shares,
+                shares_change = EXCLUDED.shares_change
+            """,
+            data["symbol"], data["filing_date"],
+            data.get("institution_count", 0),
+            data.get("total_shares", 0),
+            data.get("shares_change", 0),
+        )
+
+
 async def store_insider_trades(pool, trades: list[dict[str, Any]]) -> int:
     # / insert insider trades, handle duplicates
     if not trades:
