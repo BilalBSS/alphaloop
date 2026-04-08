@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -132,3 +133,22 @@ async def train_and_predict(
         feature_importance=importance,
         model_version="lgbm_v1",
     )
+
+
+async def store_ml_prediction(pool, prediction: MlPrediction) -> None:
+    # / persist ml prediction to db
+    from datetime import date
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ml_predictions (symbol, date, model_version, prediction, feature_importance)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                    model_version = EXCLUDED.model_version,
+                    prediction = EXCLUDED.prediction,
+                    feature_importance = EXCLUDED.feature_importance""",
+                prediction.symbol, date.today(), prediction.model_version,
+                prediction.probability, json.dumps(prediction.feature_importance),
+            )
+    except Exception as exc:
+        logger.warning("store_ml_prediction_failed", symbol=prediction.symbol, error=str(exc))

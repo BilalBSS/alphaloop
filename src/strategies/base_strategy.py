@@ -58,6 +58,21 @@ class AnalysisData:
     news_sentiment_score: float | None = None
     ai_consensus: str | None = None  # bullish, bearish, neutral, disagree
     regime: str | None = None
+    # / alternative data fields
+    macro_score: float | None = None
+    congressional_buy_ratio: float | None = None
+    analyst_consensus: float | None = None
+    price_target_upside: float | None = None
+    earnings_revision_momentum: float | None = None
+    short_pct_float: float | None = None
+    dark_pool_ratio: float | None = None
+    iv_rank: float | None = None
+    put_call_ratio: float | None = None
+    days_to_earnings: int | None = None
+    intermarket_score: float | None = None
+    sector_relative_strength: float | None = None
+    hurst: float | None = None
+    liquidation_imbalance: float | None = None
 
 
 class StrategyInterface(ABC):

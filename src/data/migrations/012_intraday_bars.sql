@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS market_data_intraday (
     id BIGSERIAL PRIMARY KEY,
     symbol VARCHAR(20) NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
-    timeframe VARCHAR(10) NOT NULL DEFAULT '2Hour',
+    timeframe VARCHAR(10) NOT NULL DEFAULT '1Hour',
     open DECIMAL(12,4),
     high DECIMAL(12,4),
     low DECIMAL(12,4),

@@ -34,10 +34,13 @@ ANALYST_OFF_HOURS = 3600         # / 60 minutes
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
 DEEPSEEK_INTERVAL = 3600         # / 1 hour
-INTRADAY_INTERVAL = 7200         # / 2 hours
+INTRADAY_INTERVAL = 3600         # / 1 hour
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
 STRATEGY_METRICS_INTERVAL = 3600 # / 1 hour
+ALTERNATIVE_DATA_INTERVAL = 86400  # / 24 hours
+MONITORING_INTERVAL = 3600         # / 1 hour
+COST_FLUSH_INTERVAL = 3600         # / 1 hour
 
 
 class AgentOrchestrator:
@@ -124,6 +127,10 @@ class AgentOrchestrator:
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
             asyncio.create_task(self._alpaca_sync_loop(), name="alpaca_sync"),
             asyncio.create_task(self._strategy_metrics_loop(), name="strategy_metrics"),
+            asyncio.create_task(self._alternative_data_loop(), name="alternative_data"),
+            asyncio.create_task(self._monitoring_loop(), name="monitoring"),
+            asyncio.create_task(self._cost_flush_loop(), name="cost_flush"),
+            asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
         ]
 
         try:
@@ -473,7 +480,7 @@ class AgentOrchestrator:
             try:
                 from src.data.market_data import backfill_intraday
                 symbols = self._get_symbols()
-                results = await backfill_intraday(self._pool, symbols, days=10, timeframe="2Hour")
+                results = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
                 total = sum(results.values())
                 logger.info("intraday_backfill_complete", symbols=len(symbols), bars=total)
             except Exception as exc:
@@ -534,6 +541,147 @@ class AgentOrchestrator:
 
             # / sync every 5 minutes
             if await self._wait_or_stop(300):
+                break
+
+    async def _macro_backfill_loop(self) -> None:
+        # / refresh fred macro data daily at 9am et
+        while not self._stop_event.is_set():
+            stopped, target = await self._sleep_until_et_hour(9)
+            logger.info("macro_backfill_waiting", next_run=str(target))
+            if stopped:
+                break
+            try:
+                from src.data.fred_macro import fetch_macro_indicators
+                indicators = await fetch_macro_indicators(self._pool)
+                if indicators:
+                    logger.info("macro_backfill_complete", indicators=len(indicators))
+            except Exception as exc:
+                logger.error("macro_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "macro_backfill")
+
+    async def _alternative_data_loop(self) -> None:
+        # / backfill alternative data: analyst ratings, short interest, options, etc
+        if await self._wait_or_stop(300):
+            return
+        while not self._stop_event.is_set():
+            try:
+                from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
+                from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
+                from src.data.short_interest import fetch_short_interest, store_short_interest
+                from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
+                from src.data.options_data import fetch_options_data, store_options_data
+                from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
+                from src.data.symbols import get_sector
+
+                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                for symbol in symbols:
+                    is_etf = get_sector(symbol) == "etfs"
+                    try:
+                        if not is_etf:
+                            # / analyst ratings
+                            ratings = await fetch_analyst_ratings(symbol)
+                            if ratings:
+                                await store_analyst_ratings(self._pool, symbol, ratings)
+                            # / earnings revisions
+                            estimates = await fetch_earnings_estimates(symbol)
+                            if estimates:
+                                await store_earnings_estimates(self._pool, estimates)
+                            # / congressional trades
+                            trades = await fetch_congressional_trades(symbol)
+                            if trades:
+                                await store_congressional_trades(self._pool, trades)
+                            # / options
+                            options = await fetch_options_data(symbol)
+                            if options:
+                                await store_options_data(self._pool, options)
+                        # / short interest (works for etfs too)
+                        si = await fetch_short_interest(symbol)
+                        if si:
+                            await store_short_interest(self._pool, si)
+                        # / dark pool
+                        dp = await fetch_dark_pool_data(symbol)
+                        if dp:
+                            await store_dark_pool(self._pool, dp)
+                    except Exception as exc:
+                        logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
+                    await asyncio.sleep(2)  # / throttle api calls
+                logger.info("alternative_data_backfill_complete", count=len(symbols))
+            except Exception as exc:
+                logger.error("alternative_data_error", exc_info=True)
+                notify_system_error(str(exc), "alternative_data")
+            if await self._wait_or_stop(ALTERNATIVE_DATA_INTERVAL):
+                break
+
+    async def _monitoring_loop(self) -> None:
+        # / run monitoring checks: staleness, strategy decay, correlation
+        if await self._wait_or_stop(600):
+            return
+        while not self._stop_event.is_set():
+            # / data staleness check
+            try:
+                from src.data.staleness_monitor import check_all_freshness
+                stale = await check_all_freshness(self._pool)
+                stale_sources = [s for s in stale if s.is_stale]
+                if stale_sources:
+                    msg = ", ".join(f"{s.source} ({s.staleness_hours:.0f}h)" for s in stale_sources)
+                    logger.warning("stale_data_sources", sources=msg)
+                    notify_system_error(f"stale data: {msg}", "staleness_monitor")
+            except Exception as exc:
+                logger.warning("staleness_check_error", error=str(exc))
+
+            # / strategy decay check
+            try:
+                from src.analysis.strategy_decay import check_all_strategies
+                decay_signals = await check_all_strategies(self._pool, self._strategy_pool)
+                for ds in decay_signals:
+                    logger.warning("strategy_decay_detected",
+                        strategy_id=ds.strategy_id,
+                        recommendation=ds.recommendation,
+                        rolling_sharpe=ds.rolling_sharpe,
+                    )
+                    if ds.recommendation == "kill":
+                        notify_system_error(
+                            f"strategy {ds.strategy_id} decay: kill recommended (sharpe={ds.rolling_sharpe:.2f})",
+                            "strategy_decay",
+                        )
+            except Exception as exc:
+                logger.warning("decay_check_error", error=str(exc))
+
+            # / portfolio correlation check
+            try:
+                from src.quant.correlation_monitor import check_portfolio_correlation
+                broker = self._broker_factory.get_broker()
+                positions = await broker.get_positions()
+                if len(positions) >= 2:
+                    alert = await check_portfolio_correlation(self._pool, positions)
+                    if alert and alert.is_concentrated:
+                        logger.warning("portfolio_concentrated",
+                            avg_corr=alert.avg_correlation,
+                            max_pair=alert.max_pair,
+                        )
+                        notify_system_error(
+                            f"portfolio concentrated: avg_corr={alert.avg_correlation:.2f}",
+                            "correlation_monitor",
+                        )
+            except Exception as exc:
+                logger.warning("correlation_check_error", error=str(exc))
+
+            if await self._wait_or_stop(MONITORING_INTERVAL):
+                break
+
+    async def _cost_flush_loop(self) -> None:
+        # / flush llm cost tracker to db hourly
+        if await self._wait_or_stop(COST_FLUSH_INTERVAL):
+            return
+        while not self._stop_event.is_set():
+            try:
+                from src.data.cost_tracker import flush_to_db
+                flushed = await flush_to_db(self._pool)
+                if flushed:
+                    logger.info("cost_tracker_flushed", rows=flushed)
+            except Exception as exc:
+                logger.warning("cost_flush_error", error=str(exc))
+            if await self._wait_or_stop(COST_FLUSH_INTERVAL):
                 break
 
     async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:

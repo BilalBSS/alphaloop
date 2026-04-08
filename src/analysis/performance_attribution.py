@@ -58,3 +58,22 @@ async def compute_attribution(
         stock_contribution=0.0,
         alpha=alpha,
     )
+
+
+async def store_attribution(pool, attr: Attribution) -> None:
+    # / persist performance attribution to db
+    from datetime import date
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO performance_attribution
+                (strategy_id, period_start, period_end, total_return,
+                 market_contribution, sector_contribution, stock_contribution, alpha)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT DO NOTHING""",
+                attr.strategy_id, date.today(), date.today(), attr.total_return,
+                attr.market_contribution, attr.sector_contribution,
+                attr.stock_contribution, attr.alpha,
+            )
+    except Exception as exc:
+        logger.warning("store_attribution_failed", strategy_id=attr.strategy_id, error=str(exc))

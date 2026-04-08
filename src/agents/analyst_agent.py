@@ -18,6 +18,7 @@ from src.analysis.insider_activity import InsiderSignal, analyze_insider_activit
 from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.agents import tools
 from src.data.crypto_data import fetch_coin_data, fetch_funding_rates, get_funding_rate
+from src.data.crypto_liquidations import fetch_liquidation_data
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
@@ -31,12 +32,14 @@ class AnalystAgent:
 
     def __init__(self):
         self._funding_cache: dict | None = None
+        self._macro_cache: dict | None = None
 
     async def run(self, pool, symbols: list[str], run_deepseek: bool = True) -> dict[str, float | None]:
         # / run full analysis pipeline for each symbol
         # / run_deepseek=False: groq only (30-min cycle), True: groq + deepseek (hourly)
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
+        self._macro_cache = None  # / reset per cycle
         results: dict[str, float | None] = {}
         cycle_start = time.monotonic()
 
@@ -133,6 +136,15 @@ class AnalystAgent:
         except Exception:
             pass
 
+        # / fetch liquidation imbalance
+        liquidation_imbalance: float | None = None
+        try:
+            liq_data = await fetch_liquidation_data(symbol)
+            if liq_data:
+                liquidation_imbalance = liq_data.get("liquidation_imbalance")
+        except Exception as exc:
+            logger.warning("analyst_crypto_liquidation_failed", symbol=symbol, error=str(exc))
+
         # / llm analysis: same dual-llm path as equities
         # / 30-min cycle: groq only, hourly cycle: groq + deepseek
         ai_signal: str | None = None
@@ -182,7 +194,7 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
 
-        # / compute crypto composite: sentiment 0.15, nvt 0.15, funding 0.15, momentum 0.15, AI 0.4
+        # / compute crypto composite: sentiment 0.15, nvt 0.15, funding 0.15, momentum 0.15, liquidation 0.10, AI 0.3
         components: list[tuple[float, float]] = []
         if sentiment_score is not None and sentiment_score != 0.0:
             sent_100 = max(0.0, min(100.0, (sentiment_score + 1.0) * 50.0))
@@ -202,9 +214,13 @@ class AnalystAgent:
                 avg_pct = ((pct_7d or 0) * 0.6 + (pct_24h or 0) * 0.4)
                 momentum_score = max(0.0, min(100.0, (avg_pct + 30.0) / 60.0 * 100.0))
                 components.append((momentum_score, 0.15))
+        # / liquidation imbalance: positive = more longs liquidated (bearish), map to 0-100
+        if liquidation_imbalance is not None:
+            liq_score = max(0.0, min(100.0, (1.0 - liquidation_imbalance) * 50.0))
+            components.append((liq_score, 0.10))
         if ai_signal:
             signal_map = {"bullish": 80.0, "neutral": 50.0, "bearish": 20.0}
-            components.append((signal_map.get(ai_signal, 50.0), 0.4))
+            components.append((signal_map.get(ai_signal, 50.0), 0.3))
 
         composite: float | None = None
         if components:
@@ -219,6 +235,7 @@ class AnalystAgent:
             "ai_consensus_confidence": ai_confidence,
             "news_sentiment_score": sentiment_score,
             "regime": regime,
+            "liquidation_imbalance": liquidation_imbalance,
         }
         # / fear_greed_index on 0-100 scale for dashboard display
         if fear_greed is not None:
@@ -349,6 +366,162 @@ class AnalystAgent:
 
         return (regime, symbol_trend, indicator_data, sentiment_data)
 
+    async def _fetch_alternative_data(self, pool, symbol: str) -> dict:
+        # / fetch all alternative data sources for equity symbols
+        from src.data.symbols import get_sector
+        from src.data.fred_macro import fetch_macro_indicators, get_macro_score
+        from src.data.congressional_trades import fetch_congressional_trades, compute_net_buy_ratio
+        from src.data.analyst_ratings import fetch_analyst_ratings, compute_consensus_score, compute_target_upside
+        from src.data.earnings_revisions import fetch_earnings_estimates, compute_revision_momentum
+        from src.data.short_interest import fetch_short_interest
+        from src.data.dark_pool import fetch_dark_pool_data
+        from src.data.options_data import fetch_options_data
+        from src.data.corporate_events import days_to_earnings
+
+        alt: dict = {}
+        is_etf = get_sector(symbol) == "etfs"
+
+        # / macro score: fetched once per cycle, cached
+        try:
+            if self._macro_cache is None:
+                self._macro_cache = await fetch_macro_indicators(pool)
+            alt["macro_score"] = get_macro_score(self._macro_cache)
+        except Exception as exc:
+            self._macro_cache = {}
+            logger.warning("alt_macro_failed", error=str(exc))
+
+        # / congressional trades (skip etfs)
+        if not is_etf:
+            try:
+                trades = await fetch_congressional_trades(symbol)
+                alt["congressional_buy_ratio"] = compute_net_buy_ratio(trades)
+            except Exception as exc:
+                logger.warning("alt_congressional_failed", symbol=symbol, error=str(exc))
+
+        # / analyst ratings + price target (skip etfs)
+        if not is_etf:
+            try:
+                ratings = await fetch_analyst_ratings(symbol)
+                if ratings:
+                    alt["analyst_consensus"] = ratings.get("consensus_score", 0.0)
+                    # / compute target upside from mean target vs latest close
+                    target_mean = ratings.get("target_mean")
+                    if target_mean is not None:
+                        try:
+                            async with pool.acquire() as conn:
+                                row = await conn.fetchrow(
+                                    """SELECT close FROM market_data
+                                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                                    symbol,
+                                )
+                                if row:
+                                    current_price = float(row["close"])
+                                    alt["price_target_upside"] = compute_target_upside(target_mean, current_price)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.warning("alt_analyst_ratings_failed", symbol=symbol, error=str(exc))
+
+        # / earnings revisions (skip etfs)
+        if not is_etf:
+            try:
+                estimates = await fetch_earnings_estimates(symbol)
+                alt["earnings_revision_momentum"] = compute_revision_momentum(estimates)
+            except Exception as exc:
+                logger.warning("alt_earnings_revisions_failed", symbol=symbol, error=str(exc))
+
+        # / short interest
+        try:
+            si_data = await fetch_short_interest(symbol)
+            if si_data:
+                alt["short_pct_float"] = si_data.get("short_interest")
+        except Exception as exc:
+            logger.warning("alt_short_interest_failed", symbol=symbol, error=str(exc))
+
+        # / dark pool
+        try:
+            dp_data = await fetch_dark_pool_data(symbol)
+            if dp_data:
+                alt["dark_pool_ratio"] = dp_data.get("dark_pool_ratio")
+        except Exception as exc:
+            logger.warning("alt_dark_pool_failed", symbol=symbol, error=str(exc))
+
+        # / options data (skip etfs)
+        if not is_etf:
+            try:
+                opt_data = await fetch_options_data(symbol)
+                if opt_data:
+                    alt["iv_rank"] = opt_data.get("iv_rank")
+                    alt["put_call_ratio"] = opt_data.get("put_call_ratio")
+            except Exception as exc:
+                logger.warning("alt_options_failed", symbol=symbol, error=str(exc))
+
+        # / days to earnings
+        try:
+            dte = await days_to_earnings(symbol)
+            alt["days_to_earnings"] = dte
+        except Exception as exc:
+            logger.warning("alt_days_to_earnings_failed", symbol=symbol, error=str(exc))
+
+        # / intermarket signals (requires spy + etf data from db)
+        try:
+            from src.indicators.intermarket import compute_intermarket
+            async with pool.acquire() as conn:
+                spy_rows = await conn.fetch(
+                    "SELECT date, close FROM market_data WHERE symbol = 'SPY' ORDER BY date DESC LIMIT 30"
+                )
+            if spy_rows and len(spy_rows) >= 20:
+                import pandas as pd
+                spy_df = pd.DataFrame([{"close": float(r["close"])} for r in reversed(spy_rows)])
+                # / fetch intermarket etfs
+                etf_dfs = {}
+                for etf in ("TLT", "UUP", "HYG", "GLD"):
+                    try:
+                        async with pool.acquire() as conn:
+                            rows = await conn.fetch(
+                                "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT 30",
+                                etf,
+                            )
+                        if rows and len(rows) >= 20:
+                            etf_dfs[etf.lower()] = pd.DataFrame([{"close": float(r["close"])} for r in reversed(rows)])
+                    except Exception:
+                        pass
+                im = compute_intermarket(spy_df, **etf_dfs)
+                alt["intermarket_score"] = round(im.composite, 4)
+        except Exception as exc:
+            logger.debug("intermarket_fetch_failed", error=str(exc))
+
+        # / sector relative strength
+        try:
+            from src.indicators.sector_rotation import compute_sector_rotation
+            async with pool.acquire() as conn:
+                spy_rows = await conn.fetch(
+                    "SELECT date, close FROM market_data WHERE symbol = 'SPY' ORDER BY date DESC LIMIT 70"
+                )
+            from src.data.symbols import get_sector
+            sym_sector = get_sector(symbol)
+            if spy_rows and sym_sector and len(spy_rows) >= 60:
+                # / fetch symbol's own price data for relative strength
+                async with pool.acquire() as conn:
+                    sym_rows = await conn.fetch(
+                        "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT 70",
+                        symbol,
+                    )
+                if sym_rows and len(sym_rows) >= 60:
+                    import pandas as pd
+                    spy_close = pd.Series([float(r["close"]) for r in reversed(spy_rows)])
+                    sym_close = pd.Series([float(r["close"]) for r in reversed(sym_rows)])
+                    # / compute 20-day relative strength: symbol return / spy return
+                    if len(spy_close) >= 20 and len(sym_close) >= 20:
+                        spy_ret = (spy_close.iloc[-1] / spy_close.iloc[-20]) - 1
+                        sym_ret = (sym_close.iloc[-1] / sym_close.iloc[-20]) - 1
+                        rs = sym_ret - spy_ret if spy_ret != 0 else 0.0
+                        alt["sector_relative_strength"] = round(rs, 4)
+        except Exception as exc:
+            logger.debug("sector_rotation_failed", error=str(exc))
+
+        return alt
+
     async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
         # / run all analysis components, compute composite, store to db
         ratio_score, dcf_result, earnings_signal, insider_signal = await self._fetch_equity_components(pool, symbol)
@@ -363,6 +536,9 @@ class AnalystAgent:
             logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
 
         regime, symbol_trend, indicator_data, sentiment_data = await self._fetch_equity_enrichment(pool, symbol)
+
+        # / fetch alternative data sources (macro, congressional, analyst ratings, etc.)
+        alt_data = await self._fetch_alternative_data(pool, symbol)
 
         # / fetch vix level for equity details
         vix_level: float | None = None
@@ -450,6 +626,16 @@ class AnalystAgent:
         details["regime"] = regime
         if vix_level is not None:
             details["vix"] = vix_level
+
+        # / add alternative data fields
+        for key in (
+            "macro_score", "congressional_buy_ratio", "analyst_consensus",
+            "price_target_upside", "earnings_revision_momentum", "short_pct_float",
+            "dark_pool_ratio", "iv_rank", "put_call_ratio", "days_to_earnings",
+            "intermarket_score", "sector_relative_strength",
+        ):
+            if key in alt_data and alt_data[key] is not None:
+                details[key] = alt_data[key]
 
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None

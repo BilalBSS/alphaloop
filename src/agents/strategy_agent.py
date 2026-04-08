@@ -10,6 +10,7 @@ import pandas as pd
 import structlog
 
 from src.agents import tools
+from src.indicators.mean_reversion import hurst_exponent
 from src.indicators.momentum import rsi
 from src.indicators.trend import sma, macd, adx
 from src.indicators.volatility import bollinger_bands, atr
@@ -283,6 +284,33 @@ class StrategyAgent:
         # / smooth with particle filter
         threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)
+
+        # / ml signal modifier (lightgbm probability)
+        if len(df) >= 252:
+            try:
+                from src.quant.ml_signals import train_and_predict
+                indicators_dict = {}
+                if analysis_data:
+                    for attr in ("macro_score", "analyst_consensus", "short_pct_float", "iv_rank", "hurst"):
+                        val = getattr(analysis_data, attr, None)
+                        if val is not None:
+                            indicators_dict[attr] = val
+                ml_pred = await train_and_predict(df, indicators=indicators_dict or None)
+                if ml_pred and ml_pred.probability is not None:
+                    # / probability > 0.6 = boost, < 0.4 = penalty
+                    if ml_pred.probability > 0.6:
+                        smoothed_strength = min(1.0, smoothed_strength * (1.0 + (ml_pred.probability - 0.5)))
+                    elif ml_pred.probability < 0.4:
+                        smoothed_strength = smoothed_strength * (0.5 + ml_pred.probability)
+                    logger.debug("ml_signal_applied", symbol=symbol, ml_prob=ml_pred.probability, adjusted=smoothed_strength)
+                    try:
+                        from src.quant.ml_signals import store_ml_prediction
+                        await store_ml_prediction(pool, ml_pred)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.debug("ml_signal_failed", symbol=symbol, error=str(exc))
+
         if smoothed_strength < threshold:
             logger.debug(
                 "signal_below_threshold",
@@ -341,7 +369,7 @@ class StrategyAgent:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT timestamp, open, high, low, close, volume
-                    FROM market_data_intraday WHERE symbol = $1 AND timeframe = '2Hour'
+                    FROM market_data_intraday WHERE symbol = $1 AND timeframe = '1Hour'
                     ORDER BY timestamp DESC LIMIT 100""",
                     symbol,
                 )
@@ -384,6 +412,9 @@ class StrategyAgent:
             bb = bollinger_bands(close, 20, 2.0)
             atr_val = atr(high, low, close, 14)
 
+            # / hurst exponent
+            hurst_val = hurst_exponent(close)
+
             indicators = {
                 "rsi14": float(rsi_val.iloc[-1]) if not rsi_val.empty else None,
                 "macd": float(macd_line.iloc[-1]) if not macd_line.empty else None,
@@ -396,6 +427,7 @@ class StrategyAgent:
                 "bb_middle": float(bb.middle.iloc[-1]) if not bb.middle.empty else None,
                 "bb_lower": float(bb.lower.iloc[-1]) if not bb.lower.empty else None,
                 "atr": float(atr_val.iloc[-1]) if not atr_val.empty else None,
+                "hurst": float(hurst_val) if hurst_val == hurst_val else None,
             }
             # / filter NaN
             indicators = {k: (v if v == v else None) for k, v in indicators.items()}
@@ -427,7 +459,7 @@ class StrategyAgent:
                         intraday_ind["bb_middle"] = float(bb_2h.middle.iloc[-1]) if not bb_2h.middle.empty else None
                         intraday_ind["bb_lower"] = float(bb_2h.lower.iloc[-1]) if not bb_2h.lower.empty else None
                     intraday_ind = {k: (v if v == v else None) for k, v in intraday_ind.items()}
-                    await tools.store_computed_indicators(pool, symbol, intraday_ind, timeframe="2Hour")
+                    await tools.store_computed_indicators(pool, symbol, intraday_ind, timeframe="1Hour")
                 except Exception as exc2:
                     logger.debug("intraday_indicator_compute_failed", symbol=symbol, error=str(exc2))
 

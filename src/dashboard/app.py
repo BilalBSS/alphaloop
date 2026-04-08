@@ -601,7 +601,7 @@ async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
     limit = max(1, min(limit, 250))
     rows = await _query(
         """SELECT date, rsi14, macd, macd_signal, macd_histogram,
-        adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr, timeframe
+        adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr, hurst, timeframe
         FROM computed_indicators
         WHERE symbol = $1 AND timeframe = $2 ORDER BY date DESC LIMIT $3""",
         symbol, timeframe, limit,
@@ -610,7 +610,7 @@ async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
 
 
 @app.get("/api/intraday/{symbol}")
-async def get_intraday(symbol: str, days: int = 10, timeframe: str = "2Hour"):
+async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour"):
     days = max(1, min(days, 60))
     rows = await _query(
         """SELECT timestamp, open, high, low, close, volume, vwap
@@ -661,6 +661,70 @@ async def get_strategy_evaluations(limit: int = 20):
         limit,
     )
     return _serialize(rows)
+
+
+@app.get("/api/costs")
+async def get_costs():
+    # / api and llm cost tracking
+    if not _pool:
+        return {"costs": [], "total_usd": 0}
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT date, source, call_count, tokens_in, tokens_out, estimated_cost_usd
+                FROM api_costs ORDER BY date DESC, source LIMIT 100"""
+            )
+        costs = [dict(r) for r in rows]
+        total = sum(float(r.get("estimated_cost_usd", 0) or 0) for r in costs)
+        return {"costs": costs, "total_usd": round(total, 4)}
+    except Exception:
+        return {"costs": [], "total_usd": 0}
+
+
+@app.get("/api/staleness")
+async def get_staleness():
+    # / data source freshness check
+    if not _pool:
+        return {"sources": []}
+    try:
+        from src.data.staleness_monitor import check_all_freshness
+        results = await check_all_freshness(_pool)
+        return {"sources": [
+            {"source": s.source, "last_update": str(s.last_update) if s.last_update else None,
+             "staleness_hours": round(s.staleness_hours, 1), "threshold_hours": s.threshold_hours,
+             "is_stale": s.is_stale}
+            for s in results
+        ]}
+    except Exception:
+        return {"sources": []}
+
+
+@app.get("/api/strategy-decay")
+async def get_strategy_decay():
+    # / strategy performance decay detection
+    if not _pool:
+        return {"signals": []}
+    try:
+        from src.analysis.strategy_decay import check_strategy_decay
+        # / check all strategies that have trades
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT strategy_id FROM trade_log WHERE strategy_id IS NOT NULL"
+            )
+        signals = []
+        for row in rows:
+            ds = await check_strategy_decay(_pool, row["strategy_id"])
+            if ds:
+                signals.append({
+                    "strategy_id": ds.strategy_id,
+                    "rolling_sharpe": round(ds.rolling_sharpe, 3),
+                    "days_below_threshold": ds.days_below_threshold,
+                    "cusum_triggered": ds.cusum_triggered,
+                    "recommendation": ds.recommendation,
+                })
+        return {"signals": signals}
+    except Exception:
+        return {"signals": []}
 
 
 # / websocket for live updates

@@ -533,6 +533,20 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         news_sentiment_score=d.get("news_sentiment_score"),
         ai_consensus=d.get("ai_consensus") or "neutral",
         regime=d.get("regime"),
+        macro_score=d.get("macro_score"),
+        congressional_buy_ratio=d.get("congressional_buy_ratio"),
+        analyst_consensus=d.get("analyst_consensus"),
+        price_target_upside=d.get("price_target_upside"),
+        earnings_revision_momentum=d.get("earnings_revision_momentum"),
+        short_pct_float=d.get("short_pct_float"),
+        dark_pool_ratio=d.get("dark_pool_ratio"),
+        iv_rank=d.get("iv_rank"),
+        put_call_ratio=d.get("put_call_ratio"),
+        days_to_earnings=d.get("days_to_earnings"),
+        intermarket_score=d.get("intermarket_score"),
+        sector_relative_strength=d.get("sector_relative_strength"),
+        hurst=d.get("hurst"),
+        liquidation_imbalance=d.get("liquidation_imbalance"),
     )
 
 
@@ -630,20 +644,22 @@ async def store_computed_indicators(
             await conn.execute(
                 """INSERT INTO computed_indicators
                 (symbol, date, timeframe, rsi14, macd, macd_signal, macd_histogram,
-                 adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 adx, sma20, sma50, bb_upper, bb_middle, bb_lower, atr, hurst)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 ON CONFLICT (symbol, date, timeframe) DO UPDATE SET
                     rsi14 = EXCLUDED.rsi14, macd = EXCLUDED.macd,
                     macd_signal = EXCLUDED.macd_signal, macd_histogram = EXCLUDED.macd_histogram,
                     adx = EXCLUDED.adx, sma20 = EXCLUDED.sma20, sma50 = EXCLUDED.sma50,
                     bb_upper = EXCLUDED.bb_upper, bb_middle = EXCLUDED.bb_middle,
-                    bb_lower = EXCLUDED.bb_lower, atr = EXCLUDED.atr""",
+                    bb_lower = EXCLUDED.bb_lower, atr = EXCLUDED.atr,
+                    hurst = EXCLUDED.hurst""",
                 symbol, dt_date.today(), timeframe,
                 indicators.get("rsi14"), indicators.get("macd"),
                 indicators.get("macd_signal"), indicators.get("macd_histogram"),
                 indicators.get("adx"), indicators.get("sma20"), indicators.get("sma50"),
                 indicators.get("bb_upper"), indicators.get("bb_middle"),
                 indicators.get("bb_lower"), indicators.get("atr"),
+                indicators.get("hurst"),
             )
     except Exception as exc:
         logger.warning("store_indicators_failed", symbol=symbol, error=str(exc))

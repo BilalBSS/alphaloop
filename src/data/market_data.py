@@ -245,7 +245,7 @@ async def store_bars(pool, bars: list[dict[str, Any]]) -> int:
         return inserted
 
 
-async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str = "2Hour") -> int:
+async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str = "1Hour") -> int:
     # / validate and insert intraday bars, handle duplicates via upsert
     if not bars:
         return 0
@@ -292,7 +292,7 @@ async def backfill_intraday(
     pool,
     symbols: list[str],
     days: int = 30,
-    timeframe: str = "2Hour",
+    timeframe: str = "1Hour",
 ) -> dict[str, int]:
     # / backfill intraday bars, incremental from last stored timestamp
     # / end = tomorrow so alpaca returns today's intraday bars (end is exclusive)

@@ -135,7 +135,7 @@ function PricePanel({ symbol, priceHistory, tf, setTf }) {
 
 // / 2h intraday price chart
 function IntradayChart({ symbol }) {
-  const { data, loading } = useApi(`/api/intraday/${symbol}?days=10&timeframe=2Hour`, 60000)
+  const { data, loading } = useApi(`/api/intraday/${symbol}?days=10&timeframe=1Hour`, 60000)
 
   if (loading && !data) return <div className="flex items-center justify-center h-48 text-text-muted text-sm">Loading intraday...</div>
   if (!data || data.length === 0) {
@@ -163,7 +163,7 @@ function IntradayChart({ symbol }) {
 
 // / technical indicators panel — shows whichever timeframe is selected
 function IndicatorsPanel({ symbol, tf }) {
-  const tfParam = tf === '2h' ? '2Hour' : '1Day'
+  const tfParam = tf === '2h' ? '1Hour' : '1Day'
   const { data, loading } = useApi(`/api/indicators/${symbol}?limit=1&timeframe=${tfParam}`, 60000)
 
   if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
