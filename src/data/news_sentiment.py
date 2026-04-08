@@ -62,7 +62,7 @@ async def _groq_score_headlines(headlines: list[str]) -> float | None:
         data = await llm_call(
             "groq",
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-8b-instant",  # / fast model for high-volume scoring
             max_tokens=10,
             temperature=0.1,
             timeout=10.0,

@@ -22,6 +22,11 @@ _PROVIDER_CONFIG = {
         "env_key": "DEEPSEEK_API_KEY",
         "timeout": 30.0,
     },
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "env_key": "CEREBRAS_API_KEY",
+        "timeout": 15.0,
+    },
 }
 
 # / module-level clients, one per provider
@@ -82,4 +87,22 @@ async def llm_call(
         timeout=timeout or cfg["timeout"],
     )
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+
+    # / track cost from usage field
+    try:
+        from .cost_tracker import track_llm_cost
+        usage = data.get("usage", {})
+        tokens_in = usage.get("prompt_tokens", 0)
+        tokens_out = usage.get("completion_tokens", 0)
+        if not tokens_in:
+            tokens_in = sum(len(m.get("content", "")) for m in messages) // 4
+        if not tokens_out:
+            choices = data.get("choices", [])
+            content = choices[0].get("message", {}).get("content", "") if choices else ""
+            tokens_out = len(content) // 4
+        track_llm_cost(provider, model or "", tokens_in, tokens_out)
+    except Exception:
+        pass
+
+    return data
