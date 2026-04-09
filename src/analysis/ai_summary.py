@@ -26,6 +26,7 @@ FAST_MODEL = "llama-3.1-8b-instant"
 FALLBACK_MODEL = "llama-3.1-8b-instant"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+CEREBRAS_MODEL = "gpt-oss-120b"
 MAX_TOKENS = 1200
 
 
@@ -613,6 +614,29 @@ async def _call_llm(
     return None
 
 
+async def _call_cerebras(prompt: str, symbol: str, system_message: str) -> AnalysisSummary | None:
+    # / cerebras fallback via llm_client — free tier, openai-compatible
+    try:
+        from src.data.llm_client import llm_call
+        data = await llm_call(
+            "cerebras", messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            model=CEREBRAS_MODEL, max_tokens=MAX_TOKENS, temperature=0.3,
+        )
+        text = data["choices"][0]["message"]["content"].strip()
+        signal, confidence = _extract_signal(text)
+        logger.info("cerebras_summary_generated", symbol=symbol)
+        return AnalysisSummary(
+            symbol=symbol, date=date.today(), summary=text,
+            model_used=CEREBRAS_MODEL, signal=signal, confidence=confidence,
+        )
+    except Exception as exc:
+        logger.info("cerebras_failed", symbol=symbol, error=str(exc)[:100])
+        return None
+
+
 async def generate_summary(
     symbol: str,
     ratio: RatioScore | None = None,
@@ -645,6 +669,10 @@ async def generate_summary(
             if result:
                 return result
         except _RateLimited:
+            # / instant swap to cerebras on rate limit
+            cerebras_result = await _call_cerebras(prompt, symbol, sys_msg)
+            if cerebras_result:
+                return cerebras_result
             continue
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)

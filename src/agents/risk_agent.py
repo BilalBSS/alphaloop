@@ -22,6 +22,15 @@ _peak_equity: float = 0.0
 _circuit_breaker_until: float = 0.0
 
 
+async def _init_peak_equity(pool) -> None:
+    # / restore peak equity from db on startup
+    global _peak_equity
+    restored = await tools.fetch_peak_equity(pool)
+    if restored > 0:
+        _peak_equity = restored
+        logger.info("peak_equity_restored", peak=restored)
+
+
 class RiskAgent:
     def __init__(
         self,
@@ -124,6 +133,11 @@ class RiskAgent:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "zero_equity"}
 
+        # / lazy-init peak equity from db on first call
+        global _peak_equity, _circuit_breaker_until
+        if _peak_equity == 0.0 and balance.equity > 0:
+            await _init_peak_equity(pool)
+
         # / reject buy if this strategy already holds this symbol
         # / different strategies can hold the same symbol independently
         if side == "buy":
@@ -150,8 +164,11 @@ class RiskAgent:
 
         # / circuit breaker: drawdown from peak
         if side == "buy":
-            global _peak_equity, _circuit_breaker_until
             _peak_equity = max(_peak_equity, balance.equity)
+            try:
+                await tools.store_peak_equity(pool, balance.equity, _peak_equity)
+            except Exception as exc:
+                logger.debug("store_peak_equity_failed", error=str(exc)[:80])
             if _peak_equity > 0:
                 drawdown = (balance.equity - _peak_equity) / _peak_equity
                 if drawdown < self._max_drawdown_hard_stop:
@@ -173,7 +190,7 @@ class RiskAgent:
             # / liquidity check
             avg_vol = await tools.fetch_avg_volume(pool, symbol)
             if avg_vol and avg_vol > 0 and price > 0:
-                trade_value = (balance.cash * self.max_position_pct * strength)
+                trade_value = (balance.equity * self.max_position_pct * strength)
                 daily_dollar_vol = avg_vol * price
                 if trade_value > daily_dollar_vol * self._max_liquidity_pct:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
@@ -229,7 +246,7 @@ class RiskAgent:
                 qty = int(strat_pos[0]["qty"]) if strat_pos else 0
         else:
             max_pct = self.max_position_pct
-            qty = (balance.cash * max_pct * strength) / price
+            qty = (balance.equity * max_pct * strength) / price
             qty = max(0, int(qty))  # / whole shares
 
         # / regime-aware sizing multiplier (buys only)

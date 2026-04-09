@@ -199,7 +199,9 @@ function StrategiesPanel({ strategies, loading }) {
       </thead>
       <tbody>
         {strategies.slice(0, 8).map((s, i) => {
-          const pnl = parseFloat(s.total_pnl ?? s.composite_score ?? 0)
+          const realized = parseFloat(s.total_pnl ?? 0)
+          const unrealized = parseFloat(s.unrealized_pnl ?? 0)
+          const pnl = (realized + unrealized) || parseFloat(s.composite_score ?? 0)
           return (
           <tr key={i} className="hover:bg-bg-hover border-t border-border" style={{ height: 36 }}>
             <td className="px-2 py-1 truncate max-w-[120px]">{s.strategy_id}</td>

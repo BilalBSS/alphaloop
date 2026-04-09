@@ -283,6 +283,21 @@ class EvolutionEngine:
                     logger.error("backtest_failed", strategy_id=config.get("id"), error=str(bt_result))
                     summary["errors"].append(f"backtest failed for {config.get('id')}: {bt_result}")
                 else:
+                    # / walk-forward out-of-sample validation (reject overfit mutations)
+                    # / only check overfitting when IS sharpe is positive — negative IS
+                    # / strategies pass through to the median scoring filter instead
+                    try:
+                        is_sharpe = bt_result.sharpe_ratio
+                        if is_sharpe > 0:
+                            from src.strategies.walk_forward import walk_forward_test
+                            wf_result = await walk_forward_test(ConfigDrivenStrategy(config), market_data)
+                            oos_sharpe = wf_result.avg_oos_sharpe
+                            degradation = 1 - (oos_sharpe / is_sharpe)
+                            if oos_sharpe < 0.3 or degradation > 0.5:
+                                logger.info("walk_forward_rejected", strategy_id=config.get("id"), oos_sharpe=round(oos_sharpe, 3), degradation=round(degradation, 3))
+                                continue
+                    except Exception as exc:
+                        logger.debug("walk_forward_skipped", error=str(exc)[:100])
                     backtest_results.append((config, bt_result))
 
         return backtest_results

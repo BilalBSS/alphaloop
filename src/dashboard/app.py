@@ -373,8 +373,33 @@ async def get_strategies():
         elif sid:
             strategies_by_id[sid] = dict(row)
 
-    # / sort by total_pnl desc, nulls/zeros last
-    result = sorted(strategies_by_id.values(), key=lambda s: (s.get("total_pnl") or 0), reverse=True)
+    # / compute unrealized pnl from open strategy positions
+    try:
+        broker = _get_broker()
+        alpaca_positions = await broker.get_positions()
+        price_map = {p.symbol: p.current_price for p in alpaca_positions}
+
+        sp_rows = await _query(
+            """SELECT strategy_id, symbol, qty, avg_entry_price
+            FROM strategy_positions WHERE qty > 0"""
+        )
+        unrealized_by_strategy: dict[str, float] = {}
+        for sp in sp_rows:
+            sid = sp.get("strategy_id")
+            sym = sp.get("symbol")
+            qty = float(sp.get("qty") or 0)
+            entry = float(sp.get("avg_entry_price") or 0)
+            price = price_map.get(sym, entry)
+            unrealized_by_strategy[sid] = unrealized_by_strategy.get(sid, 0) + (price - entry) * qty
+
+        for sid, upnl in unrealized_by_strategy.items():
+            if sid in strategies_by_id:
+                strategies_by_id[sid]["unrealized_pnl"] = round(upnl, 2)
+    except Exception as exc:
+        logger.debug("strategy_unrealized_pnl_failed", error=str(exc))
+
+    # / sort by total_pnl + unrealized desc, nulls/zeros last
+    result = sorted(strategies_by_id.values(), key=lambda s: (s.get("total_pnl") or 0) + (s.get("unrealized_pnl") or 0), reverse=True)
     return _serialize(result)
 
 
@@ -522,11 +547,13 @@ async def get_health():
                 "errors_24h": s["errors_24h"],
             }
 
-    # / ensure groq + deepseek always present in sources
+    # / ensure groq + deepseek + cerebras always present in sources
     if "groq" not in sources:
         sources["groq"] = {"status": groq_status, "last_error": None, "errors_24h": 0}
     if "deepseek" not in sources:
         sources["deepseek"] = {"status": deepseek_status, "last_error": None, "errors_24h": 0}
+    if "cerebras" not in sources:
+        sources["cerebras"] = {"status": "pending", "last_error": None, "errors_24h": 0}
 
     return {
         "db_connected": db_ok,
