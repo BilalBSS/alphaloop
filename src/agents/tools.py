@@ -39,6 +39,7 @@ async def store_analysis_score(
                 regime_confidence = EXCLUDED.regime_confidence,
                 used_fundamentals = EXCLUDED.used_fundamentals,
                 details = COALESCE(analysis_scores.details, '{}'::jsonb) || COALESCE(EXCLUDED.details, '{}'::jsonb)
+                ,created_at = NOW()
             RETURNING id
             """,
             symbol, as_of,
@@ -652,7 +653,8 @@ async def store_computed_indicators(
                     adx = EXCLUDED.adx, sma20 = EXCLUDED.sma20, sma50 = EXCLUDED.sma50,
                     bb_upper = EXCLUDED.bb_upper, bb_middle = EXCLUDED.bb_middle,
                     bb_lower = EXCLUDED.bb_lower, atr = EXCLUDED.atr,
-                    hurst = EXCLUDED.hurst""",
+                    hurst = EXCLUDED.hurst,
+                    created_at = NOW()""",
                 symbol, dt_date.today(), timeframe,
                 indicators.get("rsi14"), indicators.get("macd"),
                 indicators.get("macd_signal"), indicators.get("macd_histogram"),
@@ -675,7 +677,7 @@ async def store_ict_indicators(
             await conn.execute(
                 """INSERT INTO computed_indicators (symbol, date, timeframe, ict_data)
                 VALUES ($1, $2, '1Day', $3)
-                ON CONFLICT (symbol, date, timeframe) DO UPDATE SET ict_data = EXCLUDED.ict_data""",
+                ON CONFLICT (symbol, date, timeframe) DO UPDATE SET ict_data = EXCLUDED.ict_data, created_at = NOW()""",
                 symbol, dt_date.today(), json.dumps(ict_data),
             )
     except Exception as exc:
@@ -768,3 +770,23 @@ async def fetch_symbol_beta(pool, symbol: str, benchmark: str = "SPY", window: i
     if cov[1, 1] == 0:
         return None
     return float(cov[0, 1] / cov[1, 1])
+
+
+async def fetch_peak_equity(pool) -> float:
+    # / restore peak equity from portfolio_snapshots on startup
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT MAX(peak_equity) FROM portfolio_snapshots")
+        return float(row[0]) if row and row[0] else 0.0
+
+
+async def store_peak_equity(pool, equity: float, peak: float) -> None:
+    # / persist peak equity for circuit breaker survival across restarts
+    from datetime import date
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO portfolio_snapshots (date, equity, peak_equity)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (date) DO UPDATE SET equity = EXCLUDED.equity,
+                peak_equity = GREATEST(portfolio_snapshots.peak_equity, EXCLUDED.peak_equity)""",
+            date.today(), Decimal(str(equity)), Decimal(str(peak)),
+        )

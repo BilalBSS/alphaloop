@@ -76,7 +76,8 @@ async def _haiku_propose(
             config = _parse_json_response(response_text)
 
             from src.strategies.strategy_loader import validate_config
-            validate_config(config)
+            validated = validate_config(config)
+            config = validated.model_dump()
 
             config["id"] = f"strategy_{uuid.uuid4().hex[:8]}"
             config["parent_id"] = killed_config.get("id", "unknown")

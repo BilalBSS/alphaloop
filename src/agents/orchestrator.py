@@ -41,6 +41,8 @@ STRATEGY_METRICS_INTERVAL = 3600 # / 1 hour
 ALTERNATIVE_DATA_INTERVAL = 86400  # / 24 hours
 MONITORING_INTERVAL = 3600         # / 1 hour
 COST_FLUSH_INTERVAL = 3600         # / 1 hour
+DAILY_BAR_INTERVAL = 14400         # / 4 hours
+PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
 
 
 class AgentOrchestrator:
@@ -56,6 +58,7 @@ class AgentOrchestrator:
         self._executor = ExecutorAgent()
         self._evolution = EvolutionEngine()
         self._tasks: list[asyncio.Task] = []
+        self._last_drift: dict[str, float] = {}
 
     async def start(self) -> None:
         # / initialize resources and start all agent loops
@@ -125,6 +128,8 @@ class AgentOrchestrator:
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
+            asyncio.create_task(self._daily_bar_backfill_loop(), name="daily_bar_backfill"),
+            asyncio.create_task(self._price_refresh_loop(), name="price_refresh"),
             asyncio.create_task(self._alpaca_sync_loop(), name="alpaca_sync"),
             asyncio.create_task(self._strategy_metrics_loop(), name="strategy_metrics"),
             asyncio.create_task(self._alternative_data_loop(), name="alternative_data"),
@@ -490,6 +495,60 @@ class AgentOrchestrator:
             if await self._wait_or_stop(INTRADAY_INTERVAL):
                 break
 
+    async def _daily_bar_backfill_loop(self) -> None:
+        # / refresh daily ohlcv bars for all symbols every 4h
+        if await self._wait_or_stop(120):
+            return
+        while not self._stop_event.is_set():
+            try:
+                from src.data.market_data import backfill
+                symbols = self._get_symbols()
+                results = await backfill(self._pool, symbols, years=1)
+                total = sum(results.values())
+                if total:
+                    logger.info("daily_bar_backfill_complete", symbols=len(symbols), bars=total)
+            except Exception as exc:
+                logger.error("daily_bar_backfill_error", exc_info=True)
+                notify_system_error(str(exc), "daily_bar_backfill")
+
+            if await self._wait_or_stop(DAILY_BAR_INTERVAL):
+                break
+
+    async def _price_refresh_loop(self) -> None:
+        # / refresh current prices via yfinance during market hours
+        if await self._wait_or_stop(60):
+            return
+        while not self._stop_event.is_set():
+            try:
+                if self._is_market_hours():
+                    from src.data.market_data import fetch_latest_prices
+                    symbols = self._get_symbols()
+                    prices = await fetch_latest_prices(symbols)
+                    if prices:
+                        # / store latest prices as intraday bar snapshots
+                        from datetime import datetime, timezone
+                        now = datetime.now(timezone.utc)
+                        async with self._pool.acquire() as conn:
+                            for sym, price in prices.items():
+                                await conn.execute(
+                                    """INSERT INTO market_data_intraday
+                                    (symbol, timestamp, timeframe, open, high, low, close, volume)
+                                    VALUES ($1, $2, '1Hour', $3, $3, $3, $3, 0)
+                                    ON CONFLICT (symbol, timestamp, timeframe) DO UPDATE SET
+                                        close = EXCLUDED.close, high = GREATEST(market_data_intraday.high, EXCLUDED.high),
+                                        low = LEAST(market_data_intraday.low, EXCLUDED.low)""",
+                                    sym, now, price,
+                                )
+                        logger.info("price_refresh_complete", symbols=len(prices))
+                    else:
+                        logger.warning("price_refresh_empty")
+            except Exception as exc:
+                logger.warning("price_refresh_error", error=str(exc)[:100])
+                notify_system_error(f"price refresh failed: {str(exc)[:80]}", "price_refresh")
+
+            if await self._wait_or_stop(PRICE_REFRESH_INTERVAL):
+                break
+
     async def _alpaca_sync_loop(self) -> None:
         # / periodically sync filled orders from alpaca into trade_log + reconcile positions
         while not self._stop_event.is_set():
@@ -514,21 +573,29 @@ class AgentOrchestrator:
                 alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
 
                 drift_found = False
+                current_drift: dict[str, float] = {}
 
                 # / check each alpaca position against tracked
                 for symbol, alpaca_qty in alpaca_map.items():
                     tracked_qty = tracked.pop(symbol, 0)
                     if abs(tracked_qty - alpaca_qty) > 0.0001:
+                        current_drift[symbol] = alpaca_qty
                         logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
-                        notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
+                        # / only alert on new drift, not every cycle
+                        if symbol not in self._last_drift:
+                            notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
                         drift_found = True
 
                 # / check tracked symbols no longer in alpaca (sold externally)
                 for symbol, tracked_qty in tracked.items():
                     if tracked_qty > 0.0001:
+                        current_drift[symbol] = 0
                         logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=0)
-                        notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
+                        if symbol not in self._last_drift:
+                            notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
                         drift_found = True
+
+                self._last_drift = current_drift
 
                 # / auto-fix: update drifted positions without destroying attribution
                 if drift_found:

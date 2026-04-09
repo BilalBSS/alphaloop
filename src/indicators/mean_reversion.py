@@ -12,14 +12,14 @@ def hurst_exponent(prices: pd.Series, max_lag: int = 20) -> float:
     if len(prices) < max_lag * 2:
         return 0.5
 
-    log_prices = np.log(prices.values)
+    log_returns = np.diff(np.log(prices.values))
     lags = range(2, max_lag + 1)
     rs_values = []
 
     for lag in lags:
         rs_lag = []
-        for start in range(0, len(log_prices) - lag, lag):
-            chunk = log_prices[start:start + lag]
+        for start in range(0, len(log_returns) - lag, lag):
+            chunk = log_returns[start:start + lag]
             mean = chunk.mean()
             deviate = chunk - mean
             cumdev = np.cumsum(deviate)

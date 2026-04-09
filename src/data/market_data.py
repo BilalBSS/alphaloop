@@ -414,6 +414,32 @@ async def backfill(
     return results
 
 
+async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
+    # / batch fetch current prices via yfinance fast_info
+    import asyncio
+    prices: dict[str, float] = {}
+
+    def _fetch_batch():
+        import yfinance as yf
+        result = {}
+        for sym in symbols:
+            try:
+                yf_sym = sym.replace("-", "") if sym.endswith("-USD") else sym
+                info = yf.Ticker(yf_sym).fast_info
+                price = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
+                if price and price > 0:
+                    result[sym] = float(price)
+            except Exception:
+                pass
+        return result
+
+    try:
+        prices = await asyncio.to_thread(_fetch_batch)
+    except Exception:
+        pass
+    return prices
+
+
 def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any]:
     # / normalize alpaca bar response to our format
     timestamp = bar.get("t", "")

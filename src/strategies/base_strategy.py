@@ -200,7 +200,7 @@ class ConfigDrivenStrategy(StrategyInterface):
             and getattr(analysis, "regime", None) == "bear"
             and self._bear_market_overrides
         ):
-            override_ff = self._bear_market_overrides.get("fundamental_filters", {})
+            override_ff = self._bear_market_overrides.get("fundamental_filters") or {}
             for key, value in override_ff.items():
                 if value is not None:
                     filters[key] = value
@@ -795,7 +795,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         elif stop_type == "atr_trailing":
             from src.indicators.volatility import atr as atr_fn
-            period = stop_config.get("period", 14)
+            period = int(stop_config.get("period", 14))
             multiplier = stop_config.get("multiplier", 2.0)
             high = market_data["high"]
             low = market_data["low"]
@@ -831,7 +831,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         if indicator == "bollinger_bands":
             from src.indicators.volatility import bollinger_bands
-            period = tp_config.get("lookback", tp_config.get("period", 20))
+            period = int(tp_config.get("lookback", tp_config.get("period", 20)))
             std = tp_config.get("std_dev", 2.0)
             bb = bollinger_bands(close, period=period, std_dev=std)
             if condition == "price_above_middle":
