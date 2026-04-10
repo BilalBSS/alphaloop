@@ -65,10 +65,19 @@ function ScoreOverview({ score }) {
           <div className="grid grid-cols-4 gap-1 text-[11px]">
             {components.map(c => {
               const raw = details[c.key]
+              // / insider uses signed_strength so bearish selling shows as negative (bug b)
+              const signed = c.key === 'insider_score_100' ? details.insider_signed_strength : null
+              const display = signed != null ? parseFloat(signed) : (raw != null ? parseFloat(raw) : null)
+              const color = signed != null
+                ? (signed > 0 ? 'text-profit' : signed < 0 ? 'text-loss' : 'text-text-secondary')
+                : ''
+              const prefix = signed != null && signed > 0 ? '+' : ''
               return (
                 <div key={c.key} className="text-center">
                   <div className="text-text-secondary">{c.label} ({c.weight}%)</div>
-                  <div className="font-mono">{raw != null ? parseFloat(raw).toFixed(1) : '--'}</div>
+                  <div className={`font-mono ${color}`}>
+                    {display != null ? `${prefix}${display.toFixed(1)}` : '--'}
+                  </div>
                 </div>
               )
             })}
@@ -374,24 +383,35 @@ function InsiderPanel({ insiderTrades, score, symbol }) {
   const sells = trades.filter(t => t.transaction_type === 'sell')
   const buyTotal = buys.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
   const sellTotal = sells.reduce((s, t) => s + parseFloat(t.total_value || 0), 0)
-  const netBuy = buyTotal > sellTotal
+  // / prefer backend signed_strength over client-side derivation for single source of truth (bug b)
+  const signedStrength = details.insider_signed_strength
+  // / three-state: bullish / neutral / bearish (neutral when signed_strength is exactly 0)
+  const insiderState = signedStrength != null
+    ? (signedStrength > 0 ? 'bullish' : signedStrength < 0 ? 'bearish' : 'neutral')
+    : (buyTotal > sellTotal ? 'bullish' : buyTotal < sellTotal ? 'bearish' : 'neutral')
+  const netBuy = insiderState === 'bullish'
+  const isNeutral = insiderState === 'neutral'
   const insiderStrength = details.insider_score_100
 
   return (
     <div className="space-y-2">
       {/* aggregate summary */}
-      <div className={`text-xs font-semibold px-2 py-1 border-l-2 ${netBuy ? 'border-l-profit text-profit' : 'border-l-loss text-loss'}`}>
+      <div className={`text-xs font-semibold px-2 py-1 border-l-2 ${isNeutral ? 'border-l-text-secondary text-text-secondary' : netBuy ? 'border-l-profit text-profit' : 'border-l-loss text-loss'}`}>
         {buys.length} buys ({fmtVal(buyTotal)}) / {sells.length} sells ({fmtVal(sellTotal)})
       </div>
       {insiderStrength != null && (
         <div className="px-2">
           <div className="flex items-center gap-2 text-[10px] text-text-secondary">
-            <span className={netBuy ? 'text-profit' : 'text-loss'}>{netBuy ? 'Bullish' : 'Bearish'}</span>
+            <span className={isNeutral ? 'text-text-secondary' : netBuy ? 'text-profit' : 'text-loss'}>
+              {isNeutral ? 'Neutral' : netBuy ? 'Bullish' : 'Bearish'}
+            </span>
             <div className="flex-1 h-1.5 bg-bg-primary rounded overflow-hidden">
-              <div className={`h-full ${netBuy ? 'bg-profit' : 'bg-loss'}`}
+              <div className={`h-full ${isNeutral ? 'bg-text-secondary' : netBuy ? 'bg-profit' : 'bg-loss'}`}
                 style={{ width: `${Math.min(100, parseFloat(insiderStrength))}%` }} />
             </div>
-            <span className={`font-mono ${netBuy ? 'text-profit' : 'text-loss'}`}>{netBuy ? '+' : '-'}{parseFloat(insiderStrength).toFixed(0)}</span>
+            <span className={`font-mono ${isNeutral ? 'text-text-secondary' : netBuy ? 'text-profit' : 'text-loss'}`}>
+              {isNeutral ? '' : netBuy ? '+' : '-'}{parseFloat(insiderStrength).toFixed(0)}
+            </span>
           </div>
         </div>
       )}

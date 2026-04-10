@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -183,11 +184,13 @@ class StrategyAgent:
         # / fetch analysis data
         analysis_row = await tools.fetch_analysis_score(pool, symbol)
         analysis_data = None
+        raw_details: dict | None = None  # / telemetry: keep raw dict for per-llm signals dict_to_analysis_data drops (bug f)
         if analysis_row and analysis_row.get("details"):
             details = analysis_row["details"]
             if isinstance(details, str):
                 import json
                 details = json.loads(details)
+            raw_details = details if isinstance(details, dict) else None
             analysis_data = tools.dict_to_analysis_data(details)
 
         # / fetch intraday df once for multi-timeframe eval + confirmation gate
@@ -244,6 +247,11 @@ class StrategyAgent:
         regime = analysis_data.regime if analysis_data else None
         bypass_consensus = strategy.get_effective_bypass_consensus(regime)
         consensus = analysis_data.ai_consensus if analysis_data else None
+        # / telemetry state captured pre-softening (bug f)
+        _pre_filter_strength = entry_signal.strength
+        _signal_kept = True
+        _reason_code = "passthrough"
+        _blocked_return = False
         if consensus == "bearish" and not bypass_consensus:
             if symbol_trend == "up":
                 # / stock bucking the bearish market, allow through with penalty
@@ -254,6 +262,7 @@ class StrategyAgent:
                         "ai_consensus: bearish, but symbol uptrend, halved",
                     ],
                 )
+                _reason_code = "kept_bearish_uptrend_softened"
                 logger.debug(
                     "signal_softened_bearish_uptrend",
                     symbol=symbol, symbol_trend=symbol_trend,
@@ -261,25 +270,64 @@ class StrategyAgent:
                 )
             else:
                 # / symbol_trend is down or unknown, block as before
+                _signal_kept = False
+                _reason_code = "rejected_bearish_consensus"
+                _blocked_return = True
                 logger.debug(
                     "signal_blocked_ai_bearish",
                     symbol=symbol, symbol_trend=symbol_trend,
                 )
-                if stats is not None:
-                    stats["blocked_consensus"] += 1
-                    stats["near_misses"].append({
-                        "symbol": symbol,
-                        "raw_strength": entry_signal.strength,
-                        "block_reason": f"bearish consensus (trend={symbol_trend})",
-                        "symbol_trend": symbol_trend,
-                    })
-                return None
-        if consensus == "disagree" and not bypass_consensus:
+        elif consensus == "bearish" and bypass_consensus:
+            _reason_code = "kept_bearish_consensus_bypass"
+        elif consensus == "disagree" and not bypass_consensus:
             entry_signal = EntrySignal(
                 should_enter=True,
                 strength=entry_signal.strength * 0.7,
                 reasons=entry_signal.reasons + ["ai_consensus: disagree, reduced 0.7x"],
             )
+            _reason_code = "kept_disagree_softened"
+        elif consensus == "disagree" and bypass_consensus:
+            _reason_code = "kept_disagree_consensus_bypass"
+        elif consensus == "bullish":
+            _reason_code = "kept_bullish_consensus"
+        elif consensus == "neutral":
+            _reason_code = "kept_neutral_consensus"
+        # / else: consensus None or unknown -> reason stays "passthrough"
+
+        # / telemetry log (bug f): per-evaluation consensus state for observability
+        logger.info(
+            "consensus_filter_decision",
+            strategy_id=strategy.strategy_id,
+            symbol=symbol,
+            decision_time=datetime.now(timezone.utc).isoformat(),
+            groq_consensus=raw_details.get("llm_signal_groq") if raw_details else None,
+            deepseek_consensus=raw_details.get("llm_signal_deepseek") if raw_details else None,
+            combined_consensus=consensus,
+            raw_signal_strength=_pre_filter_strength,
+            signal_kept=_signal_kept,
+            reason_code=_reason_code,
+            symbol_trend=symbol_trend,
+            bypass_consensus=bypass_consensus,
+            regime=regime,
+        )
+
+        if _blocked_return:
+            if stats is not None:
+                stats["blocked_consensus"] += 1
+                stats["near_misses"].append({
+                    "symbol": symbol,
+                    "raw_strength": _pre_filter_strength,
+                    "block_reason": f"bearish consensus (trend={symbol_trend})",
+                    "symbol_trend": symbol_trend,
+                    "consensus_debug": {
+                        "groq_consensus": raw_details.get("llm_signal_groq") if raw_details else None,
+                        "deepseek_consensus": raw_details.get("llm_signal_deepseek") if raw_details else None,
+                        "combined_consensus": consensus,
+                        "raw_signal_strength": _pre_filter_strength,
+                        "reason_code": _reason_code,
+                    },
+                })
+            return None
 
         # / smooth with particle filter
         threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
