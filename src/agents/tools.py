@@ -238,6 +238,27 @@ async def close_strategy_position(
     return entry_price
 
 
+async def fetch_most_recent_open_entry(pool, symbol: str) -> dict | None:
+    # / bug e fallback: find most recent buy in trade_log for symbol
+    # / used when close_strategy_position returns none or strategy_id is missing
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT price, qty, strategy_id, created_at
+            FROM trade_log
+            WHERE symbol = $1 AND side = 'buy'
+            ORDER BY created_at DESC LIMIT 1""",
+            symbol,
+        )
+    if not row:
+        return None
+    return {
+        "entry_price": float(row["price"]) if row["price"] else None,
+        "qty": float(row["qty"]) if row["qty"] else 0.0,
+        "strategy_id": row["strategy_id"],
+        "created_at": row["created_at"],
+    }
+
+
 async def get_strategy_positions(
     pool, strategy_id: str | None = None, symbol: str | None = None,
 ) -> list[dict]:
@@ -268,16 +289,20 @@ async def get_strategy_positions(
             for r in rows]
 
 
-async def reconcile_strategy_positions(pool, alpaca_map: dict[str, float]) -> None:
+async def reconcile_strategy_positions(
+    pool, alpaca_map: dict[str, float], full_sync: bool = False,
+) -> None:
     # / smart reconciliation: update quantities without destroying strategy attribution
     # / alpaca_map: {symbol: qty} from broker.get_positions()
+    # / full_sync=True: bypass empty-alpaca guard (caller confirmed empty is real, not api glitch)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, strategy_id, symbol, qty FROM strategy_positions",
         )
 
         # / guard: if alpaca returns empty but we have positions, skip (api glitch)
-        if not alpaca_map and rows:
+        # / bug c: full_sync bypasses this so manual liquidation reconciles cleanly
+        if not alpaca_map and rows and not full_sync:
             logger.warning("reconcile_skipped_empty_alpaca", tracked=len(rows))
             return
 
@@ -393,8 +418,9 @@ async def sync_trades_from_alpaca(pool) -> int:
         logger.warning("alpaca_sync_fetch_failed", error=str(exc))
         return 0
 
-    # / batch lookup existing order_ids to avoid N+1 selects
+    # / batch lookup + inserts in a single connection to close the toctou race
     order_ids = [o["id"] for o in orders]
+    synced = 0
     async with pool.acquire() as conn:
         existing = await conn.fetch(
             "SELECT order_id FROM trade_log WHERE order_id = ANY($1)",
@@ -402,8 +428,6 @@ async def sync_trades_from_alpaca(pool) -> int:
         )
         existing_set = {r["order_id"] for r in existing}
 
-    synced = 0
-    async with pool.acquire() as conn:
         for o in orders:
             order_id = o["id"]
             if order_id in existing_set:
@@ -415,19 +439,62 @@ async def sync_trades_from_alpaca(pool) -> int:
             filled_at = o.get("filled_at")
             if qty <= 0 or price <= 0:
                 continue
+            # / bug e: compute pnl for sells from the most recent buy BEFORE this sell
+            # / critical: alpaca returns orders desc, so a later-sync buy could have later created_at
+            # / arithmetic in Decimal avoids float rounding before cast
+            pnl: Decimal | None = None
+            if side == "sell":
+                prior_buy = await conn.fetchrow(
+                    """SELECT price FROM trade_log
+                    WHERE symbol = $1 AND side = 'buy' AND created_at < $2::timestamptz
+                    ORDER BY created_at DESC LIMIT 1""",
+                    symbol, filled_at,
+                )
+                if prior_buy and prior_buy["price"]:
+                    pnl = (Decimal(str(price)) - prior_buy["price"]) * Decimal(str(qty))
             await conn.execute(
                 """INSERT INTO trade_log
                 (trade_id, symbol, side, qty, price, order_id, broker, regime, pnl, strategy_id, details, created_at)
-                VALUES (NULL, $1, $2, $3, $4, $5, 'AlpacaBroker', NULL, NULL, NULL,
-                        $6, $7::timestamptz)""",
+                VALUES (NULL, $1, $2, $3, $4, $5, 'AlpacaBroker', NULL, $6, NULL,
+                        $7, $8::timestamptz)""",
                 symbol, side, Decimal(str(qty)), Decimal(str(price)),
-                order_id, {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
+                order_id, pnl,
+                {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
             synced += 1
     if synced:
         logger.info("alpaca_sync_complete", synced=synced, total_orders=len(orders))
     return synced
+
+
+async def backfill_trade_pnl(pool) -> int:
+    # / bug e backfill: compute pnl for historical sell rows in trade_log where pnl is null
+    # / one-shot and idempotent: only updates null rows, safe to re-run
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, symbol, qty, price, created_at FROM trade_log
+            WHERE side = 'sell' AND pnl IS NULL
+            ORDER BY created_at ASC""",
+        )
+        updated = 0
+        for r in rows:
+            prior = await conn.fetchrow(
+                """SELECT price FROM trade_log
+                WHERE symbol = $1 AND side = 'buy' AND created_at < $2
+                ORDER BY created_at DESC LIMIT 1""",
+                r["symbol"], r["created_at"],
+            )
+            if prior and prior["price"]:
+                pnl = (float(r["price"]) - float(prior["price"])) * float(r["qty"])
+                await conn.execute(
+                    "UPDATE trade_log SET pnl = $1 WHERE id = $2",
+                    Decimal(str(pnl)), r["id"],
+                )
+                updated += 1
+    if updated:
+        logger.info("trade_pnl_backfilled", updated=updated)
+    return updated
 
 
 async def store_strategy_score(

@@ -84,11 +84,20 @@ class ExecutorAgent:
                 await tools.open_strategy_position(
                     pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
                 )
-            elif side == "sell" and strategy_id:
-                entry_price = await tools.close_strategy_position(
-                    pool, strategy_id, symbol, order.filled_qty,
-                )
-                if entry_price and order.filled_price:
+            elif side == "sell":
+                # / bug e: try strategy close first, fall back to most recent buy lookup
+                entry_price = None
+                if strategy_id:
+                    entry_price = await tools.close_strategy_position(
+                        pool, strategy_id, symbol, order.filled_qty,
+                    )
+                if entry_price is None:
+                    fallback = await tools.fetch_most_recent_open_entry(pool, symbol)
+                    if fallback and fallback.get("entry_price") is not None:
+                        entry_price = fallback["entry_price"]
+                    else:
+                        logger.warning("sell_without_entry_history", symbol=symbol, qty=order.filled_qty)
+                if entry_price is not None and order.filled_price:
                     pnl = (order.filled_price - entry_price) * order.filled_qty
 
             log_id = await tools.store_trade_log(
@@ -159,11 +168,20 @@ class ExecutorAgent:
                     await tools.open_strategy_position(
                         pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
                     )
-                elif side == "sell" and strategy_id:
-                    entry_price = await tools.close_strategy_position(
-                        pool, strategy_id, symbol, order.filled_qty,
-                    )
-                    if entry_price and order.filled_price:
+                elif side == "sell":
+                    # / bug e: try strategy close first, fall back to most recent buy lookup
+                    entry_price = None
+                    if strategy_id:
+                        entry_price = await tools.close_strategy_position(
+                            pool, strategy_id, symbol, order.filled_qty,
+                        )
+                    if entry_price is None:
+                        fallback = await tools.fetch_most_recent_open_entry(pool, symbol)
+                        if fallback and fallback.get("entry_price") is not None:
+                            entry_price = fallback["entry_price"]
+                        else:
+                            logger.warning("sell_without_entry_history", symbol=symbol, qty=order.filled_qty)
+                    if entry_price is not None and order.filled_price:
                         pnl = (order.filled_price - entry_price) * order.filled_qty
 
                 log_id = await tools.store_trade_log(

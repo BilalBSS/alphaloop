@@ -93,6 +93,10 @@ class AgentOrchestrator:
             pos_synced = await tools.sync_strategy_positions_from_alpaca(self._pool)
             if pos_synced:
                 logger.info("startup_position_sync", positions_synced=pos_synced)
+            # / bug e one-shot: backfill historical trade_log pnl for sells with null pnl
+            backfilled = await tools.backfill_trade_pnl(self._pool)
+            if backfilled:
+                logger.info("startup_pnl_backfill", updated=backfilled)
         except Exception:
             logger.debug("startup_sync_failed", exc_info=True)
 
@@ -599,7 +603,8 @@ class AgentOrchestrator:
 
                 # / auto-fix: update drifted positions without destroying attribution
                 if drift_found:
-                    await tools.reconcile_strategy_positions(self._pool, alpaca_map)
+                    # / bug c: full_sync=true bypasses empty-alpaca guard after confirmed drift
+                    await tools.reconcile_strategy_positions(self._pool, alpaca_map, full_sync=True)
                     logger.info("position_reconciliation_auto_fixed")
                 else:
                     logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
@@ -795,55 +800,8 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "strategy_metrics_loop")
 
     async def _compute_strategy_metrics(self) -> None:
-        # / query trade_log for per-strategy metrics, write to strategy_scores
-        from datetime import date as dt_date
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT strategy_id,
-                    COUNT(*) as trade_count,
-                    COUNT(*) FILTER (WHERE pnl > 0) as win_count,
-                    COALESCE(SUM(pnl), 0) as total_pnl,
-                    COALESCE(AVG(pnl), 0) as avg_pnl,
-                    MIN(created_at)::date as first_trade,
-                    MAX(created_at)::date as last_trade
-                FROM trade_log
-                WHERE strategy_id IS NOT NULL AND pnl IS NOT NULL
-                GROUP BY strategy_id
-                HAVING COUNT(*) >= 1""",
-            )
-
-        if not rows:
-            logger.debug("strategy_metrics_no_data")
-            return
-
-        updated = 0
-        async with self._pool.acquire() as conn:
-            for row in rows:
-                strategy_id = row["strategy_id"]
-                trade_count = int(row["trade_count"])
-                win_count = int(row["win_count"])
-                total_pnl = float(row["total_pnl"])
-                win_rate = win_count / trade_count if trade_count > 0 else 0.0
-                period_start = row["first_trade"] or dt_date.today()
-                period_end = row["last_trade"] or dt_date.today()
-
-                try:
-                    # / upsert live metrics — avoids unbounded row growth
-                    await conn.execute(
-                        """INSERT INTO strategy_scores
-                        (strategy_id, period_start, period_end, win_rate, total_trades,
-                         regime_breakdown)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (strategy_id, period_start, period_end)
-                        DO UPDATE SET win_rate = EXCLUDED.win_rate,
-                            total_trades = EXCLUDED.total_trades,
-                            regime_breakdown = EXCLUDED.regime_breakdown""",
-                        strategy_id, period_start, period_end,
-                        Decimal(str(win_rate)), trade_count,
-                        json.dumps({"total_pnl": total_pnl, "source": "live_metrics"}),
-                    )
-                    updated += 1
-                except Exception as exc:
-                    logger.warning("strategy_metrics_store_failed", strategy_id=strategy_id, error=str(exc))
-
-        logger.info("strategy_metrics_computed", strategies=updated, total_rows=len(rows))
+        # / bug a: delegate to richer live_strategy_metrics module
+        # / writes rolling sharpe/sortino/maxdd/win rate/composite per strategy × window
+        from src.analysis.live_strategy_metrics import compute_live_strategy_metrics
+        updated = await compute_live_strategy_metrics(self._pool)
+        logger.info("strategy_metrics_computed", strategies=updated)

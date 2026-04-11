@@ -53,6 +53,7 @@ class InsiderSignal:
     unique_sellers: int
     details: dict[str, Any] = field(default_factory=dict)
     top_trades: list[dict[str, Any]] = field(default_factory=list)  # / top trades by value for llm context
+    signed_strength: float = 0.0  # / bullish=+strength, bearish=-strength, neutral=0 (bug b)
 
 
 def _title_weight(title: str) -> float:
@@ -101,6 +102,7 @@ def compute_insider_signal(
             date=date.today(),
             signal="neutral",
             strength=0.0,
+            signed_strength=0.0,
             net_buy_ratio=0.0,
             total_buys=0,
             total_sells=0,
@@ -166,6 +168,9 @@ def compute_insider_signal(
 
     strength = min(100.0, round(strength, 1))
 
+    # / signed strength: +strength bullish, -strength bearish, 0 neutral (bug b)
+    signed_strength = strength if net_buy_ratio > 0 else (-strength if net_buy_ratio < 0 else 0.0)
+
     # / determine direction
     if net_buy_ratio > 0.2:
         signal = "bullish"
@@ -193,6 +198,7 @@ def compute_insider_signal(
         date=date.today(),
         signal=signal,
         strength=strength,
+        signed_strength=signed_strength,
         net_buy_ratio=round(net_buy_ratio, 4),
         total_buys=len(buys),
         total_sells=len(sells),

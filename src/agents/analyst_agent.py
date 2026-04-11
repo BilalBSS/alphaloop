@@ -612,6 +612,7 @@ class AnalystAgent:
             details["earnings_score_100"] = earnings_signal.strength
         if insider_signal and insider_signal.strength is not None:
             details["insider_score_100"] = insider_signal.strength
+            details["insider_signed_strength"] = insider_signal.signed_strength
         # / add dual-llm fields
         details["ai_consensus"] = dual.consensus
         details["ai_consensus_confidence"] = dual.consensus_confidence if hasattr(dual, 'consensus_confidence') else 0.0
