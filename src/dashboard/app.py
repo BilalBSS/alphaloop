@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import asyncpg
@@ -14,8 +15,10 @@ import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.dashboard import chart_state as chart_state_mod
 from src.dashboard import indicator_registry
 from src.data.db import close_db, init_db
 
@@ -637,9 +640,57 @@ async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
     return _serialize(rows)
 
 
+# / ttl cache for /api/intraday — keyed on (symbol, timeframe, days, sorted indicator ids)
+# / 30s ttl: intraday bars refresh every 5min via orchestrator price_refresh, so short ttl keeps data fresh
+# / max 256 entries caps memory; eviction drops oldest expires_at when full
+_INTRADAY_CACHE: dict[tuple, tuple[float, object]] = {}
+_INTRADAY_CACHE_MAX = 256
+_INTRADAY_CACHE_TTL = 30.0
+
+
+def _intraday_cache_key(symbol: str, timeframe: str, days: int, ids: tuple[str, ...]) -> tuple:
+    return (symbol, timeframe, days, ids)
+
+
+def _intraday_cache_get(key: tuple) -> object | None:
+    entry = _INTRADAY_CACHE.get(key)
+    if entry is None:
+        return None
+    expires_at, payload = entry
+    if time.monotonic() >= expires_at:
+        _INTRADAY_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _intraday_cache_put(key: tuple, payload: object) -> None:
+    if len(_INTRADAY_CACHE) >= _INTRADAY_CACHE_MAX:
+        # / drop the entry closest to expiry (or already expired) to cap memory
+        oldest_key = min(_INTRADAY_CACHE, key=lambda k: _INTRADAY_CACHE[k][0])
+        _INTRADAY_CACHE.pop(oldest_key, None)
+    _INTRADAY_CACHE[key] = (time.monotonic() + _INTRADAY_CACHE_TTL, payload)
+
+
+def _intraday_cache_clear() -> None:
+    # / test helper
+    _INTRADAY_CACHE.clear()
+
+
 @app.get("/api/intraday/{symbol}")
 async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
     days = max(1, min(days, 60))
+
+    # / parse requested ids up front so cache key includes them
+    ids_sorted: tuple[str, ...] = tuple(sorted(i.strip() for i in indicators.split(",") if i.strip()))
+    cache_key = _intraday_cache_key(symbol, timeframe, days, ids_sorted)
+    cached = _intraday_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # / skip caching entirely when the db is unreachable so an empty response does not
+    # / mask real data for 30s once the pool comes back
+    pool_ready = _pool is not None
+
     rows = await _query(
         """SELECT timestamp, open, high, low, close, volume, vwap
         FROM market_data_intraday
@@ -649,18 +700,21 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", in
         symbol, timeframe, str(days),
     )
     # / empty indicators -> keep legacy shape for backwards compat
-    if not indicators.strip():
-        return _serialize(rows)
-
-    # / parse requested ids, drop empties
-    ids = [i.strip() for i in indicators.split(",") if i.strip()]
+    if not ids_sorted:
+        payload = _serialize(rows)
+        if pool_ready and rows:
+            _intraday_cache_put(cache_key, payload)
+        return payload
 
     if not rows:
-        return {
+        payload = {
             "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
             "indicators": {},
             "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": 0},
         }
+        if pool_ready:
+            _intraday_cache_put(cache_key, payload)
+        return payload
 
     # / build compact ohlcv arrays and a dataframe for indicator compute
     import pandas as pd  # / local import to avoid touching top-level imports
@@ -690,12 +744,12 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", in
 
     # / dispatch each requested indicator, skip unknowns/failures silently
     computed: dict = {}
-    for ind_id in ids:
+    for ind_id in ids_sorted:
         result = indicator_registry.compute(df, ind_id)
         if result is not None:
             computed[ind_id] = result
 
-    return {
+    payload = {
         "bars": {
             "t": t_list,
             "o": o_list,
@@ -707,6 +761,47 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", in
         "indicators": computed,
         "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": len(rows)},
     }
+    if pool_ready:
+        _intraday_cache_put(cache_key, payload)
+    return payload
+
+
+# / db schema limits symbol to VARCHAR(20) — reject longer input at the edge so the backend
+# / never silently truncates a write (user_chart_state upsert would surface as default-state)
+_CHART_STATE_SYMBOL_MAX = 20
+
+
+@app.get("/api/chart-state/{symbol}")
+async def get_chart_state_endpoint(symbol: str):
+    # / per-symbol persisted chart state (timeframe + active indicators + params)
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"symbol": symbol, "timeframe": "1Hour", "active_indicators": [], "indicator_params": {}}
+    return await chart_state_mod.get_chart_state(_pool, symbol)
+
+
+@app.post("/api/chart-state/{symbol}")
+async def upsert_chart_state_endpoint(symbol: str, body: dict):
+    # / upsert chart state for a symbol — only provided fields are updated
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"error": "db_not_ready"}
+    # / sanitize indicators against registry to prevent garbage ids
+    ids = body.get("active_indicators")
+    if ids is not None:
+        ids = chart_state_mod.sanitize_indicators(ids)
+    params = body.get("indicator_params")
+    if params is not None and not isinstance(params, dict):
+        params = None
+    return await chart_state_mod.upsert_chart_state(
+        _pool,
+        symbol,
+        timeframe=body.get("timeframe"),
+        active_indicators=ids,
+        indicator_params=params,
+    )
 
 
 @app.get("/api/ict-indicators/{symbol}")

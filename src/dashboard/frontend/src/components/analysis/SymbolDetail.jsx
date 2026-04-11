@@ -4,6 +4,11 @@ import { useApi } from '../../hooks/useApi'
 import Panel from '../Panel'
 import { SkeletonChart } from '../Skeleton'
 import { fmtLargeNum, fmtCount, fmtVal, scoreColor, consensusBadge, regimeBadge } from './formatters'
+import LWChart from '../chart/LWChart'
+import IndicatorPicker from '../chart/tools/IndicatorPicker'
+import ChartErrorBoundary from '../chart/ChartErrorBoundary'
+import { useChartState } from '../chart/useChartState'
+import { isLWCChartEnabled } from '../../utils/featureFlags'
 
 // / tooltip style shared across charts
 const TIP = { background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }
@@ -126,17 +131,29 @@ function TimeframeToggle({ tf, setTf }) {
 }
 
 // / price panel with daily/2h toggle
+// / on 2h + lwc chart path, uses useChartState to persist indicator picks per symbol
 function PricePanel({ symbol, priceHistory, tf, setTf }) {
+  const { state, toggleIndicator } = useChartState(symbol)
+  const showPicker = tf === '2h' && isLWCChartEnabled()
   return (
     <Panel title={
-      <div className="flex items-center gap-3">
-        <span>Price History</span>
-        <TimeframeToggle tf={tf} setTf={setTf} />
+      <div className="flex items-center gap-3 justify-between w-full">
+        <div className="flex items-center gap-3">
+          <span>Price History</span>
+          <TimeframeToggle tf={tf} setTf={setTf} />
+        </div>
+        {showPicker && (
+          <IndicatorPicker selected={state.active_indicators} onToggle={toggleIndicator} />
+        )}
       </div>
     }>
       {tf === 'daily'
         ? <PriceChart priceHistory={priceHistory} />
-        : <IntradayChart symbol={symbol} />}
+        : (isLWCChartEnabled()
+            ? <ChartErrorBoundary fallback={() => <IntradayChart symbol={symbol} />}>
+                <LWChart symbol={symbol} indicators={state.active_indicators} />
+              </ChartErrorBoundary>
+            : <IntradayChart symbol={symbol} />)}
     </Panel>
   )
 }
