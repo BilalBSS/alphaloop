@@ -157,6 +157,16 @@ def sr_zones(
     return zones
 
 
+def fib_auto(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    lookback: int = 100,
+) -> FibonacciLevels:
+    # / auto-anchor fibonacci: picks swing high/low over lookback, direction from trend
+    # / wraps existing fibonacci_retracement — chooses lookback based on available data
+    effective = min(lookback, len(close))
+    return fibonacci_retracement(high, low, effective)
+
+
 def sr_zones_series(
     close: pd.Series, high: pd.Series, low: pd.Series,
     num_zones: int = 5, tolerance_pct: float = 0.02,

@@ -16,6 +16,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from src.dashboard import indicator_registry
 from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -637,7 +638,7 @@ async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
 
 
 @app.get("/api/intraday/{symbol}")
-async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour"):
+async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
     days = max(1, min(days, 60))
     rows = await _query(
         """SELECT timestamp, open, high, low, close, volume, vwap
@@ -647,7 +648,65 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour"):
         ORDER BY timestamp ASC""",
         symbol, timeframe, str(days),
     )
-    return _serialize(rows)
+    # / empty indicators -> keep legacy shape for backwards compat
+    if not indicators.strip():
+        return _serialize(rows)
+
+    # / parse requested ids, drop empties
+    ids = [i.strip() for i in indicators.split(",") if i.strip()]
+
+    if not rows:
+        return {
+            "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
+            "indicators": {},
+            "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": 0},
+        }
+
+    # / build compact ohlcv arrays and a dataframe for indicator compute
+    import pandas as pd  # / local import to avoid touching top-level imports
+
+    t_list: list[str] = []
+    o_list: list[float] = []
+    h_list: list[float] = []
+    l_list: list[float] = []
+    c_list: list[float] = []
+    v_list: list[float] = []
+    for r in rows:
+        ts = r.get("timestamp")
+        t_list.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        o_list.append(float(r["open"]) if r.get("open") is not None else float("nan"))
+        h_list.append(float(r["high"]) if r.get("high") is not None else float("nan"))
+        l_list.append(float(r["low"]) if r.get("low") is not None else float("nan"))
+        c_list.append(float(r["close"]) if r.get("close") is not None else float("nan"))
+        v_list.append(float(r["volume"]) if r.get("volume") is not None else 0.0)
+
+    df = pd.DataFrame({
+        "open": o_list,
+        "high": h_list,
+        "low": l_list,
+        "close": c_list,
+        "volume": v_list,
+    })
+
+    # / dispatch each requested indicator, skip unknowns/failures silently
+    computed: dict = {}
+    for ind_id in ids:
+        result = indicator_registry.compute(df, ind_id)
+        if result is not None:
+            computed[ind_id] = result
+
+    return {
+        "bars": {
+            "t": t_list,
+            "o": o_list,
+            "h": h_list,
+            "l": l_list,
+            "c": c_list,
+            "v": v_list,
+        },
+        "indicators": computed,
+        "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": len(rows)},
+    }
 
 
 @app.get("/api/ict-indicators/{symbol}")
