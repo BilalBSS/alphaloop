@@ -1,17 +1,16 @@
 import { useState, useMemo } from 'react'
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { useApi } from '../../hooks/useApi'
 import Panel from '../Panel'
 import { SkeletonChart } from '../Skeleton'
 import { fmtLargeNum, fmtCount, fmtVal, scoreColor, consensusBadge, regimeBadge } from './formatters'
-import LWChart from '../chart/LWChart'
+import LWChart, { DEFAULT_MARKER_KINDS } from '../chart/LWChart'
+import TimeSeriesLineChart from '../chart/TimeSeriesLineChart'
+import NewsSentimentLWChart from '../chart/NewsSentimentLWChart'
 import IndicatorPicker from '../chart/tools/IndicatorPicker'
+import DrawingToolbar from '../chart/tools/DrawingToolbar'
 import ChartErrorBoundary from '../chart/ChartErrorBoundary'
 import { useChartState } from '../chart/useChartState'
-import { isLWCChartEnabled } from '../../utils/featureFlags'
-
-// / tooltip style shared across charts
-const TIP = { background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }
+import { ChartToolsProvider, useChartTools } from '../chart/useDrawings'
 
 // / score overview badges + composite breakdown
 function ScoreOverview({ score }) {
@@ -93,26 +92,21 @@ function ScoreOverview({ score }) {
   )
 }
 
-// / 60-day price chart
+// / 60-day price chart — lightweight-charts line series
 function PriceChart({ priceHistory }) {
   if (!priceHistory || priceHistory.length === 0) {
     return <div className="flex items-center justify-center h-48 text-text-muted text-sm">No price data</div>
   }
-  const data = priceHistory.slice().reverse().map(d => ({
-    date: d.date?.split('T')[0] || d.date,
-    close: parseFloat(d.close || 0),
-  }))
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={data}>
-        <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8888a0' }} interval="preserveStartEnd" />
-        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10, fill: '#8888a0' }} width={60}
-          tickFormatter={v => `$${v}`} />
-        <Tooltip contentStyle={TIP} labelStyle={{ color: '#8888a0' }}
-          formatter={v => [`$${v.toFixed(2)}`, 'Close']} />
-        <Line type="monotone" dataKey="close" stroke="#3b82f6" strokeWidth={2} dot={false} />
-      </LineChart>
-    </ResponsiveContainer>
+    <TimeSeriesLineChart
+      data={priceHistory}
+      timeKey="date"
+      valueKey="close"
+      color="#3b82f6"
+      height={220}
+      valueFmt={v => `$${v.toFixed(2)}`}
+      emptyText="No price data"
+    />
   )
 }
 
@@ -130,59 +124,54 @@ function TimeframeToggle({ tf, setTf }) {
   )
 }
 
-// / price panel with daily/2h toggle
-// / on 2h + lwc chart path, uses useChartState to persist indicator picks per symbol
-function PricePanel({ symbol, priceHistory, tf, setTf }) {
-  const { state, toggleIndicator } = useChartState(symbol)
-  const showPicker = tf === '2h' && isLWCChartEnabled()
+// / thin wrapper so DrawingToolbar can read ChartToolsContext inside the Panel header
+function DrawingToolbarBridge() {
+  const tools = useChartTools()
+  if (!tools) return null
   return (
-    <Panel title={
-      <div className="flex items-center gap-3 justify-between w-full">
-        <div className="flex items-center gap-3">
-          <span>Price History</span>
-          <TimeframeToggle tf={tf} setTf={setTf} />
-        </div>
-        {showPicker && (
-          <IndicatorPicker selected={state.active_indicators} onToggle={toggleIndicator} />
-        )}
-      </div>
-    }>
-      {tf === 'daily'
-        ? <PriceChart priceHistory={priceHistory} />
-        : (isLWCChartEnabled()
-            ? <ChartErrorBoundary fallback={() => <IntradayChart symbol={symbol} />}>
-                <LWChart symbol={symbol} indicators={state.active_indicators} />
-              </ChartErrorBoundary>
-            : <IntradayChart symbol={symbol} />)}
-    </Panel>
+    <DrawingToolbar
+      activeTool={tools.activeTool}
+      setTool={tools.setTool}
+      clear={tools.clear}
+      undo={tools.undo}
+    />
   )
 }
 
-
-// / 2h intraday price chart
-function IntradayChart({ symbol }) {
-  const { data, loading } = useApi(`/api/intraday/${symbol}?days=10&timeframe=1Hour`, 60000)
-
-  if (loading && !data) return <div className="flex items-center justify-center h-48 text-text-muted text-sm">Loading intraday...</div>
-  if (!data || data.length === 0) {
-    return <div className="flex items-center justify-center h-48 text-text-muted text-sm">No intraday data yet</div>
-  }
-  const chartData = data.map(d => ({
-    time: (d.timestamp || '').replace('T', ' ').slice(0, 16),
-    close: parseFloat(d.close || 0),
-    volume: parseInt(d.volume || 0),
-  }))
+// / price panel with daily/2h toggle
+// / 2h path uses lightweight-charts LWChart — recharts IntradayChart removed in step 12
+// / marker_kinds is read from indicator_params.marker_kinds with a sensible default set
+// / v1 scope: markers are always shown for the persisted kinds; explicit picker deferred to commit 3
+// / DEFAULT_MARKER_KINDS comes from LWChart so both sides stay in sync
+function PricePanel({ symbol, priceHistory, tf, setTf }) {
+  const { state, toggleIndicator } = useChartState(symbol)
+  const showPicker = tf === '2h'
+  const markerKinds = (state.indicator_params && Array.isArray(state.indicator_params.marker_kinds))
+    ? state.indicator_params.marker_kinds
+    : DEFAULT_MARKER_KINDS
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={chartData}>
-        <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
-        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10, fill: '#8888a0' }} width={60}
-          tickFormatter={v => `$${v}`} />
-        <Tooltip contentStyle={TIP} labelStyle={{ color: '#8888a0' }}
-          formatter={v => [`$${v.toFixed(2)}`, 'Close']} />
-        <Line type="monotone" dataKey="close" stroke="#f59e0b" strokeWidth={2} dot={false} />
-      </LineChart>
-    </ResponsiveContainer>
+    <ChartToolsProvider>
+      <Panel title={
+        <div className="flex items-center gap-3 justify-between w-full">
+          <div className="flex items-center gap-3">
+            <span>Price History</span>
+            <TimeframeToggle tf={tf} setTf={setTf} />
+          </div>
+          {showPicker && (
+            <div className="flex items-center gap-2">
+              <DrawingToolbarBridge />
+              <IndicatorPicker selected={state.active_indicators} onToggle={toggleIndicator} />
+            </div>
+          )}
+        </div>
+      }>
+        {tf === 'daily'
+          ? <PriceChart priceHistory={priceHistory} />
+          : <ChartErrorBoundary>
+              <LWChart symbol={symbol} indicators={state.active_indicators} markerKinds={markerKinds} />
+            </ChartErrorBoundary>}
+      </Panel>
+    </ChartToolsProvider>
   )
 }
 
@@ -486,13 +475,6 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
   const latestSocial = apewisdom || (socialSentiment && socialSentiment.length > 0 ? socialSentiment[0] : null)
   const details = (score?.details && typeof score.details === 'object') ? score.details : {}
 
-  const chartData = hasNews
-    ? sentiment.slice().reverse().map(s => ({
-        date: s.date?.split('T')[0] || s.date,
-        score: parseFloat(s.sentiment_score || 0),
-      }))
-    : []
-
   const bullPct = latestSocial ? parseFloat(latestSocial.bullish_pct || 0) : 0
   const bearPct = latestSocial ? parseFloat(latestSocial.bearish_pct || 0) : 0
   const mentions = latestSocial ? parseInt(latestSocial.volume || 0) : 0
@@ -585,18 +567,7 @@ function SentimentPanel({ sentiment, socialSentiment, isCrypto, score }) {
       {hasNews ? (
         <>
           <div className="text-[10px] uppercase text-text-muted px-1">News Sentiment</div>
-          <ResponsiveContainer width="100%" height={140}>
-            <BarChart data={chartData}>
-              <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
-              <YAxis domain={[-1, 1]} tick={{ fontSize: 9, fill: '#8888a0' }} width={30} />
-              <Tooltip contentStyle={TIP} formatter={v => [v.toFixed(3), 'Sentiment']} />
-              <Bar dataKey="score">
-                {chartData.map((d, i) => (
-                  <Cell key={i} fill={d.score >= 0 ? '#00dc82' : '#ff4757'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          <NewsSentimentLWChart data={sentiment} height={140} />
         </>
       ) : (
         <div className="text-text-muted text-sm py-2">No news sentiment data</div>

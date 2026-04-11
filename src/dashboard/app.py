@@ -19,7 +19,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.dashboard import chart_state as chart_state_mod
+from src.dashboard import drawings as drawings_mod
 from src.dashboard import indicator_registry
+from src.dashboard import marker_aggregator as marker_agg_mod
 from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -802,6 +804,78 @@ async def upsert_chart_state_endpoint(symbol: str, body: dict):
         active_indicators=ids,
         indicator_params=params,
     )
+
+
+@app.get("/api/markers/{symbol}")
+async def get_markers_endpoint(
+    symbol: str,
+    kinds: str = "trades,signals,insiders,earnings,regime,consensus",
+    days: int = 30,
+):
+    # / unified markers endpoint — returns a dict keyed by marker kind
+    # / kinds csv filters which aggregators run; absent kinds are omitted from the response
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"trades": [], "signals": [], "insiders": [], "earnings": [], "regime": [], "consensus": []}
+    days = max(1, min(days, 365))
+    requested = {k.strip() for k in kinds.split(",") if k.strip()}
+    if not requested:
+        return {}
+    return await marker_agg_mod.build_markers(_pool, symbol, requested, days)
+
+
+@app.get("/api/drawings/{symbol}")
+async def list_drawings_endpoint(symbol: str):
+    # / list all drawings for a symbol — empty list when db is down
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return []
+    return await drawings_mod.list_drawings(_pool, symbol)
+
+
+@app.post("/api/drawings/{symbol}")
+async def create_drawing_endpoint(symbol: str, body: dict):
+    # / create a drawing from a whitelisted type + opaque jsonb payload
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    dt = drawings_mod.sanitize_drawing_type(body.get("drawing_type", ""))
+    if dt is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_drawing_type"})
+    payload = body.get("payload")
+    if not drawings_mod.validate_payload(payload):
+        return JSONResponse(status_code=400, content={"error": "invalid_payload"})
+    return await drawings_mod.create_drawing(_pool, symbol, dt, payload)
+
+
+@app.put("/api/drawings/{symbol}/{drawing_id}")
+async def update_drawing_endpoint(symbol: str, drawing_id: int, body: dict):
+    # / update a drawing's payload — scoped to symbol, 404 on missing or cross-symbol id
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    payload = body.get("payload")
+    if not drawings_mod.validate_payload(payload):
+        return JSONResponse(status_code=400, content={"error": "invalid_payload"})
+    result = await drawings_mod.update_drawing(_pool, symbol, drawing_id, payload)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return result
+
+
+@app.delete("/api/drawings/{symbol}/{drawing_id}")
+async def delete_drawing_endpoint(symbol: str, drawing_id: int):
+    # / delete a single drawing by id — scoped to symbol so a mismatched url cannot bleed across symbols
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    ok = await drawings_mod.delete_drawing(_pool, symbol, drawing_id)
+    return {"deleted": bool(ok)}
 
 
 @app.get("/api/ict-indicators/{symbol}")

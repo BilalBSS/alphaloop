@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Panel from './Panel'
 import { SkeletonTable, SkeletonChart } from './Skeleton'
 import { useApi } from '../hooks/useApi'
+import EquityLWChart from './chart/EquityLWChart'
 
 const PERIODS = ['1D', '1W', '1M', 'All']
 
@@ -19,18 +19,6 @@ function EquityChart() {
     )
   }
 
-  const chartData = data.timestamps.map((ts, i) => {
-    const d = new Date(ts * 1000)
-    const time = period === '1D'
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
-    return { time, equity: data.equity[i] }
-  })
-
-  const minEq = Math.min(...chartData.map(d => d.equity))
-  const maxEq = Math.max(...chartData.map(d => d.equity))
-  const isUp = chartData.length > 1 && chartData[chartData.length - 1].equity >= chartData[0].equity
-
   return (
     <div>
       <div className="flex gap-1 mb-2">
@@ -43,25 +31,7 @@ function EquityChart() {
             }`}>{p}</button>
         ))}
       </div>
-      <ResponsiveContainer width="100%" height={200}>
-        <AreaChart data={chartData}>
-          <defs>
-            <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0.15} />
-              <stop offset="100%" stopColor={isUp ? '#00dc82' : '#ff4757'} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8888a0' }} interval="preserveStartEnd" />
-          <YAxis domain={[minEq * 0.999, maxEq * 1.001]} hide />
-          <Tooltip
-            contentStyle={{ background: '#12121a', border: '1px solid #1e1e2a', fontSize: 12 }}
-            labelStyle={{ color: '#8888a0' }}
-            formatter={(v) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Equity']}
-          />
-          <Area type="monotone" dataKey="equity" stroke={isUp ? '#00dc82' : '#ff4757'} strokeWidth={2}
-            fill="url(#eqGrad)" />
-        </AreaChart>
-      </ResponsiveContainer>
+      <EquityLWChart key={period} data={data} height={200} />
     </div>
   )
 }

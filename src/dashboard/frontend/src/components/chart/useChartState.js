@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 // / per-symbol chart state hook: fetches on mount + symbol change, saves with 400ms debounce
 // / state shape: { symbol, timeframe, active_indicators, indicator_params }
-// / exposes: { state, loading, save, toggleIndicator }
+// / marker_kinds is stashed under indicator_params.marker_kinds — reusing the existing jsonb column
+// / avoids a db schema change for what is effectively a per-symbol ui preference
+// / exposes: { state, loading, save, toggleIndicator, toggleMarkerKind }
 // /   save({ timeframe?, active_indicators?, indicator_params? }) merges into local state then posts
 // /   toggleIndicator(id) flips id membership in active_indicators
+// /   toggleMarkerKind(kind) flips kind membership in indicator_params.marker_kinds
 // / symbol changes flush the pending patch against the OLD symbol before fetching the new
 // / the GET on mount is guarded by a generation counter + dirty flag so a late response cannot
 // / clobber an optimistic local toggle made while the fetch was in flight
@@ -171,5 +174,19 @@ export function useChartState(symbol) {
     })
   }, [_queuePatch])
 
-  return { state, loading, save, toggleIndicator }
+  // / marker_kinds lives inside indicator_params jsonb so no schema change is required
+  const toggleMarkerKind = useCallback((kind) => {
+    if (typeof kind !== 'string' || !kind) return
+    setState(prev => {
+      const params = (prev.indicator_params && typeof prev.indicator_params === 'object') ? prev.indicator_params : {}
+      const current = Array.isArray(params.marker_kinds) ? params.marker_kinds : []
+      const exists = current.includes(kind)
+      const nextKinds = exists ? current.filter(x => x !== kind) : [...current, kind]
+      const nextParams = { ...params, marker_kinds: nextKinds }
+      _queuePatch({ indicator_params: nextParams })
+      return { ...prev, indicator_params: nextParams }
+    })
+  }, [_queuePatch])
+
+  return { state, loading, save, toggleIndicator, toggleMarkerKind }
 }
