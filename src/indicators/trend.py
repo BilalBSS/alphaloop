@@ -168,3 +168,92 @@ def donchian_channel(high: pd.Series, low: pd.Series, period: int = 20) -> Donch
     lower = low.rolling(window=period).min()
     middle = (upper + lower) / 2
     return DonchianResult(upper=upper, lower=lower, middle=middle)
+
+
+@dataclass
+class IchimokuResult:
+    conversion: pd.Series  # tenkan-sen (9-period)
+    base: pd.Series        # kijun-sen (26-period)
+    span_a: pd.Series      # senkou span a (displaced +26)
+    span_b: pd.Series      # senkou span b (52-period, displaced +26)
+    lagging: pd.Series     # chikou span (close shifted -26)
+
+
+def ichimoku(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    conversion_period: int = 9,
+    base_period: int = 26,
+    span_b_period: int = 52,
+    displacement: int = 26,
+) -> IchimokuResult:
+    # / ichimoku cloud: five lines — tenkan (fast), kijun (slow), spans a/b (cloud), chikou (lagging close)
+    conversion = (high.rolling(conversion_period).max() + low.rolling(conversion_period).min()) / 2
+    base = (high.rolling(base_period).max() + low.rolling(base_period).min()) / 2
+    span_a = ((conversion + base) / 2).shift(displacement)
+    span_b = ((high.rolling(span_b_period).max() + low.rolling(span_b_period).min()) / 2).shift(displacement)
+    lagging = close.shift(-displacement)
+    return IchimokuResult(conversion=conversion, base=base, span_a=span_a, span_b=span_b, lagging=lagging)
+
+
+@dataclass
+class PSARResult:
+    sar: pd.Series
+    direction: pd.Series  # 1 = long trend, -1 = short trend
+
+
+def psar(
+    high: pd.Series,
+    low: pd.Series,
+    step: float = 0.02,
+    max_step: float = 0.2,
+) -> PSARResult:
+    # / parabolic sar (wilder). direction flips when price crosses sar.
+    # / direction is float dtype so length<2 / warmup positions stay nan (not 0)
+    n = len(high)
+    sar = pd.Series(np.nan, index=high.index, dtype=float)
+    direction = pd.Series(np.nan, index=high.index, dtype=float)
+    if n < 2:
+        return PSARResult(sar=sar, direction=direction)
+
+    # / seed direction from first two highs (up if high[1] >= high[0])
+    trend_up = high.iloc[1] >= high.iloc[0]
+    ep = high.iloc[0] if trend_up else low.iloc[0]
+    af = step
+    current = low.iloc[0] if trend_up else high.iloc[0]
+    sar.iloc[0] = current
+    direction.iloc[0] = 1.0 if trend_up else -1.0
+
+    for i in range(1, n):
+        prev_sar = current
+        current = prev_sar + af * (ep - prev_sar)
+        if trend_up:
+            # / sar cannot exceed prior two lows
+            current = min(current, low.iloc[i - 1], low.iloc[max(0, i - 2)])
+            if low.iloc[i] < current:
+                # / flip to short
+                trend_up = False
+                current = ep
+                ep = low.iloc[i]
+                af = step
+            else:
+                if high.iloc[i] > ep:
+                    ep = high.iloc[i]
+                    af = min(af + step, max_step)
+        else:
+            # / sar cannot fall below prior two highs
+            current = max(current, high.iloc[i - 1], high.iloc[max(0, i - 2)])
+            if high.iloc[i] > current:
+                # / flip to long
+                trend_up = True
+                current = ep
+                ep = high.iloc[i]
+                af = step
+            else:
+                if low.iloc[i] < ep:
+                    ep = low.iloc[i]
+                    af = min(af + step, max_step)
+        sar.iloc[i] = current
+        direction.iloc[i] = 1.0 if trend_up else -1.0
+    return PSARResult(sar=sar, direction=direction)

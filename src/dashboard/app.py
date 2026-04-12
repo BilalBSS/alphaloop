@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import asyncpg
@@ -14,8 +15,17 @@ import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.dashboard import alerts as alerts_mod
+from src.dashboard import chart_state as chart_state_mod
+from src.dashboard import compare as compare_mod
+from src.dashboard import drawings as drawings_mod
+from src.dashboard import indicator_registry
+from src.dashboard import marker_aggregator as marker_agg_mod
+from src.dashboard import replay as replay_mod
+from src.dashboard import volume_profile as volume_profile_mod
 from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -636,9 +646,57 @@ async def get_indicators(symbol: str, limit: int = 60, timeframe: str = "1Day"):
     return _serialize(rows)
 
 
+# / ttl cache for /api/intraday — keyed on (symbol, timeframe, days, sorted indicator ids)
+# / 30s ttl: intraday bars refresh every 5min via orchestrator price_refresh, so short ttl keeps data fresh
+# / max 256 entries caps memory; eviction drops oldest expires_at when full
+_INTRADAY_CACHE: dict[tuple, tuple[float, object]] = {}
+_INTRADAY_CACHE_MAX = 256
+_INTRADAY_CACHE_TTL = 30.0
+
+
+def _intraday_cache_key(symbol: str, timeframe: str, days: int, ids: tuple[str, ...]) -> tuple:
+    return (symbol, timeframe, days, ids)
+
+
+def _intraday_cache_get(key: tuple) -> object | None:
+    entry = _INTRADAY_CACHE.get(key)
+    if entry is None:
+        return None
+    expires_at, payload = entry
+    if time.monotonic() >= expires_at:
+        _INTRADAY_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _intraday_cache_put(key: tuple, payload: object) -> None:
+    if len(_INTRADAY_CACHE) >= _INTRADAY_CACHE_MAX:
+        # / drop the entry closest to expiry (or already expired) to cap memory
+        oldest_key = min(_INTRADAY_CACHE, key=lambda k: _INTRADAY_CACHE[k][0])
+        _INTRADAY_CACHE.pop(oldest_key, None)
+    _INTRADAY_CACHE[key] = (time.monotonic() + _INTRADAY_CACHE_TTL, payload)
+
+
+def _intraday_cache_clear() -> None:
+    # / test helper
+    _INTRADAY_CACHE.clear()
+
+
 @app.get("/api/intraday/{symbol}")
-async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour"):
+async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
     days = max(1, min(days, 60))
+
+    # / parse requested ids up front so cache key includes them
+    ids_sorted: tuple[str, ...] = tuple(sorted(i.strip() for i in indicators.split(",") if i.strip()))
+    cache_key = _intraday_cache_key(symbol, timeframe, days, ids_sorted)
+    cached = _intraday_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # / skip caching entirely when the db is unreachable so an empty response does not
+    # / mask real data for 30s once the pool comes back
+    pool_ready = _pool is not None
+
     rows = await _query(
         """SELECT timestamp, open, high, low, close, volume, vwap
         FROM market_data_intraday
@@ -647,7 +705,309 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour"):
         ORDER BY timestamp ASC""",
         symbol, timeframe, str(days),
     )
-    return _serialize(rows)
+    # / empty indicators -> keep legacy shape for backwards compat
+    if not ids_sorted:
+        payload = _serialize(rows)
+        if pool_ready and rows:
+            _intraday_cache_put(cache_key, payload)
+        return payload
+
+    if not rows:
+        payload = {
+            "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
+            "indicators": {},
+            "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": 0},
+        }
+        if pool_ready:
+            _intraday_cache_put(cache_key, payload)
+        return payload
+
+    # / build compact ohlcv arrays and a dataframe for indicator compute
+    import pandas as pd  # / local import to avoid touching top-level imports
+
+    t_list: list[str] = []
+    o_list: list[float] = []
+    h_list: list[float] = []
+    l_list: list[float] = []
+    c_list: list[float] = []
+    v_list: list[float] = []
+    for r in rows:
+        ts = r.get("timestamp")
+        t_list.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        o_list.append(float(r["open"]) if r.get("open") is not None else float("nan"))
+        h_list.append(float(r["high"]) if r.get("high") is not None else float("nan"))
+        l_list.append(float(r["low"]) if r.get("low") is not None else float("nan"))
+        c_list.append(float(r["close"]) if r.get("close") is not None else float("nan"))
+        v_list.append(float(r["volume"]) if r.get("volume") is not None else 0.0)
+
+    df = pd.DataFrame({
+        "open": o_list,
+        "high": h_list,
+        "low": l_list,
+        "close": c_list,
+        "volume": v_list,
+    })
+
+    # / dispatch each requested indicator, skip unknowns/failures silently
+    computed: dict = {}
+    for ind_id in ids_sorted:
+        result = indicator_registry.compute(df, ind_id)
+        if result is not None:
+            computed[ind_id] = result
+
+    payload = {
+        "bars": {
+            "t": t_list,
+            "o": o_list,
+            "h": h_list,
+            "l": l_list,
+            "c": c_list,
+            "v": v_list,
+        },
+        "indicators": computed,
+        "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": len(rows)},
+    }
+    if pool_ready:
+        _intraday_cache_put(cache_key, payload)
+    return payload
+
+
+# / db schema limits symbol to VARCHAR(20) — reject longer input at the edge so the backend
+# / never silently truncates a write (user_chart_state upsert would surface as default-state)
+_CHART_STATE_SYMBOL_MAX = 20
+
+
+@app.get("/api/chart-state/{symbol}")
+async def get_chart_state_endpoint(symbol: str):
+    # / per-symbol persisted chart state (timeframe + active indicators + params)
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"symbol": symbol, "timeframe": "1Hour", "active_indicators": [], "indicator_params": {}}
+    return await chart_state_mod.get_chart_state(_pool, symbol)
+
+
+@app.post("/api/chart-state/{symbol}")
+async def upsert_chart_state_endpoint(symbol: str, body: dict):
+    # / upsert chart state for a symbol — only provided fields are updated
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"error": "db_not_ready"}
+    # / sanitize indicators against registry to prevent garbage ids
+    ids = body.get("active_indicators")
+    if ids is not None:
+        ids = chart_state_mod.sanitize_indicators(ids)
+    params = body.get("indicator_params")
+    if params is not None and not isinstance(params, dict):
+        params = None
+    return await chart_state_mod.upsert_chart_state(
+        _pool,
+        symbol,
+        timeframe=body.get("timeframe"),
+        active_indicators=ids,
+        indicator_params=params,
+    )
+
+
+@app.get("/api/markers/{symbol}")
+async def get_markers_endpoint(
+    symbol: str,
+    kinds: str = "trades,signals,insiders,earnings,regime,consensus",
+    days: int = 30,
+):
+    # / unified markers endpoint — returns a dict keyed by marker kind
+    # / kinds csv filters which aggregators run; absent kinds are omitted from the response
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {"trades": [], "signals": [], "insiders": [], "earnings": [], "regime": [], "consensus": []}
+    days = max(1, min(days, 365))
+    requested = {k.strip() for k in kinds.split(",") if k.strip()}
+    if not requested:
+        return {}
+    return await marker_agg_mod.build_markers(_pool, symbol, requested, days)
+
+
+@app.get("/api/drawings/{symbol}")
+async def list_drawings_endpoint(symbol: str):
+    # / list all drawings for a symbol — empty list when db is down
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return []
+    return await drawings_mod.list_drawings(_pool, symbol)
+
+
+@app.post("/api/drawings/{symbol}")
+async def create_drawing_endpoint(symbol: str, body: dict):
+    # / create a drawing from a whitelisted type + opaque jsonb payload
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    dt = drawings_mod.sanitize_drawing_type(body.get("drawing_type", ""))
+    if dt is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_drawing_type"})
+    payload = body.get("payload")
+    if not drawings_mod.validate_payload(payload):
+        return JSONResponse(status_code=400, content={"error": "invalid_payload"})
+    return await drawings_mod.create_drawing(_pool, symbol, dt, payload)
+
+
+@app.put("/api/drawings/{symbol}/{drawing_id}")
+async def update_drawing_endpoint(symbol: str, drawing_id: int, body: dict):
+    # / update a drawing's payload — scoped to symbol, 404 on missing or cross-symbol id
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    payload = body.get("payload")
+    if not drawings_mod.validate_payload(payload):
+        return JSONResponse(status_code=400, content={"error": "invalid_payload"})
+    result = await drawings_mod.update_drawing(_pool, symbol, drawing_id, payload)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return result
+
+
+@app.delete("/api/drawings/{symbol}/{drawing_id}")
+async def delete_drawing_endpoint(symbol: str, drawing_id: int):
+    # / delete a single drawing by id — scoped to symbol so a mismatched url cannot bleed across symbols
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    ok = await drawings_mod.delete_drawing(_pool, symbol, drawing_id)
+    return {"deleted": bool(ok)}
+
+
+@app.get("/api/alerts")
+async def list_all_alerts_endpoint():
+    # / workset for the alert engine — all active rows across every symbol
+    if _pool is None:
+        return []
+    return await alerts_mod.list_alerts(_pool, status=alerts_mod.STATUS_ACTIVE)
+
+
+@app.get("/api/alerts/{symbol}")
+async def list_alerts_endpoint(symbol: str):
+    # / active alerts for a single symbol — empty list when db is down
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return []
+    return await alerts_mod.list_alerts(_pool, symbol=symbol, status=alerts_mod.STATUS_ACTIVE)
+
+
+@app.post("/api/alerts/{symbol}")
+async def create_alert_endpoint(symbol: str, body: dict):
+    # / create an active alert; 400 on invalid direction/price
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    result = await alerts_mod.create_alert(
+        _pool,
+        symbol,
+        body.get("price"),
+        body.get("direction"),
+        body.get("label"),
+    )
+    if isinstance(result, dict) and result.get("error"):
+        return JSONResponse(status_code=400, content=result)
+    return result
+
+
+@app.put("/api/alerts/{symbol}/{alert_id}")
+async def update_alert_endpoint(symbol: str, alert_id: int, body: dict):
+    # / partial update of an alert row; scoped to symbol, 404 on missing or cross-symbol id
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    patch = {k: body[k] for k in ("price", "direction", "label", "status") if k in body}
+    if not patch:
+        return JSONResponse(status_code=400, content={"error": "empty_patch"})
+    result = await alerts_mod.update_alert(_pool, symbol, alert_id, **patch)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return result
+
+
+@app.delete("/api/alerts/{symbol}/{alert_id}")
+async def delete_alert_endpoint(symbol: str, alert_id: int):
+    # / hard delete by id — scoped to symbol so a mismatched url cannot bleed across symbols
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    ok = await alerts_mod.delete_alert(_pool, symbol, alert_id)
+    return {"deleted": bool(ok)}
+
+
+@app.get("/api/replay/{symbol}")
+async def replay_endpoint(symbol: str, cutoff: str = "", days_back: int = 30):
+    # / observation-only: returns bars + trades + signals + consensus knowable at time t
+    # / zero re-simulation. zero agent invocation. zero side effects on live state.
+    # / do NOT add calls to strategy_agent / risk_agent / executor_agent / particle filter
+    # / or any llm client here — phase 1 scope contract locks this to pure SELECT queries
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "symbol": symbol,
+            "cutoff": cutoff,
+            "min_t": None,
+            "max_t": None,
+            "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
+            "trades": [],
+            "signals": [],
+            "consensus": [],
+        }
+    return await replay_mod.fetch_replay_snapshot(_pool, symbol, cutoff, days_back)
+
+
+@app.get("/api/compare")
+async def compare_endpoint(base: str = "", against: str = "", timeframe: str = "1Day", days: int = 90):
+    # / pair normalized overlay — % change from first common timestamp for both symbols
+    # / empty series on any failure so the chart can fall back cleanly
+    if not base or not against:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if len(base) > _CHART_STATE_SYMBOL_MAX or len(against) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "base": base,
+            "against": against,
+            "timeframe": timeframe,
+            "days": days,
+            "base_series": [],
+            "against_series": [],
+            "common_count": 0,
+        }
+    return await compare_mod.fetch_compare(_pool, base, against, timeframe, days)
+
+
+@app.get("/api/volume-profile/{symbol}")
+async def volume_profile_endpoint(symbol: str, bins: int = 24, days: int = 30, timeframe: str = "1Hour"):
+    # / horizontal histogram of traded volume at price levels + poc/vah/val anchors
+    # / empty payload on pool none or query failure; clamps applied inside the helper
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "symbol": symbol,
+            "bins": [],
+            "poc": None,
+            "vah": None,
+            "val": None,
+            "total_volume": 0.0,
+            "bin_count": bins,
+            "days": days,
+            "timeframe": timeframe,
+        }
+    return await volume_profile_mod.fetch_volume_profile(_pool, symbol, bins, days, timeframe)
 
 
 @app.get("/api/ict-indicators/{symbol}")
