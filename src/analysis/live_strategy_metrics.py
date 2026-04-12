@@ -100,13 +100,15 @@ async def _compute_for_strategy(
     base_capital: float = DEFAULT_BASE_CAPITAL,
 ) -> dict[str, Any] | None:
     # / fetch trade_log rows in window, fifo-match buys/sells, compute metrics
+    # / created_at is timestamptz; period_end is a date that casts to midnight.
+    # / upper bound must be < period_end + 1 day to include trades that happened today.
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT symbol, side, qty, price, pnl, created_at
             FROM trade_log
             WHERE strategy_id = $1
               AND created_at >= $2
-              AND created_at <= $3
+              AND created_at < ($3::date + INTERVAL '1 day')
             ORDER BY created_at ASC""",
             strategy_id, period_start, period_end,
         )

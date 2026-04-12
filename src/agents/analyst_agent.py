@@ -27,6 +27,54 @@ from src.notifications.notifier import notify_analysis_highlight
 logger = structlog.get_logger(__name__)
 
 
+def _compute_technical_score(indicator_data: dict | None) -> float | None:
+    # / bug 4c: derive 0-100 technical score from indicator_data so analysis_scores.technical_score
+    # / stops being null. keys match what _fetch_equity_enrichment stores: rsi14, macd_histogram, adx.
+    # / rsi and macd carry direction; adx is trend strength only and acts as confidence multiplier.
+    if not indicator_data:
+        return None
+
+    direction_parts: list[float] = []
+
+    # / rsi14: 50 = neutral, <30 oversold (bullish), >70 overbought (bearish)
+    rsi = indicator_data.get("rsi14") or indicator_data.get("rsi")
+    if rsi is not None:
+        try:
+            r = float(rsi)
+            direction_parts.append(max(0.0, min(100.0, 100.0 - r)))
+        except (TypeError, ValueError):
+            pass
+
+    # / macd histogram: positive = bullish, negative = bearish, squashed around 50 midpoint
+    macd_hist = indicator_data.get("macd_histogram") or indicator_data.get("macd_hist")
+    if macd_hist is not None:
+        try:
+            h = float(macd_hist)
+            direction_parts.append(50.0 + 25.0 * (1.0 if h > 0 else -1.0) * min(1.0, abs(h) / 2.0))
+        except (TypeError, ValueError):
+            pass
+
+    if not direction_parts:
+        return None
+
+    base = sum(direction_parts) / len(direction_parts)
+
+    # / adx as confidence: strong trends (adx > 25) pull the score away from 50 toward the direction
+    # / weak trends (adx < 25) pull the score TOWARD 50. max amplification 1.3x, max damping 0.7x.
+    adx = indicator_data.get("adx")
+    if adx is not None:
+        try:
+            a = float(adx)
+            # / linear: adx=10 → 0.7x, adx=25 → 1.0x, adx=50 → ~1.3x
+            mult = 0.7 + min(0.6, max(0.0, a / 50.0) * 0.6)
+            score = 50.0 + (base - 50.0) * mult
+            base = max(0.0, min(100.0, score))
+        except (TypeError, ValueError):
+            pass
+
+    return round(base, 1)
+
+
 class AnalystAgent:
     # / stateless — all persistent state lives in the database
 
@@ -638,20 +686,36 @@ class AnalystAgent:
             if key in alt_data and alt_data[key] is not None:
                 details[key] = alt_data[key]
 
+        # / bug 4c: compute technical_score from indicator_data so composite != fundamental
+        # / rsi midline, macd histogram sign, adx trend strength, bb position — all 0-100
+        technical_score = _compute_technical_score(indicator_data)
+
+        # / 70/30 blend when both sides exist, else fall through to the one that exists
+        if fundamental_score is not None and technical_score is not None:
+            composite_score = round(0.7 * fundamental_score + 0.3 * technical_score, 1)
+        elif technical_score is not None:
+            composite_score = technical_score
+        else:
+            composite_score = fundamental_score
+
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None
         await tools.store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
             fundamental_score=fundamental_score,
-            technical_score=None,  # / populated by strategy agent
-            composite_score=fundamental_score,  # / same as fundamental until technical added
+            technical_score=technical_score,
+            composite_score=composite_score,
             regime=regime,
             regime_confidence=None,
             used_fundamentals=used_fundamentals,
             details=details,
         )
 
-        logger.info("analyst_symbol_complete", symbol=symbol, score=fundamental_score)
+        logger.info(
+            "analyst_symbol_complete",
+            symbol=symbol, fundamental=fundamental_score,
+            technical=technical_score, composite=composite_score,
+        )
 
         # / notify discord on strong consensus
         if dual.consensus in ("bullish", "bearish") and fundamental_score is not None:

@@ -307,7 +307,8 @@ async def get_symbols():
     # / list tracked symbols with latest score — filter to active universe only
     from src.data.symbols import FULL_UNIVERSE
     rows = await _query(
-        """SELECT DISTINCT ON (symbol) symbol, date, composite_score, regime,
+        """SELECT DISTINCT ON (symbol) symbol, date, composite_score,
+            fundamental_score, technical_score, regime,
             details->>'ai_consensus' as ai_consensus
         FROM analysis_scores
         WHERE symbol = ANY($1)
@@ -363,14 +364,24 @@ async def get_strategies():
             strategies_by_id[sid] = dict(row)
 
     # / overlay trade_log aggregates where available
+    # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
+    # / broke `pnl > 0` so every buy fell into the "loss" bucket → win_rate 0.000 for everyone.
+    # / closed = sells with realized pnl; win_rate NULL until we have at least one closed trade.
     trade_rows = await _query(
         """SELECT strategy_id,
-            COUNT(*) as total_trades,
-            COUNT(*) FILTER (WHERE pnl > 0) as wins,
-            COUNT(*) FILTER (WHERE pnl < 0) as losses,
-            COALESCE(ROUND(AVG(pnl)::numeric, 2), 0) as avg_pnl,
-            COALESCE(ROUND(SUM(pnl)::numeric, 2), 0) as total_pnl,
-            ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 3) as win_rate,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) as total_trades,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl > 0) as wins,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl < 0) as losses,
+            COALESCE(ROUND(AVG(pnl) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL)::numeric, 2), 0) as avg_pnl,
+            COALESCE(ROUND(SUM(pnl) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL)::numeric, 2), 0) as total_pnl,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) = 0 THEN NULL
+                ELSE ROUND(
+                    COUNT(*) FILTER (WHERE side = 'sell' AND pnl > 0)::numeric
+                    / COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL),
+                    3
+                )
+            END as win_rate,
             MAX(created_at) as last_trade_at
         FROM trade_log
         WHERE strategy_id IS NOT NULL
@@ -592,14 +603,48 @@ async def get_health():
 
 @app.get("/api/insider/{symbol}")
 async def get_insider(symbol: str):
-    # / recent insider trades for symbol (last 90 days)
+    # / recent insider trades for symbol (last 90 days) + signed strength from latest analysis
+    # / bug 4b: signed_strength lives in analysis_scores.details, not in insider_trades table
+    sym = symbol.upper()
     rows = await _query(
         """SELECT * FROM insider_trades
         WHERE symbol = $1 AND filing_date > CURRENT_DATE - INTERVAL '90 days'
         ORDER BY filing_date DESC LIMIT 20""",
-        symbol.upper(),
+        sym,
     )
-    return _serialize(rows)
+    latest_score = await _query_one(
+        """SELECT details->>'insider_signed_strength' AS signed_strength,
+                  details->>'insider_score_100' AS score_100
+        FROM analysis_scores
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 1""",
+        sym,
+    )
+    signed = None
+    score_100 = None
+    if latest_score:
+        try:
+            raw_signed = latest_score.get("signed_strength")
+            signed = float(raw_signed) if raw_signed is not None else None
+        except (TypeError, ValueError):
+            signed = None
+        try:
+            raw_score = latest_score.get("score_100")
+            score_100 = float(raw_score) if raw_score is not None else None
+        except (TypeError, ValueError):
+            score_100 = None
+    signal = "neutral"
+    if signed is not None:
+        if signed > 10:
+            signal = "bullish"
+        elif signed < -10:
+            signal = "bearish"
+    return {
+        "trades": _serialize(rows),
+        "signed_strength": signed,
+        "score_100": score_100,
+        "signal": signal,
+    }
 
 
 @app.get("/api/signals")
@@ -1028,15 +1073,26 @@ async def get_ict_indicators(symbol: str):
 
 @app.get("/api/quant-metrics/{symbol}")
 async def get_quant_metrics(symbol: str):
+    # / bug 4d: broaden the join — strategy scored this symbol via any signal OR actual trade
+    # / DISTINCT ON picks the latest strategy_scores row per strategy_id
     rows = await _query(
-        """SELECT ss.* FROM strategy_scores ss
+        """SELECT DISTINCT ON (ss.strategy_id) ss.*
+        FROM strategy_scores ss
         WHERE ss.strategy_id IN (
-            SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
+            SELECT strategy_id FROM trade_signals WHERE symbol = $1 AND strategy_id IS NOT NULL
+            UNION
+            SELECT strategy_id FROM trade_log WHERE symbol = $1 AND strategy_id IS NOT NULL
         )
-        ORDER BY ss.sharpe_ratio DESC NULLS LAST""",
+        ORDER BY ss.strategy_id, ss.created_at DESC""",
         symbol,
     )
-    return _serialize(rows)
+    # / secondary sort by sharpe for display
+    rows_sorted = sorted(
+        rows,
+        key=lambda r: float(r.get("sharpe_ratio") or -999),
+        reverse=True,
+    )
+    return _serialize(rows_sorted)
 
 
 @app.get("/api/strategy-evaluations")

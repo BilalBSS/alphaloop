@@ -838,15 +838,17 @@ class AgentOrchestrator:
 
     async def _strategy_metrics_loop(self) -> None:
         # / compute live strategy metrics from trade_log every hour
+        # / short startup delay only; run immediately after so dashboard shows real metrics on first cycle
+        if await self._wait_or_stop(60):
+            return
         while not self._stop_event.is_set():
-            # / initial delay to let other loops populate data
-            if await self._wait_or_stop(STRATEGY_METRICS_INTERVAL):
-                break
             try:
                 await self._compute_strategy_metrics()
             except Exception as exc:
                 logger.error("strategy_metrics_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_metrics_loop")
+            if await self._wait_or_stop(STRATEGY_METRICS_INTERVAL):
+                break
 
     async def _compute_strategy_metrics(self) -> None:
         # / bug a: delegate to richer live_strategy_metrics module
