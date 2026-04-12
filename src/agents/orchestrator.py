@@ -14,6 +14,7 @@ import structlog
 import pandas as pd
 
 from src.agents import tools
+from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent
 from src.agents.risk_agent import RiskAgent
@@ -43,6 +44,7 @@ MONITORING_INTERVAL = 3600         # / 1 hour
 COST_FLUSH_INTERVAL = 3600         # / 1 hour
 DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
+ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
 
 
 class AgentOrchestrator:
@@ -59,6 +61,7 @@ class AgentOrchestrator:
         self._evolution = EvolutionEngine()
         self._tasks: list[asyncio.Task] = []
         self._last_drift: dict[str, float] = {}
+        self._alert_prev_prices: dict[str, float] = {}
 
     async def start(self) -> None:
         # / initialize resources and start all agent loops
@@ -140,6 +143,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._monitoring_loop(), name="monitoring"),
             asyncio.create_task(self._cost_flush_loop(), name="cost_flush"),
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
+            asyncio.create_task(self._alert_loop(), name="alert"),
         ]
 
         try:
@@ -630,6 +634,33 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("macro_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "macro_backfill")
+
+    async def _alert_loop(self) -> None:
+        # / isolated price-cross alert scanner — never shares state with strategy/risk agents
+        # / runs every ALERT_CHECK_INTERVAL seconds, batches discord fires, ws-broadcasts each hit
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+        while not self._stop_event.is_set():
+            try:
+                broker = self._broker_factory.get_broker() if self._broker_factory else None
+                if broker is not None:
+                    # / late-bind ws broadcast so tests that don't mount the dashboard still pass
+                    ws_broadcast = None
+                    try:
+                        from src.dashboard.app import broadcast as ws_broadcast_fn, _ws_clients
+                        if _ws_clients:
+                            ws_broadcast = ws_broadcast_fn
+                    except Exception:
+                        ws_broadcast = None
+                    await alert_check_and_fire(
+                        self._pool, broker, ws_broadcast, webhook_url,
+                        self._alert_prev_prices,
+                    )
+            except Exception as exc:
+                logger.error("alert_loop_error", exc_info=True)
+                notify_system_error(str(exc), "alert_loop")
+
+            if await self._wait_or_stop(ALERT_CHECK_INTERVAL):
+                break
 
     async def _alternative_data_loop(self) -> None:
         # / backfill alternative data: analyst ratings, short interest, options, etc

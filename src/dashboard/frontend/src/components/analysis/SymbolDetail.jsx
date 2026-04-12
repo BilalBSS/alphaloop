@@ -8,6 +8,9 @@ import TimeSeriesLineChart from '../chart/TimeSeriesLineChart'
 import NewsSentimentLWChart from '../chart/NewsSentimentLWChart'
 import IndicatorPicker from '../chart/tools/IndicatorPicker'
 import DrawingToolbar from '../chart/tools/DrawingToolbar'
+import ReplaySlider from '../chart/tools/ReplaySlider'
+import CompareBar from '../chart/tools/CompareBar'
+import VolumeProfileToggle from '../chart/tools/VolumeProfileToggle'
 import ChartErrorBoundary from '../chart/ChartErrorBoundary'
 import { useChartState } from '../chart/useChartState'
 import { ChartToolsProvider, useChartTools } from '../chart/useDrawings'
@@ -143,12 +146,39 @@ function DrawingToolbarBridge() {
 // / marker_kinds is read from indicator_params.marker_kinds with a sensible default set
 // / v1 scope: markers are always shown for the persisted kinds; explicit picker deferred to commit 3
 // / DEFAULT_MARKER_KINDS comes from LWChart so both sides stay in sync
+// / replay slider is observation-only: scrubs a cutoff, chart swaps to /api/replay snapshot
+// / zero re-simulation, zero agent invocation — full re-sim deferred post-phase-1
 function PricePanel({ symbol, priceHistory, tf, setTf }) {
   const { state, toggleIndicator } = useChartState(symbol)
   const showPicker = tf === '2h'
   const markerKinds = (state.indicator_params && Array.isArray(state.indicator_params.marker_kinds))
     ? state.indicator_params.marker_kinds
     : DEFAULT_MARKER_KINDS
+  // / replay state lives in the parent so slider, chart header, and LWChart all read the same truth
+  // / replayWindow is seeded on toggle-on so Date.now() stays out of the render path
+  const [replayEnabled, setReplayEnabled] = useState(false)
+  const [replayCutoff, setReplayCutoff] = useState(null)
+  const [replayWindow, setReplayWindow] = useState({ minT: null, maxT: null })
+  // / compare + volume profile stay local to v1 — persistence via chart_state deferred
+  const [compareAgainst, setCompareAgainst] = useState('')
+  const [compareEnabled, setCompareEnabled] = useState(false)
+  const [volumeProfileEnabled, setVolumeProfileEnabled] = useState(false)
+  const handleToggleReplay = () => {
+    if (replayEnabled) {
+      // / exit replay -> chart falls back to live data cleanly
+      setReplayEnabled(false)
+      setReplayCutoff(null)
+      setReplayWindow({ minT: null, maxT: null })
+      return
+    }
+    // / enter replay -> seed a default [now-30d, now] window and pin cutoff at the end
+    const now = Date.now()
+    const minT = new Date(now - 30 * 24 * 3600 * 1000).toISOString()
+    const maxT = new Date(now).toISOString()
+    setReplayWindow({ minT, maxT })
+    setReplayCutoff(maxT)
+    setReplayEnabled(true)
+  }
   return (
     <ChartToolsProvider>
       <Panel title={
@@ -158,7 +188,26 @@ function PricePanel({ symbol, priceHistory, tf, setTf }) {
             <TimeframeToggle tf={tf} setTf={setTf} />
           </div>
           {showPicker && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <ReplaySlider
+                enabled={replayEnabled}
+                onToggle={handleToggleReplay}
+                onCutoffChange={setReplayCutoff}
+                minT={replayWindow.minT}
+                maxT={replayWindow.maxT}
+                cutoff={replayCutoff}
+              />
+              <CompareBar
+                base={symbol}
+                against={compareAgainst}
+                setAgainst={setCompareAgainst}
+                enabled={compareEnabled}
+                setEnabled={setCompareEnabled}
+              />
+              <VolumeProfileToggle
+                enabled={volumeProfileEnabled}
+                setEnabled={setVolumeProfileEnabled}
+              />
               <DrawingToolbarBridge />
               <IndicatorPicker selected={state.active_indicators} onToggle={toggleIndicator} />
             </div>
@@ -168,7 +217,16 @@ function PricePanel({ symbol, priceHistory, tf, setTf }) {
         {tf === 'daily'
           ? <PriceChart priceHistory={priceHistory} />
           : <ChartErrorBoundary>
-              <LWChart symbol={symbol} indicators={state.active_indicators} markerKinds={markerKinds} />
+              <LWChart
+                symbol={symbol}
+                indicators={state.active_indicators}
+                markerKinds={markerKinds}
+                replayEnabled={replayEnabled}
+                replayCutoff={replayCutoff}
+                compareAgainst={compareAgainst}
+                compareEnabled={compareEnabled}
+                volumeProfileEnabled={volumeProfileEnabled}
+              />
             </ChartErrorBoundary>}
       </Panel>
     </ChartToolsProvider>

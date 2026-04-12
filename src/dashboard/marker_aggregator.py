@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import asyncpg
@@ -305,18 +306,36 @@ async def build_markers(
 ) -> dict[str, list[dict]]:
     # / orchestrates the selected kinds against the aggregators, returning a dict keyed by kind
     # / missing kinds are absent from the result so callers can detect the filter applied
+    # / all independent queries run in parallel via asyncio.gather — 6 sequential rtts become 1
     interval = f"{int(days)} days"
-    out: dict[str, list[dict]] = {}
+    job_order: list[str] = []
+    coros: list[Any] = []
     if "trades" in kinds:
-        out["trades"] = await fetch_trade_markers(pool, symbol, interval)
+        job_order.append("trades")
+        coros.append(fetch_trade_markers(pool, symbol, interval))
     if "signals" in kinds:
-        out["signals"] = await fetch_signal_markers(pool, symbol, interval)
+        job_order.append("signals")
+        coros.append(fetch_signal_markers(pool, symbol, interval))
     if "insiders" in kinds:
-        out["insiders"] = await fetch_insider_markers(pool, symbol, interval)
+        job_order.append("insiders")
+        coros.append(fetch_insider_markers(pool, symbol, interval))
     if "earnings" in kinds:
-        out["earnings"] = await fetch_earnings_markers(pool, symbol, interval)
+        job_order.append("earnings")
+        coros.append(fetch_earnings_markers(pool, symbol, interval))
     if "regime" in kinds:
-        out["regime"] = await fetch_regime_bands(pool, symbol, interval)
+        job_order.append("regime")
+        coros.append(fetch_regime_bands(pool, symbol, interval))
     if "consensus" in kinds:
-        out["consensus"] = await fetch_consensus_strip(pool, symbol, interval)
+        job_order.append("consensus")
+        coros.append(fetch_consensus_strip(pool, symbol, interval))
+    if not coros:
+        return {}
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    out: dict[str, list[dict]] = {}
+    for kind, result in zip(job_order, results):
+        if isinstance(result, Exception):
+            logger.debug("marker_fetch_failed", kind=kind, error=str(result))
+            out[kind] = []
+        else:
+            out[kind] = result  # type: ignore[assignment]
     return out

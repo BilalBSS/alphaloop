@@ -12,6 +12,24 @@ logger = structlog.get_logger(__name__)
 # / whitelisted timeframes matching orchestrator intraday bars
 VALID_TIMEFRAMES: set[str] = {"1Min", "5Min", "15Min", "1Hour", "1Day"}
 
+# / size cap for indicator_params jsonb — mirrors the drawings payload cap pattern
+# / prevents a malicious client from bloating the db with arbitrarily large blobs
+_PARAMS_MAX_BYTES = 16 * 1024
+_INDICATOR_LIST_MAX = 128
+
+
+def validate_indicator_params(params: Any) -> bool:
+    # / minimal sanity: dict, serializable, under the size cap
+    if not isinstance(params, dict):
+        return False
+    try:
+        encoded = json.dumps(params)
+    except (TypeError, ValueError):
+        return False
+    if len(encoded) > _PARAMS_MAX_BYTES:
+        return False
+    return True
+
 
 def _default_state(symbol: str) -> dict:
     # / fallback state when a symbol has no row yet
@@ -75,6 +93,12 @@ async def upsert_chart_state(
     # / drop invalid timeframe silently to keep api forgiving
     if timeframe is not None and timeframe not in VALID_TIMEFRAMES:
         timeframe = None
+    # / defense in depth: cap the indicator list and reject oversized params payloads
+    # / silently drop invalid params rather than failing the whole upsert
+    if active_indicators is not None and len(active_indicators) > _INDICATOR_LIST_MAX:
+        active_indicators = active_indicators[:_INDICATOR_LIST_MAX]
+    if indicator_params is not None and not validate_indicator_params(indicator_params):
+        indicator_params = None
     indicators_json = json.dumps(active_indicators) if active_indicators is not None else None
     params_json = json.dumps(indicator_params) if indicator_params is not None else None
     try:

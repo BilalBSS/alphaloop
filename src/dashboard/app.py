@@ -18,10 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.dashboard import alerts as alerts_mod
 from src.dashboard import chart_state as chart_state_mod
+from src.dashboard import compare as compare_mod
 from src.dashboard import drawings as drawings_mod
 from src.dashboard import indicator_registry
 from src.dashboard import marker_aggregator as marker_agg_mod
+from src.dashboard import replay as replay_mod
+from src.dashboard import volume_profile as volume_profile_mod
 from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -876,6 +880,134 @@ async def delete_drawing_endpoint(symbol: str, drawing_id: int):
         return JSONResponse(status_code=503, content={"error": "db_not_ready"})
     ok = await drawings_mod.delete_drawing(_pool, symbol, drawing_id)
     return {"deleted": bool(ok)}
+
+
+@app.get("/api/alerts")
+async def list_all_alerts_endpoint():
+    # / workset for the alert engine — all active rows across every symbol
+    if _pool is None:
+        return []
+    return await alerts_mod.list_alerts(_pool, status=alerts_mod.STATUS_ACTIVE)
+
+
+@app.get("/api/alerts/{symbol}")
+async def list_alerts_endpoint(symbol: str):
+    # / active alerts for a single symbol — empty list when db is down
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return []
+    return await alerts_mod.list_alerts(_pool, symbol=symbol, status=alerts_mod.STATUS_ACTIVE)
+
+
+@app.post("/api/alerts/{symbol}")
+async def create_alert_endpoint(symbol: str, body: dict):
+    # / create an active alert; 400 on invalid direction/price
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    result = await alerts_mod.create_alert(
+        _pool,
+        symbol,
+        body.get("price"),
+        body.get("direction"),
+        body.get("label"),
+    )
+    if isinstance(result, dict) and result.get("error"):
+        return JSONResponse(status_code=400, content=result)
+    return result
+
+
+@app.put("/api/alerts/{symbol}/{alert_id}")
+async def update_alert_endpoint(symbol: str, alert_id: int, body: dict):
+    # / partial update of an alert row; scoped to symbol, 404 on missing or cross-symbol id
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    patch = {k: body[k] for k in ("price", "direction", "label", "status") if k in body}
+    if not patch:
+        return JSONResponse(status_code=400, content={"error": "empty_patch"})
+    result = await alerts_mod.update_alert(_pool, symbol, alert_id, **patch)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return result
+
+
+@app.delete("/api/alerts/{symbol}/{alert_id}")
+async def delete_alert_endpoint(symbol: str, alert_id: int):
+    # / hard delete by id — scoped to symbol so a mismatched url cannot bleed across symbols
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return JSONResponse(status_code=503, content={"error": "db_not_ready"})
+    ok = await alerts_mod.delete_alert(_pool, symbol, alert_id)
+    return {"deleted": bool(ok)}
+
+
+@app.get("/api/replay/{symbol}")
+async def replay_endpoint(symbol: str, cutoff: str = "", days_back: int = 30):
+    # / observation-only: returns bars + trades + signals + consensus knowable at time t
+    # / zero re-simulation. zero agent invocation. zero side effects on live state.
+    # / do NOT add calls to strategy_agent / risk_agent / executor_agent / particle filter
+    # / or any llm client here — phase 1 scope contract locks this to pure SELECT queries
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "symbol": symbol,
+            "cutoff": cutoff,
+            "min_t": None,
+            "max_t": None,
+            "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
+            "trades": [],
+            "signals": [],
+            "consensus": [],
+        }
+    return await replay_mod.fetch_replay_snapshot(_pool, symbol, cutoff, days_back)
+
+
+@app.get("/api/compare")
+async def compare_endpoint(base: str = "", against: str = "", timeframe: str = "1Day", days: int = 90):
+    # / pair normalized overlay — % change from first common timestamp for both symbols
+    # / empty series on any failure so the chart can fall back cleanly
+    if not base or not against:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if len(base) > _CHART_STATE_SYMBOL_MAX or len(against) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "base": base,
+            "against": against,
+            "timeframe": timeframe,
+            "days": days,
+            "base_series": [],
+            "against_series": [],
+            "common_count": 0,
+        }
+    return await compare_mod.fetch_compare(_pool, base, against, timeframe, days)
+
+
+@app.get("/api/volume-profile/{symbol}")
+async def volume_profile_endpoint(symbol: str, bins: int = 24, days: int = 30, timeframe: str = "1Hour"):
+    # / horizontal histogram of traded volume at price levels + poc/vah/val anchors
+    # / empty payload on pool none or query failure; clamps applied inside the helper
+    if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
+        return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
+    if _pool is None:
+        return {
+            "symbol": symbol,
+            "bins": [],
+            "poc": None,
+            "vah": None,
+            "val": None,
+            "total_volume": 0.0,
+            "bin_count": bins,
+            "days": days,
+            "timeframe": timeframe,
+        }
+    return await volume_profile_mod.fetch_volume_profile(_pool, symbol, bins, days, timeframe)
 
 
 @app.get("/api/ict-indicators/{symbol}")
