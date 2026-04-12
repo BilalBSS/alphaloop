@@ -20,14 +20,17 @@ class SourceFreshness:
 
 
 # / staleness thresholds per source (hours)
+# / market_data (daily bars) → 28h = one trading day + buffer. weekends can legitimately exceed 24h.
+# / market_data_crypto → checked against intraday 1h bars not daily; 6h gives buffer for backfill cadence
+# / regime_history → 36h = updated every 6h by _regime_loop, buffer for weekend misses
 FRESHNESS_THRESHOLDS = {
-    "market_data": 24,
-    "market_data_crypto": 4,
+    "market_data": 28,
+    "market_data_crypto": 6,
     "fundamentals": 168,
     "insider_trades": 336,
     "news_sentiment": 48,
     "social_sentiment": 48,
-    "regime_history": 48,
+    "regime_history": 36,
     "analysis_scores": 4,
     "computed_indicators": 2,
 }
@@ -40,7 +43,8 @@ async def check_all_freshness(pool) -> list[SourceFreshness]:
 
     queries = {
         "market_data": "SELECT MAX(created_at) FROM market_data WHERE symbol NOT LIKE '%%USD'",
-        "market_data_crypto": "SELECT MAX(created_at) FROM market_data WHERE symbol LIKE '%%USD'",
+        # / check crypto against intraday 1h bars (24/7 feed) not daily
+        "market_data_crypto": "SELECT MAX(created_at) FROM market_data_intraday WHERE symbol LIKE '%%USD'",
         "fundamentals": "SELECT MAX(created_at) FROM fundamentals",
         "insider_trades": "SELECT MAX(created_at) FROM insider_trades",
         "news_sentiment": "SELECT MAX(created_at) FROM news_sentiment",

@@ -20,7 +20,7 @@ logger = structlog.get_logger(__name__)
 class ExecutorAgent:
 
     async def execute_trade(
-        self, pool, trade_id: int, broker: BrokerInterface,
+        self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
     ) -> dict:
         # / place order for one approved trade
         # / fetch approved trade
@@ -32,6 +32,20 @@ class ExecutorAgent:
             return {"status": "error", "reason": "trade_not_found"}
 
         trade = dict(trade)
+        strategy_id = trade.get("strategy_id")
+
+        # / killed-strategy gate: reject trades from strategies marked killed in the pool
+        # / prevents orphaned approved_trades from executing after evolution kills a strategy
+        # / status value must fit VARCHAR(20) on approved_trades.status
+        if strategy_pool is not None and strategy_id:
+            entry = strategy_pool.get(strategy_id)
+            if entry is not None and entry.status == "killed":
+                await tools.update_trade_status(pool, "approved_trades", trade_id, "killed_strategy")
+                logger.warning(
+                    "executor_rejected_killed_strategy",
+                    trade_id=trade_id, strategy_id=strategy_id, symbol=trade["symbol"],
+                )
+                return {"status": "cancelled", "reason": f"strategy_{strategy_id}_killed"}
 
         # / atomic guard against double execution — WHERE status = 'pending'
         # / prevents toctou race between check and update
@@ -51,7 +65,6 @@ class ExecutorAgent:
         side = trade["side"]
         qty = float(trade["qty"])
         order_type = trade.get("order_type", "market")
-        strategy_id = trade.get("strategy_id")
 
         # / use extended hours for stock market orders outside regular hours
         ext_hours = False

@@ -45,6 +45,8 @@ COST_FLUSH_INTERVAL = 3600         # / 1 hour
 DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
 ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
+CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
+REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
 
 
 class AgentOrchestrator:
@@ -144,6 +146,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._cost_flush_loop(), name="cost_flush"),
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
             asyncio.create_task(self._alert_loop(), name="alert"),
+            asyncio.create_task(self._regime_loop(), name="regime_backfill"),
         ]
 
         try:
@@ -381,7 +384,7 @@ class AgentOrchestrator:
                 for trade in pending:
                     broker = self._broker_factory.get_broker()
                     await self._executor.execute_trade(
-                        self._pool, trade["id"], broker,
+                        self._pool, trade["id"], broker, strategy_pool=self._strategy_pool,
                     )
             except Exception:
                 logger.error("executor_poll_error", exc_info=True)
@@ -459,33 +462,59 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "fundamentals_backfill")
 
     async def _crypto_backfill_loop(self) -> None:
-        # / refresh crypto market data daily at 8am et
+        # / refresh crypto ohlcv bars every 30 min (24/7, no ET gate)
+        # / also logs market-cap/volume metadata via coingecko as a side-channel
+        if await self._wait_or_stop(120):
+            return
         while not self._stop_event.is_set():
-            stopped, target = await self._sleep_until_et_hour(8)
-
-            logger.info("crypto_backfill_waiting", next_run=str(target))
-
-            if stopped:
-                break
-
             try:
+                from src.data.market_data import backfill
                 from src.data.crypto_data import fetch_coin_data
-                symbols = [s for s in self._get_symbols() if is_crypto(s)]
-                for symbol in symbols:
-                    try:
-                        data = await fetch_coin_data(symbol)
-                        if data and self._pool:
-                            await tools.log_event(
-                                self._pool, "info", "crypto_backfill",
-                                f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
-                                symbol=symbol,
-                            )
-                    except Exception as exc:
-                        logger.warning("crypto_backfill_symbol_error", symbol=symbol, error=str(exc))
-                logger.info("crypto_backfill_complete", count=len(symbols))
+                crypto_symbols = [s for s in self._get_symbols() if is_crypto(s)]
+                if crypto_symbols:
+                    # / alpaca v1beta3/crypto path writes real ohlcv into market_data
+                    results = await backfill(self._pool, crypto_symbols, years=1)
+                    total = sum(results.values())
+                    if total:
+                        logger.info("crypto_bar_backfill_complete", symbols=len(crypto_symbols), bars=total)
+                    # / side-channel: coingecko metadata (market cap, total volume)
+                    for symbol in crypto_symbols:
+                        try:
+                            data = await fetch_coin_data(symbol)
+                            if data and self._pool:
+                                await tools.log_event(
+                                    self._pool, "info", "crypto_backfill",
+                                    f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
+                                    symbol=symbol,
+                                )
+                        except Exception as exc:
+                            logger.warning("crypto_metadata_error", symbol=symbol, error=str(exc))
             except Exception as exc:
                 logger.error("crypto_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "crypto_backfill")
+
+            if await self._wait_or_stop(CRYPTO_BACKFILL_INTERVAL):
+                break
+
+    async def _regime_loop(self) -> None:
+        # / compute equity + crypto regime history every 6h (not gated on market hours)
+        if await self._wait_or_stop(180):
+            return
+        while not self._stop_event.is_set():
+            try:
+                from src.data.regime_detector import backfill_regimes
+                equity_count = await backfill_regimes(self._pool, "SPY", "equity")
+                crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
+                logger.info(
+                    "regime_backfill_complete",
+                    equity_rows=equity_count, crypto_rows=crypto_count,
+                )
+            except Exception as exc:
+                logger.error("regime_loop_error", exc_info=True)
+                notify_system_error(str(exc), "regime_loop")
+
+            if await self._wait_or_stop(REGIME_LOOP_INTERVAL):
+                break
 
     async def _intraday_backfill_loop(self) -> None:
         # / fetch 2h intraday bars for all symbols (crypto trades 24/7)
@@ -524,30 +553,19 @@ class AgentOrchestrator:
 
     async def _price_refresh_loop(self) -> None:
         # / refresh current prices via yfinance during market hours
+        # / writes to latest_prices table (one row per symbol) — NOT market_data_intraday
+        # / the old pattern polluted intraday with zero-volume snapshots and broke candles
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():
             try:
                 if self._is_market_hours():
-                    from src.data.market_data import fetch_latest_prices
+                    from src.data.market_data import fetch_latest_prices, store_latest_prices
                     symbols = self._get_symbols()
                     prices = await fetch_latest_prices(symbols)
                     if prices:
-                        # / store latest prices as intraday bar snapshots
-                        from datetime import datetime, timezone
-                        now = datetime.now(timezone.utc)
-                        async with self._pool.acquire() as conn:
-                            for sym, price in prices.items():
-                                await conn.execute(
-                                    """INSERT INTO market_data_intraday
-                                    (symbol, timestamp, timeframe, open, high, low, close, volume)
-                                    VALUES ($1, $2, '1Hour', $3, $3, $3, $3, 0)
-                                    ON CONFLICT (symbol, timestamp, timeframe) DO UPDATE SET
-                                        close = EXCLUDED.close, high = GREATEST(market_data_intraday.high, EXCLUDED.high),
-                                        low = LEAST(market_data_intraday.low, EXCLUDED.low)""",
-                                    sym, now, price,
-                                )
-                        logger.info("price_refresh_complete", symbols=len(prices))
+                        stored = await store_latest_prices(self._pool, prices)
+                        logger.info("price_refresh_complete", symbols=stored)
                     else:
                         logger.warning("price_refresh_empty")
             except Exception as exc:

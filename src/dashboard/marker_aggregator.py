@@ -1,11 +1,12 @@
 # / unified marker aggregator — pulls timeline events for a symbol from disparate tables
 # / returns a dict keyed by marker kind: trades, signals, insiders, earnings, regime, consensus
 # / caller filters by kinds param; shapes designed for lightweight-charts setMarkers() + priceLines
-# / each fetch guards against missing tables on fresh databases via asyncpg.PostgresError
+# / each fetch catches ANY exception so encoder/data errors don't silently zero the response
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -40,7 +41,7 @@ def _num(value: Any) -> float | None:
         return None
 
 
-async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / closed + open trades from trade_log filtered to recent window
     # / trade_log stores one row per fill with side + price, no explicit exit_price
     try:
@@ -48,13 +49,13 @@ async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: str) ->
             rows = await conn.fetch(
                 """SELECT created_at, symbol, side, price, strategy_id, pnl
                 FROM trade_log
-                WHERE symbol = $1 AND created_at > NOW() - $2::INTERVAL
+                WHERE symbol = $1 AND created_at > NOW() - $2
                 ORDER BY created_at ASC""",
                 symbol,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_trades_query_failed", symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_trades_query_failed", symbol=symbol, error=str(exc))
         return []
     out: list[dict] = []
     for r in rows:
@@ -69,20 +70,20 @@ async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: str) ->
     return out
 
 
-async def fetch_signal_markers(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_signal_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / recent trade signals above strength threshold
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT created_at, signal_type, strength, strategy_id
                 FROM trade_signals
-                WHERE symbol = $1 AND created_at > NOW() - $2::INTERVAL
+                WHERE symbol = $1 AND created_at > NOW() - $2
                 ORDER BY created_at ASC""",
                 symbol,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_signals_query_failed", symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_signals_query_failed", symbol=symbol, error=str(exc))
         return []
     out: list[dict] = []
     for r in rows:
@@ -100,20 +101,20 @@ async def fetch_signal_markers(pool: asyncpg.Pool, symbol: str, interval: str) -
     return out
 
 
-async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / recent insider form 4 filings, aggregated into clusters when 3+ fire within 5 days
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT filing_date, insider_name, transaction_type, shares
                 FROM insider_trades
-                WHERE symbol = $1 AND filing_date > (NOW() - $2::INTERVAL)::DATE
+                WHERE symbol = $1 AND filing_date > (NOW() - $2)::DATE
                 ORDER BY filing_date ASC""",
                 symbol,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_insiders_query_failed", symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_insiders_query_failed", symbol=symbol, error=str(exc))
         return []
     # / normalize rows, drop any with missing date/type
     events: list[dict] = []
@@ -169,7 +170,7 @@ async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: str) 
     return clusters
 
 
-async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / uses earnings_revisions (not earnings_surprises) — stores sell-side estimate revisions
     # / type classification: compare current estimate against prior estimate for the same period
     try:
@@ -177,13 +178,13 @@ async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: str)
             rows = await conn.fetch(
                 """SELECT estimate_date, period, eps_estimate, revenue_estimate
                 FROM earnings_revisions
-                WHERE symbol = $1 AND estimate_date > (NOW() - $2::INTERVAL)::DATE
+                WHERE symbol = $1 AND estimate_date > (NOW() - $2)::DATE
                 ORDER BY estimate_date ASC""",
                 symbol,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_earnings_query_failed", symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_earnings_query_failed", symbol=symbol, error=str(exc))
         return []
     # / compute prior-estimate delta per period so we can label beat/miss/inline vs prior revision
     prior: dict[str, float] = {}
@@ -221,7 +222,7 @@ def _market_for_symbol(symbol: str) -> str:
     return "equity"
 
 
-async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / market-wide regime windows from regime_history; emits [start,end) intervals
     # / market is inferred from the symbol so crypto charts don't surface equity regimes
     market = _market_for_symbol(symbol)
@@ -230,13 +231,13 @@ async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: str) -> 
             rows = await conn.fetch(
                 """SELECT date, regime
                 FROM regime_history
-                WHERE market = $1 AND date > (NOW() - $2::INTERVAL)::DATE
+                WHERE market = $1 AND date > (NOW() - $2)::DATE
                 ORDER BY date ASC""",
                 market,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_regime_query_failed", error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_regime_query_failed", error=str(exc))
         return []
     # / collapse consecutive same-regime days into single bands
     bands: list[dict] = []
@@ -271,20 +272,20 @@ async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: str) -> 
     return bands
 
 
-async def fetch_consensus_strip(pool: asyncpg.Pool, symbol: str, interval: str) -> list[dict]:
+async def fetch_consensus_strip(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
     # / per-snapshot dual-llm consensus from analysis_scores.details jsonb
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT date, details->>'ai_consensus' as consensus
                 FROM analysis_scores
-                WHERE symbol = $1 AND date > (NOW() - $2::INTERVAL)::DATE
+                WHERE symbol = $1 AND date > (NOW() - $2)::DATE
                 ORDER BY date ASC""",
                 symbol,
                 interval,
             )
-    except asyncpg.PostgresError as exc:
-        logger.debug("marker_consensus_query_failed", symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning("marker_consensus_query_failed", symbol=symbol, error=str(exc))
         return []
     out: list[dict] = []
     for r in rows:
@@ -307,7 +308,8 @@ async def build_markers(
     # / orchestrates the selected kinds against the aggregators, returning a dict keyed by kind
     # / missing kinds are absent from the result so callers can detect the filter applied
     # / all independent queries run in parallel via asyncio.gather — 6 sequential rtts become 1
-    interval = f"{int(days)} days"
+    # / interval MUST be timedelta, not str — asyncpg rejects strings for INTERVAL params
+    interval = timedelta(days=int(days))
     job_order: list[str] = []
     coros: list[Any] = []
     if "trades" in kinds:

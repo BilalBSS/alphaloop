@@ -194,6 +194,12 @@ class EvolutionEngine:
                 reason += f" (composite={entry.score.composite_score:.4f})"
 
             strategy_pool.update_status(sid, "killed")
+            # / persist kill to disk so restart doesn't resurrect the strategy
+            config.setdefault("metadata", {})["status"] = "killed"
+            try:
+                save_config(config)
+            except Exception as exc:
+                logger.error("kill_save_config_failed", strategy_id=sid, error=str(exc))
             killed_configs.append({"id": sid, "config": config, "reason": reason})
             summary["killed"].append({"id": sid, "reason": reason})
 
@@ -223,6 +229,12 @@ class EvolutionEngine:
                 sid = entry.strategy.strategy_id
                 reason = f"tier2 underperforms sector base (sharpe {entry.score.sharpe_ratio:.2f} < {sector_sharpe:.2f})"
                 strategy_pool.update_status(sid, "killed")
+                # / persist kill to disk (same pattern as _kill_bottom_quartile)
+                config.setdefault("metadata", {})["status"] = "killed"
+                try:
+                    save_config(config)
+                except Exception as exc:
+                    logger.error("tier2_kill_save_failed", strategy_id=sid, error=str(exc))
                 killed_configs.append({"id": sid, "config": config, "reason": reason})
                 summary["killed"].append({"id": sid, "reason": reason})
                 try:

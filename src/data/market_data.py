@@ -440,6 +440,24 @@ async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
     return prices
 
 
+async def store_latest_prices(pool, prices: dict[str, float]) -> int:
+    # / upsert into latest_prices (one row per symbol) — NOT market_data_intraday
+    if not prices:
+        return 0
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO latest_prices (symbol, price, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (symbol) DO UPDATE SET
+                price = EXCLUDED.price,
+                updated_at = NOW()
+            """,
+            [(sym, Decimal(str(price))) for sym, price in prices.items()],
+        )
+    return len(prices)
+
+
 def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any]:
     # / normalize alpaca bar response to our format
     timestamp = bar.get("t", "")
