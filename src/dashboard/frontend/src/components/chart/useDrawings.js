@@ -22,6 +22,7 @@ const TYPE_TO_DB = {
   'horizontal-line': 'horizontal_line',
   'vertical-line': 'vertical_line',
   'rectangle': 'rectangle',
+  'parallel-channel': 'parallel_channel',
   'fib-retracement': 'fib_retracement',
   'fib-extension': 'fib_extension',
   'text-annotation': 'text',

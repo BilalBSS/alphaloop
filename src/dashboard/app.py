@@ -50,12 +50,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Quant Trading Dashboard", docs_url="/api/docs", lifespan=lifespan)
 
+# / bug 5e: allow_origins=* is too permissive for a dashboard with broker context
+# / restrict to known origins; override via ALPHALOOP_CORS_ORIGINS env (comma separated)
+_default_origins = [
+    "https://dashboard.siddiqtradebot.trade",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+_cors_env = os.environ.get("ALPHALOOP_CORS_ORIGINS", "").strip()
+_parsed = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else []
+# / fall back to defaults when env parses to empty so a misconfigured comma doesn't blackhole cors
+_cors_origins = _parsed or _default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
+
+
+# / bug 5d: FastAPI APIRoute sets methods={'GET'} without adding HEAD, so HEAD to /api/ returns 404
+# / gate rewrite to /api/ paths only — static assets already handle HEAD natively in StaticFiles,
+# / mutating scope["method"] there would force full file reads on every HEAD ping
+@app.middleware("http")
+async def _head_fallback(request, call_next):
+    if request.method == "HEAD" and request.url.path.startswith("/api/"):
+        request.scope["method"] = "GET"
+    return await call_next(request)
 
 
 def _get_broker():
@@ -304,9 +328,10 @@ async def get_analysis(symbol: str):
 
 @app.get("/api/symbols")
 async def get_symbols():
-    # / list tracked symbols with latest score — filter to active universe only
+    # / list ALL universe symbols with latest score if any — bug 5a: un-analyzed symbols
+    # / were silently missing from the response, dashboard showed 51 of 54 on a cold pool
     from src.data.symbols import FULL_UNIVERSE
-    rows = await _query(
+    scored = await _query(
         """SELECT DISTINCT ON (symbol) symbol, date, composite_score,
             fundamental_score, technical_score, regime,
             details->>'ai_consensus' as ai_consensus
@@ -315,7 +340,19 @@ async def get_symbols():
         ORDER BY symbol, date DESC""",
         FULL_UNIVERSE,
     )
-    return _serialize(rows)
+    by_symbol = {row["symbol"]: row for row in scored}
+    full = []
+    for sym in FULL_UNIVERSE:
+        row = by_symbol.get(sym)
+        if row is not None:
+            full.append(row)
+        else:
+            full.append({
+                "symbol": sym, "date": None, "composite_score": None,
+                "fundamental_score": None, "technical_score": None,
+                "regime": None, "ai_consensus": None,
+            })
+    return _serialize(full)
 
 
 @app.get("/api/strategies")
@@ -727,6 +764,18 @@ def _intraday_cache_clear() -> None:
     _INTRADAY_CACHE.clear()
 
 
+@app.get("/api/chart/candles/{symbol}")
+async def get_chart_candles(symbol: str, days: int = 10, timeframe: str = "1Hour"):
+    # / alias for /api/intraday without indicator overlays — bug 3a
+    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators="")
+
+
+@app.get("/api/chart/indicators/{symbol}")
+async def get_chart_indicators(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
+    # / alias for /api/intraday focused on indicator dispatch — bug 3a
+    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators=indicators)
+
+
 @app.get("/api/intraday/{symbol}")
 async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
     days = max(1, min(days, 60))
@@ -1014,9 +1063,20 @@ async def replay_endpoint(symbol: str, cutoff: str = "", days_back: int = 30):
 
 
 @app.get("/api/compare")
-async def compare_endpoint(base: str = "", against: str = "", timeframe: str = "1Day", days: int = 90):
+async def compare_endpoint(
+    base: str = "",
+    against: str = "",
+    symbols: str = "",
+    timeframe: str = "1Day",
+    days: int = 90,
+):
     # / pair normalized overlay — % change from first common timestamp for both symbols
     # / empty series on any failure so the chart can fall back cleanly
+    # / bug 3c: accept symbols=AAPL,MSFT as an alias for base=AAPL&against=MSFT
+    if not base and not against and symbols:
+        parts = [s.strip() for s in symbols.split(",") if s.strip()]
+        if len(parts) >= 2:
+            base, against = parts[0], parts[1]
     if not base or not against:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if len(base) > _CHART_STATE_SYMBOL_MAX or len(against) > _CHART_STATE_SYMBOL_MAX:
