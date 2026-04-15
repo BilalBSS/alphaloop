@@ -50,12 +50,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Quant Trading Dashboard", docs_url="/api/docs", lifespan=lifespan)
 
+# / bug 5e: allow_origins=* is too permissive for a dashboard with broker context
+# / restrict to known origins; override via ALPHALOOP_CORS_ORIGINS env (comma separated)
+_default_origins = [
+    "https://dashboard.siddiqtradebot.trade",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+_cors_env = os.environ.get("ALPHALOOP_CORS_ORIGINS", "").strip()
+_parsed = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else []
+# / fall back to defaults when env parses to empty so a misconfigured comma doesn't blackhole cors
+_cors_origins = _parsed or _default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
+
+
+# / bug 5d: FastAPI APIRoute sets methods={'GET'} without adding HEAD, so HEAD to /api/ returns 404
+# / gate rewrite to /api/ paths only — static assets already handle HEAD natively in StaticFiles,
+# / mutating scope["method"] there would force full file reads on every HEAD ping
+@app.middleware("http")
+async def _head_fallback(request, call_next):
+    if request.method == "HEAD" and request.url.path.startswith("/api/"):
+        request.scope["method"] = "GET"
+    return await call_next(request)
 
 
 def _get_broker():
@@ -304,17 +328,31 @@ async def get_analysis(symbol: str):
 
 @app.get("/api/symbols")
 async def get_symbols():
-    # / list tracked symbols with latest score — filter to active universe only
+    # / list ALL universe symbols with latest score if any — bug 5a: un-analyzed symbols
+    # / were silently missing from the response, dashboard showed 51 of 54 on a cold pool
     from src.data.symbols import FULL_UNIVERSE
-    rows = await _query(
-        """SELECT DISTINCT ON (symbol) symbol, date, composite_score, regime,
+    scored = await _query(
+        """SELECT DISTINCT ON (symbol) symbol, date, composite_score,
+            fundamental_score, technical_score, regime,
             details->>'ai_consensus' as ai_consensus
         FROM analysis_scores
         WHERE symbol = ANY($1)
         ORDER BY symbol, date DESC""",
         FULL_UNIVERSE,
     )
-    return _serialize(rows)
+    by_symbol = {row["symbol"]: row for row in scored}
+    full = []
+    for sym in FULL_UNIVERSE:
+        row = by_symbol.get(sym)
+        if row is not None:
+            full.append(row)
+        else:
+            full.append({
+                "symbol": sym, "date": None, "composite_score": None,
+                "fundamental_score": None, "technical_score": None,
+                "regime": None, "ai_consensus": None,
+            })
+    return _serialize(full)
 
 
 @app.get("/api/strategies")
@@ -363,14 +401,24 @@ async def get_strategies():
             strategies_by_id[sid] = dict(row)
 
     # / overlay trade_log aggregates where available
+    # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
+    # / broke `pnl > 0` so every buy fell into the "loss" bucket → win_rate 0.000 for everyone.
+    # / closed = sells with realized pnl; win_rate NULL until we have at least one closed trade.
     trade_rows = await _query(
         """SELECT strategy_id,
-            COUNT(*) as total_trades,
-            COUNT(*) FILTER (WHERE pnl > 0) as wins,
-            COUNT(*) FILTER (WHERE pnl < 0) as losses,
-            COALESCE(ROUND(AVG(pnl)::numeric, 2), 0) as avg_pnl,
-            COALESCE(ROUND(SUM(pnl)::numeric, 2), 0) as total_pnl,
-            ROUND(COUNT(*) FILTER (WHERE pnl > 0)::numeric / NULLIF(COUNT(*), 0), 3) as win_rate,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) as total_trades,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl > 0) as wins,
+            COUNT(*) FILTER (WHERE side = 'sell' AND pnl < 0) as losses,
+            COALESCE(ROUND(AVG(pnl) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL)::numeric, 2), 0) as avg_pnl,
+            COALESCE(ROUND(SUM(pnl) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL)::numeric, 2), 0) as total_pnl,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) = 0 THEN NULL
+                ELSE ROUND(
+                    COUNT(*) FILTER (WHERE side = 'sell' AND pnl > 0)::numeric
+                    / COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL),
+                    3
+                )
+            END as win_rate,
             MAX(created_at) as last_trade_at
         FROM trade_log
         WHERE strategy_id IS NOT NULL
@@ -592,14 +640,48 @@ async def get_health():
 
 @app.get("/api/insider/{symbol}")
 async def get_insider(symbol: str):
-    # / recent insider trades for symbol (last 90 days)
+    # / recent insider trades for symbol (last 90 days) + signed strength from latest analysis
+    # / bug 4b: signed_strength lives in analysis_scores.details, not in insider_trades table
+    sym = symbol.upper()
     rows = await _query(
         """SELECT * FROM insider_trades
         WHERE symbol = $1 AND filing_date > CURRENT_DATE - INTERVAL '90 days'
         ORDER BY filing_date DESC LIMIT 20""",
-        symbol.upper(),
+        sym,
     )
-    return _serialize(rows)
+    latest_score = await _query_one(
+        """SELECT details->>'insider_signed_strength' AS signed_strength,
+                  details->>'insider_score_100' AS score_100
+        FROM analysis_scores
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 1""",
+        sym,
+    )
+    signed = None
+    score_100 = None
+    if latest_score:
+        try:
+            raw_signed = latest_score.get("signed_strength")
+            signed = float(raw_signed) if raw_signed is not None else None
+        except (TypeError, ValueError):
+            signed = None
+        try:
+            raw_score = latest_score.get("score_100")
+            score_100 = float(raw_score) if raw_score is not None else None
+        except (TypeError, ValueError):
+            score_100 = None
+    signal = "neutral"
+    if signed is not None:
+        if signed > 10:
+            signal = "bullish"
+        elif signed < -10:
+            signal = "bearish"
+    return {
+        "trades": _serialize(rows),
+        "signed_strength": signed,
+        "score_100": score_100,
+        "signal": signal,
+    }
 
 
 @app.get("/api/signals")
@@ -680,6 +762,18 @@ def _intraday_cache_put(key: tuple, payload: object) -> None:
 def _intraday_cache_clear() -> None:
     # / test helper
     _INTRADAY_CACHE.clear()
+
+
+@app.get("/api/chart/candles/{symbol}")
+async def get_chart_candles(symbol: str, days: int = 10, timeframe: str = "1Hour"):
+    # / alias for /api/intraday without indicator overlays — bug 3a
+    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators="")
+
+
+@app.get("/api/chart/indicators/{symbol}")
+async def get_chart_indicators(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
+    # / alias for /api/intraday focused on indicator dispatch — bug 3a
+    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators=indicators)
 
 
 @app.get("/api/intraday/{symbol}")
@@ -969,9 +1063,20 @@ async def replay_endpoint(symbol: str, cutoff: str = "", days_back: int = 30):
 
 
 @app.get("/api/compare")
-async def compare_endpoint(base: str = "", against: str = "", timeframe: str = "1Day", days: int = 90):
+async def compare_endpoint(
+    base: str = "",
+    against: str = "",
+    symbols: str = "",
+    timeframe: str = "1Day",
+    days: int = 90,
+):
     # / pair normalized overlay — % change from first common timestamp for both symbols
     # / empty series on any failure so the chart can fall back cleanly
+    # / bug 3c: accept symbols=AAPL,MSFT as an alias for base=AAPL&against=MSFT
+    if not base and not against and symbols:
+        parts = [s.strip() for s in symbols.split(",") if s.strip()]
+        if len(parts) >= 2:
+            base, against = parts[0], parts[1]
     if not base or not against:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if len(base) > _CHART_STATE_SYMBOL_MAX or len(against) > _CHART_STATE_SYMBOL_MAX:
@@ -1028,15 +1133,26 @@ async def get_ict_indicators(symbol: str):
 
 @app.get("/api/quant-metrics/{symbol}")
 async def get_quant_metrics(symbol: str):
+    # / bug 4d: broaden the join — strategy scored this symbol via any signal OR actual trade
+    # / DISTINCT ON picks the latest strategy_scores row per strategy_id
     rows = await _query(
-        """SELECT ss.* FROM strategy_scores ss
+        """SELECT DISTINCT ON (ss.strategy_id) ss.*
+        FROM strategy_scores ss
         WHERE ss.strategy_id IN (
-            SELECT DISTINCT strategy_id FROM trade_signals WHERE symbol = $1
+            SELECT strategy_id FROM trade_signals WHERE symbol = $1 AND strategy_id IS NOT NULL
+            UNION
+            SELECT strategy_id FROM trade_log WHERE symbol = $1 AND strategy_id IS NOT NULL
         )
-        ORDER BY ss.sharpe_ratio DESC NULLS LAST""",
+        ORDER BY ss.strategy_id, ss.created_at DESC""",
         symbol,
     )
-    return _serialize(rows)
+    # / secondary sort by sharpe for display
+    rows_sorted = sorted(
+        rows,
+        key=lambda r: float(r.get("sharpe_ratio") or -999),
+        reverse=True,
+    )
+    return _serialize(rows_sorted)
 
 
 @app.get("/api/strategy-evaluations")

@@ -9,7 +9,7 @@
 // /   undo       — () => Promise<void> — remove the most recent drawing
 
 // / tool list: glyph + label + library tool type string
-// / trend-line, horizontal-line, vertical-line, rectangle, fib-retracement, text-annotation
+// / trend-line, horizontal-line, vertical-line, rectangle, parallel-channel, fib-retracement, text-annotation
 // / match the readonly type strings exposed by lightweight-charts-drawing
 const TOOLS = [
   { id: null, glyph: '>', label: 'Cursor' },
@@ -17,6 +17,7 @@ const TOOLS = [
   { id: 'horizontal-line', glyph: 'H', label: 'HLine' },
   { id: 'vertical-line', glyph: 'V', label: 'VLine' },
   { id: 'rectangle', glyph: 'R', label: 'Rect' },
+  { id: 'parallel-channel', glyph: 'P', label: 'Channel' },
   { id: 'fib-retracement', glyph: 'F', label: 'Fib' },
   { id: 'text-annotation', glyph: 'T', label: 'Text' },
 ]

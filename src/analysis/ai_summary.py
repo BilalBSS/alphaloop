@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -539,6 +540,49 @@ def _dispatch_prompt(
     return prompt, sys_msg
 
 
+def _parse_synthesis_json(raw: str) -> dict | None:
+    # / bug 4e: tolerant json parser for llm synthesis output
+    # / handles ```json fences, trailing commas, unescaped control chars, first-{ last-} slice
+    if not raw:
+        return None
+    text = raw.strip()
+    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
+
+    def _sanitize(s: str) -> str:
+        # / drop trailing commas inside } or ] and escape all control chars in strings
+        # / json.loads rejects raw \n \r \t inside "quoted strings"; escape them so parse succeeds
+        s = re.sub(r",(\s*[}\]])", r"\1", s)
+
+        def _escape_in_string(match: re.Match) -> str:
+            inner = match.group(0)
+            inner = inner.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            return inner
+
+        s = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_in_string, s, flags=re.DOTALL)
+        # / any remaining control chars outside strings are whitespace safe
+        s = re.sub(r"[\x00-\x1f]", " ", s)
+        return s
+
+    candidates: list[str] = [text, _sanitize(text)]
+    brace_start = raw.find("{")
+    brace_end = raw.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        sliced = raw[brace_start:brace_end + 1]
+        candidates.append(sliced)
+        candidates.append(_sanitize(sliced))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None
+
+
 def _dispatch_fallback(
     symbol: str,
     ratio: RatioScore | None,
@@ -882,37 +926,54 @@ Produce a JSON response with:
 
 Output ONLY valid JSON. No explanation outside the JSON."""
 
-    try:
-        from src.data.llm_client import llm_call
+    from src.data.llm_client import llm_call
+
+    async def _call(provider: str, model: str) -> str:
         data = await llm_call(
-            "deepseek",
+            provider,
             messages=[
                 {"role": "system", "content": "You are a senior portfolio analyst. Produce structured JSON assessments."},
                 {"role": "user", "content": prompt},
             ],
-            model="deepseek-reasoner",
+            model=model,
             max_tokens=2000,
             timeout=60.0,
         )
-        raw = data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]["content"]
 
-        # / parse structured response — try multiple extraction strategies
-        text = raw.strip()
-        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
+    # / bug 4e: parse with sanitization + retry + groq fallback so one bad deepseek response
+    # / doesn't blank the whole synthesis card
+    result: dict | None = None
+    raw: str = ""
+    errors: list[str] = []
+
+    for attempt, (provider, model) in enumerate([
+        ("deepseek", "deepseek-reasoner"),
+        ("deepseek", "deepseek-reasoner"),
+        ("groq", "llama-3.3-70b-versatile"),
+    ]):
         try:
-            result = json.loads(text)
-        except json.JSONDecodeError:
-            # / retry: find first { to last } in raw response
-            brace_start = raw.find("{")
-            brace_end = raw.rfind("}")
-            if brace_start >= 0 and brace_end > brace_start:
-                result = json.loads(raw[brace_start:brace_end + 1])
-            else:
-                raise
+            raw = await _call(provider, model)
+            result = _parse_synthesis_json(raw)
+            if result is not None:
+                break
+        except Exception as exc:
+            errors.append(f"{provider}:{exc}")
+            logger.warning("synthesis_parse_attempt_failed", attempt=attempt, provider=provider, error=str(exc)[:200])
 
-        # / store to db
+    if result is None:
+        logger.error("daily_synthesis_failed", errors=errors)
+        try:
+            await store_daily_synthesis(
+                pool, today, "deepseek-reasoner",
+                None, None, None, None,
+                (raw or "; ".join(errors))[:2000],
+            )
+        except Exception:
+            pass
+        return None
+
+    try:
         await store_daily_synthesis(
             pool, today, "deepseek-reasoner",
             result.get("top_buys"),
@@ -921,22 +982,12 @@ Output ONLY valid JSON. No explanation outside the JSON."""
             result.get("per_symbol_notes"),
             raw,
         )
-
-        logger.info("daily_synthesis_complete",
-            buys=len(result.get("top_buys", [])),
-            avoids=len(result.get("top_avoids", [])),
-        )
-        return result
-
     except Exception as exc:
-        logger.error("daily_synthesis_failed", error=str(exc))
-        # / store raw response even on parse failure
-        try:
-            await store_daily_synthesis(
-                pool, today, "deepseek-reasoner",
-                None, None, None, None,
-                str(exc),
-            )
-        except Exception:
-            pass
-        return None
+        logger.error("synthesis_store_failed", error=str(exc))
+
+    logger.info(
+        "daily_synthesis_complete",
+        buys=len(result.get("top_buys", [])),
+        avoids=len(result.get("top_avoids", [])),
+    )
+    return result

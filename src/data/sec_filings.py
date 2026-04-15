@@ -6,12 +6,28 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import structlog
+
+
+def _to_decimal_safe(v: Any) -> Decimal:
+    # / coerce to Decimal, mapping None/NaN/inf/unparseable to 0
+    if v is None:
+        return Decimal(0)
+    try:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return Decimal(0)
+        d = Decimal(str(v))
+        if d.is_nan() or d.is_infinite():
+            return Decimal(0)
+        return d
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
 
 logger = structlog.get_logger(__name__)
 
@@ -67,15 +83,19 @@ def _fetch_insider_trades_sync(
                 owner_title = _safe_get(form4, "position", "")
 
                 for txn in _get_transactions(form4):
+                    # / bug 5b: option_exercise rows often have NaN price from edgartools
+                    # / Decimal('NaN') serializes as the literal string "NaN" in jsonb — coerce to 0
+                    shares = _to_decimal_safe(txn.get("shares", 0))
+                    price = _to_decimal_safe(txn.get("price", 0))
                     trades.append({
                         "symbol": symbol,
                         "filing_date": filing_date,
                         "insider_name": str(owner_name)[:200],
                         "insider_title": str(owner_title)[:100],
                         "transaction_type": txn.get("type", "unknown"),
-                        "shares": Decimal(str(txn.get("shares", 0))),
-                        "price_per_share": Decimal(str(txn.get("price", 0))),
-                        "total_value": Decimal(str(txn.get("shares", 0))) * Decimal(str(txn.get("price", 0))),
+                        "shares": shares,
+                        "price_per_share": price,
+                        "total_value": shares * price,
                     })
 
             except Exception as exc:

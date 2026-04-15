@@ -158,11 +158,11 @@ export default function SymbolList({ symbols, loading, onSelect }) {
               style={{ height: 36 }}
             >
               <td className="px-2 py-1 font-mono font-semibold">{s.symbol}</td>
-              <td className={`px-2 py-1 text-right font-mono ${scoreColor(s.composite_score)}`}>
-                {parseFloat(s.composite_score || 0).toFixed(1)}
+              <td className={`px-2 py-1 text-right font-mono ${s.composite_score == null ? 'text-text-muted' : scoreColor(s.composite_score)}`}>
+                {s.composite_score == null ? '--' : parseFloat(s.composite_score).toFixed(1)}
               </td>
-              <td className="px-2 py-1 text-center">{consensusBadge(s.ai_consensus)}</td>
-              <td className="px-2 py-1 text-center">{regimeBadge(s.regime)}</td>
+              <td className="px-2 py-1 text-center">{s.ai_consensus ? consensusBadge(s.ai_consensus) : <span className="text-text-muted">--</span>}</td>
+              <td className="px-2 py-1 text-center">{s.regime ? regimeBadge(s.regime) : <span className="text-text-muted">--</span>}</td>
             </tr>
           ))}
           {filtered.length === 0 && (

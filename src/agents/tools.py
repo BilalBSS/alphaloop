@@ -462,6 +462,48 @@ async def sync_trades_from_alpaca(pool) -> int:
                 {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
+            # / bug 1a: project alpaca fills into strategy_positions as 'untracked'
+            # / only when no real strategy already owns the symbol — avoids corrupting
+            # / attributed positions when a sell comes through sync after executor already closed it
+            # / guard: sync skips orders already in trade_log (existing_set), so this only runs
+            # / on historical fills the executor never saw (startup, external trades)
+            owned_by_real = await conn.fetchrow(
+                """SELECT 1 FROM strategy_positions
+                WHERE symbol = $1 AND strategy_id <> 'untracked' AND qty > 0
+                LIMIT 1""",
+                symbol,
+            )
+            if not owned_by_real:
+                if side == "buy":
+                    await conn.execute(
+                        """
+                        INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
+                        VALUES ('untracked', $1, $2, $3, $4::timestamptz)
+                        ON CONFLICT (strategy_id, symbol) DO UPDATE SET
+                            avg_entry_price = (
+                                (strategy_positions.avg_entry_price * strategy_positions.qty
+                                 + EXCLUDED.avg_entry_price * EXCLUDED.qty)
+                                / NULLIF(strategy_positions.qty + EXCLUDED.qty, 0)
+                            ),
+                            qty = strategy_positions.qty + EXCLUDED.qty,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        symbol, Decimal(str(qty)), Decimal(str(price)), filled_at,
+                    )
+                elif side == "sell":
+                    # / reduce untracked qty first (if any), delete row when <= 0
+                    await conn.execute(
+                        """
+                        UPDATE strategy_positions
+                        SET qty = qty - $2, updated_at = $3::timestamptz
+                        WHERE strategy_id = 'untracked' AND symbol = $1
+                        """,
+                        symbol, Decimal(str(qty)), filled_at,
+                    )
+                    await conn.execute(
+                        "DELETE FROM strategy_positions WHERE strategy_id = 'untracked' AND symbol = $1 AND qty <= 0",
+                        symbol,
+                    )
             synced += 1
     if synced:
         logger.info("alpaca_sync_complete", synced=synced, total_orders=len(orders))

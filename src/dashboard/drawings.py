@@ -17,6 +17,7 @@ VALID_DRAWING_TYPES: set[str] = {
     "horizontal_line",
     "vertical_line",
     "rectangle",
+    "parallel_channel",
     "fib_retracement",
     "fib_extension",
     "text",
