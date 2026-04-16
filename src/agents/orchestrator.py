@@ -429,16 +429,23 @@ class AgentOrchestrator:
                 from src.data.sec_filings import fetch_insider_trades, store_insider_trades
                 from src.data.symbols import get_sector
                 symbols = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
+                total_trades = 0
                 for symbol in symbols:
                     try:
                         trades = await fetch_insider_trades(symbol)
                         if trades:
                             await store_insider_trades(self._pool, trades)
+                            total_trades += len(trades)
                     except Exception as exc:
                         logger.warning("insider_backfill_symbol_error", symbol=symbol, error=str(exc))
+                await tools.log_event(
+                    self._pool, "info", "insider_backfill",
+                    f"symbols={len(symbols)} trades={total_trades}",
+                )
             except Exception as exc:
                 logger.error("insider_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "insider_backfill")
+                await tools.log_event(self._pool, "error", "insider_backfill", str(exc)[:200])
 
     async def _fundamentals_backfill_loop(self) -> None:
         # / refresh fundamentals from edgar/finnhub/yfinance daily at 7am et
@@ -457,9 +464,14 @@ class AgentOrchestrator:
                 if data:
                     await store_fundamentals(self._pool, data)
                     logger.info("fundamentals_backfill_complete", count=len(data))
+                await tools.log_event(
+                    self._pool, "info", "fundamentals_backfill",
+                    f"symbols={len(symbols)} updated={len(data) if data else 0}",
+                )
             except Exception as exc:
                 logger.error("fundamentals_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "fundamentals_backfill")
+                await tools.log_event(self._pool, "error", "fundamentals_backfill", str(exc)[:200])
 
     async def _crypto_backfill_loop(self) -> None:
         # / refresh crypto ohlcv bars every 30 min (24/7, no ET gate)
@@ -509,25 +521,45 @@ class AgentOrchestrator:
                     "regime_backfill_complete",
                     equity_rows=equity_count, crypto_rows=crypto_count,
                 )
+                await tools.log_event(
+                    self._pool, "info", "regime_backfill",
+                    f"equity={equity_count} crypto={crypto_count}",
+                )
             except Exception as exc:
                 logger.error("regime_loop_error", exc_info=True)
                 notify_system_error(str(exc), "regime_loop")
+                await tools.log_event(self._pool, "error", "regime_backfill", str(exc)[:200])
 
             if await self._wait_or_stop(REGIME_LOOP_INTERVAL):
                 break
 
     async def _intraday_backfill_loop(self) -> None:
-        # / fetch 2h intraday bars for all symbols (crypto trades 24/7)
+        # / fetch 1h intraday bars for all symbols, then aggregate 1h into 2h bars
+        # / bug e: 2h timeframe previously had zero rows; aggregate after 1h backfill
+        # / also emits cycle_ok events so /api/health surfaces this loop
         while not self._stop_event.is_set():
             try:
-                from src.data.market_data import backfill_intraday
+                from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
                 symbols = self._get_symbols()
-                results = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
-                total = sum(results.values())
-                logger.info("intraday_backfill_complete", symbols=len(symbols), bars=total)
+                results_1h = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
+                total_1h = sum(results_1h.values())
+                results_2h = await aggregate_intraday_to_2h(self._pool, symbols, days=10)
+                total_2h = sum(results_2h.values())
+                missing = [s for s, n in results_1h.items() if n == 0]
+                if missing:
+                    logger.warning("intraday_backfill_symbol_empty", count=len(missing), sample=missing[:10])
+                logger.info(
+                    "intraday_backfill_complete",
+                    symbols=len(symbols), bars_1h=total_1h, bars_2h=total_2h,
+                )
+                await tools.log_event(
+                    self._pool, "info", "intraday_backfill",
+                    f"1h={total_1h} 2h={total_2h} empty={len(missing)}",
+                )
             except Exception as exc:
                 logger.error("intraday_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "intraday_backfill")
+                await tools.log_event(self._pool, "error", "intraday_backfill", str(exc)[:200])
 
             if await self._wait_or_stop(INTRADAY_INTERVAL):
                 break
@@ -544,9 +576,13 @@ class AgentOrchestrator:
                 total = sum(results.values())
                 if total:
                     logger.info("daily_bar_backfill_complete", symbols=len(symbols), bars=total)
+                await tools.log_event(
+                    self._pool, "info", "daily_bar_backfill", f"symbols={len(symbols)} bars={total}",
+                )
             except Exception as exc:
                 logger.error("daily_bar_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "daily_bar_backfill")
+                await tools.log_event(self._pool, "error", "daily_bar_backfill", str(exc)[:200])
 
             if await self._wait_or_stop(DAILY_BAR_INTERVAL):
                 break
@@ -566,11 +602,16 @@ class AgentOrchestrator:
                     if prices:
                         stored = await store_latest_prices(self._pool, prices)
                         logger.info("price_refresh_complete", symbols=stored)
+                        await tools.log_event(
+                            self._pool, "info", "price_refresh", f"symbols={stored}",
+                        )
                     else:
                         logger.warning("price_refresh_empty")
+                        await tools.log_event(self._pool, "warning", "price_refresh", "no_prices_fetched")
             except Exception as exc:
                 logger.warning("price_refresh_error", error=str(exc)[:100])
                 notify_system_error(f"price refresh failed: {str(exc)[:80]}", "price_refresh")
+                await tools.log_event(self._pool, "error", "price_refresh", str(exc)[:200])
 
             if await self._wait_or_stop(PRICE_REFRESH_INTERVAL):
                 break
@@ -597,6 +638,10 @@ class AgentOrchestrator:
                 broker = self._broker_factory.get_broker()
                 alpaca_positions = await broker.get_positions()
                 alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
+                # / bug e: carry avg_entry_price for untracked projection so cost basis isn't zero
+                alpaca_prices: dict[str, float] = {
+                    p.symbol: float(p.avg_entry_price or 0) for p in alpaca_positions
+                }
 
                 drift_found = False
                 current_drift: dict[str, float] = {}
@@ -626,7 +671,9 @@ class AgentOrchestrator:
                 # / auto-fix: update drifted positions without destroying attribution
                 if drift_found:
                     # / bug c: full_sync=true bypasses empty-alpaca guard after confirmed drift
-                    await tools.reconcile_strategy_positions(self._pool, alpaca_map, full_sync=True)
+                    await tools.reconcile_strategy_positions(
+                        self._pool, alpaca_map, full_sync=True, price_map=alpaca_prices,
+                    )
                     logger.info("position_reconciliation_auto_fixed")
                 else:
                     logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
@@ -649,9 +696,14 @@ class AgentOrchestrator:
                 indicators = await fetch_macro_indicators(self._pool)
                 if indicators:
                     logger.info("macro_backfill_complete", indicators=len(indicators))
+                await tools.log_event(
+                    self._pool, "info", "macro_backfill",
+                    f"indicators={len(indicators) if indicators else 0}",
+                )
             except Exception as exc:
                 logger.error("macro_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "macro_backfill")
+                await tools.log_event(self._pool, "error", "macro_backfill", str(exc)[:200])
 
     async def _alert_loop(self) -> None:
         # / isolated price-cross alert scanner — never shares state with strategy/risk agents
@@ -673,9 +725,11 @@ class AgentOrchestrator:
                         self._pool, broker, ws_broadcast, webhook_url,
                         self._alert_prev_prices,
                     )
+                    await tools.log_event(self._pool, "info", "alert", "cycle_ok")
             except Exception as exc:
                 logger.error("alert_loop_error", exc_info=True)
                 notify_system_error(str(exc), "alert_loop")
+                await tools.log_event(self._pool, "error", "alert", str(exc)[:200])
 
             if await self._wait_or_stop(ALERT_CHECK_INTERVAL):
                 break
@@ -727,9 +781,13 @@ class AgentOrchestrator:
                         logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
                     await asyncio.sleep(2)  # / throttle api calls
                 logger.info("alternative_data_backfill_complete", count=len(symbols))
+                await tools.log_event(
+                    self._pool, "info", "alternative_data", f"symbols={len(symbols)}",
+                )
             except Exception as exc:
                 logger.error("alternative_data_error", exc_info=True)
                 notify_system_error(str(exc), "alternative_data")
+                await tools.log_event(self._pool, "error", "alternative_data", str(exc)[:200])
             if await self._wait_or_stop(ALTERNATIVE_DATA_INTERVAL):
                 break
 

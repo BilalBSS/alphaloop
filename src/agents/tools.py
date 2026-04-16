@@ -291,10 +291,13 @@ async def get_strategy_positions(
 
 async def reconcile_strategy_positions(
     pool, alpaca_map: dict[str, float], full_sync: bool = False,
+    price_map: dict[str, float] | None = None,
 ) -> None:
     # / smart reconciliation: update quantities without destroying strategy attribution
     # / alpaca_map: {symbol: qty} from broker.get_positions()
+    # / price_map: optional {symbol: avg_entry_price} so untracked rows carry a real cost basis
     # / full_sync=True: bypass empty-alpaca guard (caller confirmed empty is real, not api glitch)
+    price_map = price_map or {}
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, strategy_id, symbol, qty FROM strategy_positions",
@@ -315,12 +318,17 @@ async def reconcile_strategy_positions(
             for symbol, alpaca_qty in alpaca_map.items():
                 entries = db_by_symbol.pop(symbol, [])
                 if not entries:
-                    # / new position not in db — add as untracked
+                    # / new position not in db — add as untracked with alpaca cost basis
+                    # / bug e: avg_entry_price was hardcoded 0, now pulled from price_map
+                    avg_price = price_map.get(symbol, 0)
                     await conn.execute(
                         """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
-                        VALUES ('untracked', $1, $2, 0, NOW())
-                        ON CONFLICT (strategy_id, symbol) DO UPDATE SET qty = $2, updated_at = NOW()""",
-                        symbol, Decimal(str(alpaca_qty)),
+                        VALUES ('untracked', $1, $2, $3, NOW())
+                        ON CONFLICT (strategy_id, symbol) DO UPDATE SET
+                            qty = $2,
+                            avg_entry_price = COALESCE(NULLIF($3, 0), strategy_positions.avg_entry_price),
+                            updated_at = NOW()""",
+                        symbol, Decimal(str(alpaca_qty)), Decimal(str(avg_price or 0)),
                     )
                     continue
 
