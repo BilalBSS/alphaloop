@@ -169,11 +169,25 @@ def _build_prompt(
                 parts.append(s)
 
     if positions:
-        parts.append(f"\n## Current Positions")
+        parts.append(f"\n## Current Positions & Strategy Performance")
         parts.append(f"{len(positions)} strategies currently hold this stock:")
         for p in positions:
             entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
-            parts.append(f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}")
+            line = f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}"
+            # / bug e2: include strategy quant metrics so llm can reason about which
+            # / strategy holding this symbol is working vs which is leaking alpha
+            metric_parts = []
+            if p.get("sharpe") is not None:
+                metric_parts.append(f"sharpe {p['sharpe']:.2f}")
+            if p.get("win_rate") is not None:
+                metric_parts.append(f"win {p['win_rate'] * 100:.0f}%")
+            if p.get("max_drawdown") is not None:
+                metric_parts.append(f"maxdd {p['max_drawdown'] * 100:.1f}%")
+            if p.get("total_trades") is not None and p.get("total_trades") > 0:
+                metric_parts.append(f"{p['total_trades']} closed")
+            if metric_parts:
+                line += f" | {', '.join(metric_parts)}"
+            parts.append(line)
 
     parts.append("\n## Instructions")
     parts.append("- Identify the 2-3 most important signals and explain why they matter more than the others")
@@ -913,16 +927,49 @@ async def generate_daily_synthesis(
             )
     score_text = "\n".join(score_lines)
 
+    # / bug e2: inject live strategy performance so synthesis reasons about active strategies
+    # / not just symbol scores. paper must mirror live — same feedback that live would give.
+    strategy_text = ""
+    try:
+        async with pool.acquire() as conn:
+            strat_rows = await conn.fetch(
+                """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio, sortino_ratio,
+                    win_rate, max_drawdown, composite_score, total_trades, regime_breakdown
+                FROM strategy_scores
+                WHERE period_end >= $1
+                ORDER BY strategy_id, created_at DESC""",
+                today - _td(days=7),
+            )
+        if strat_rows:
+            lines = []
+            for r in strat_rows:
+                sharpe = float(r["sharpe_ratio"]) if r["sharpe_ratio"] is not None else None
+                wr = float(r["win_rate"]) if r["win_rate"] is not None else None
+                dd = float(r["max_drawdown"]) if r["max_drawdown"] is not None else None
+                parts_ = []
+                if sharpe is not None:
+                    parts_.append(f"sharpe {sharpe:.2f}")
+                if wr is not None:
+                    parts_.append(f"win {wr * 100:.0f}%")
+                if dd is not None:
+                    parts_.append(f"maxdd {dd * 100:.1f}%")
+                parts_.append(f"{r['total_trades'] or 0} closed")
+                lines.append(f"  {r['strategy_id']}: {', '.join(parts_)}")
+            strategy_text = "\n\nLIVE STRATEGY METRICS (last 7d, paper + live combined):\n" + "\n".join(lines)
+    except Exception as exc:
+        logger.debug("synthesis_strategy_metrics_failed", error=str(exc)[:100])
+
     prompt = f"""You are a senior portfolio analyst. Review today's data across all symbols and produce a structured assessment.
 
 TODAY'S ANALYSIS SCORES ({len(scores)} symbols):
-{score_text}
+{score_text}{strategy_text}
 
 Produce a JSON response with:
 - "top_buys": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (top 5)
 - "top_avoids": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (bottom 5)
 - "portfolio_risk": "one paragraph about overall market conditions and risk"
 - "per_symbol_notes": {{"TICKER": "note"}} for any symbol with unusual activity
+- "strategy_commentary": "one paragraph about which strategies are performing well and which need attention"
 
 Output ONLY valid JSON. No explanation outside the JSON."""
 

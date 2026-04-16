@@ -17,7 +17,11 @@ from src.quant.risk_metrics import max_drawdown
 
 logger = structlog.get_logger(__name__)
 
-# / minimum closed trades per strategy/window before metrics are emitted
+# / bug e2: paper-mode mirror of live — emit metrics once a strategy has >=3 data points
+# / across closed trades AND daily mark-to-market observations from open positions combined.
+# / previously this required 3 CLOSED trades, which meant strategy_011 paper-trading 10 open
+# / positions with no sells yet showed no metrics at all. now open positions contribute daily
+# / returns so the feedback loop to the llm works in paper mode.
 MIN_TRADES = 3
 # / annualization factor (us equity trading days)
 # / note: sharpe/sortino are computed on per-trade returns and annualized by sqrt(252)
@@ -95,6 +99,55 @@ async def compute_live_strategy_metrics(
     return upserted
 
 
+async def _compute_open_position_returns(
+    pool, strategy_id: str, period_start: date, period_end: date,
+) -> tuple[list[float], float]:
+    # / bug e2: build daily mark-to-market return series from strategy's currently open positions
+    # / for each open position, walk daily market_data closes and compute pct changes vs previous
+    # / close (or entry price on the first day). returns per-position daily returns concatenated.
+    # / total_pnl is the sum of unrealized p&l (current close vs entry) across all positions.
+    async with pool.acquire() as conn:
+        positions = await conn.fetch(
+            """SELECT symbol, qty, avg_entry_price, opened_at
+            FROM strategy_positions
+            WHERE strategy_id = $1 AND qty > 0 AND avg_entry_price > 0""",
+            strategy_id,
+        )
+    if not positions:
+        return [], 0.0
+    returns: list[float] = []
+    total_unrealized = 0.0
+    for p in positions:
+        sym = p["symbol"]
+        entry_price = float(p["avg_entry_price"])
+        qty = float(p["qty"])
+        if entry_price <= 0 or qty <= 0:
+            continue
+        opened = p["opened_at"].date() if p["opened_at"] else period_start
+        start = max(opened, period_start)
+        if start > period_end:
+            continue
+        async with pool.acquire() as conn:
+            bars = await conn.fetch(
+                """SELECT date, close FROM market_data
+                WHERE symbol = $1 AND date >= $2 AND date <= $3
+                ORDER BY date ASC""",
+                sym, start, period_end,
+            )
+        prev = entry_price
+        last_close = entry_price
+        for b in bars:
+            close = float(b["close"]) if b["close"] is not None else None
+            if close is None or close <= 0 or prev <= 0:
+                continue
+            returns.append((close - prev) / prev)
+            prev = close
+            last_close = close
+        # / unrealized p&l = latest close vs entry price × qty
+        total_unrealized += (last_close - entry_price) * qty
+    return returns, total_unrealized
+
+
 async def _compute_for_strategy(
     pool, strategy_id: str, period_start: date, period_end: date,
     base_capital: float = DEFAULT_BASE_CAPITAL,
@@ -113,12 +166,22 @@ async def _compute_for_strategy(
             strategy_id, period_start, period_end,
         )
 
-    if not rows:
-        return None
+    returns: list[float] = []
+    total_pnl = 0.0
+    closed_trades: list[dict] = []
+    if rows:
+        returns, total_pnl, closed_trades = _fifo_match_returns([dict(r) for r in rows])
 
-    returns, total_pnl, closed_trades = _fifo_match_returns([dict(r) for r in rows])
+    # / bug e2: extend returns with daily mark-to-market from open positions so paper-trading
+    # / strategies get meaningful sharpe/sortino before any sell ever happens
+    open_returns, unrealized_pnl = await _compute_open_position_returns(
+        pool, strategy_id, period_start, period_end,
+    )
+    returns = returns + open_returns
+    total_pnl += unrealized_pnl
 
-    if len(closed_trades) < MIN_TRADES:
+    # / combined observation count gate — closed trades OR daily MTM observations
+    if len(returns) < MIN_TRADES:
         return None
 
     returns_arr = np.array(returns, dtype=np.float64)
@@ -140,9 +203,13 @@ async def _compute_for_strategy(
     win_rate = wins / len(returns_arr)
 
     # / max drawdown against a fixed capital base for meaningful % scaling
-    # / uses base_capital (default $100k paper trading account) so drawdown
-    # / is a real percentage of account equity, not a synthetic unit ratio
-    pnl_series = np.array([t["pnl"] for t in closed_trades], dtype=np.float64)
+    # / bug e2: also include unrealized p&l deltas from open positions so paper drawdown
+    # / reflects ongoing mark-to-market moves, not just closed trade realized swings
+    pnl_series_parts: list[float] = [t["pnl"] for t in closed_trades]
+    if open_returns:
+        # / convert mark-to-market returns to dollar p&l at base_capital scale for a comparable curve
+        pnl_series_parts.extend(r * base_capital for r in open_returns)
+    pnl_series = np.array(pnl_series_parts, dtype=np.float64) if pnl_series_parts else np.array([0.0])
     equity_curve = base_capital + np.cumsum(pnl_series)
     try:
         _, max_dd_pct = max_drawdown(equity_curve)
@@ -157,7 +224,9 @@ async def _compute_for_strategy(
         "sortino_ratio": round(sortino, 4),
         "max_drawdown_pct": round(max_dd_pct, 4),
         "win_rate": round(win_rate, 4),
+        # / total_trades = closed round-trips; observations covers MTM daily points too
         "total_trades": len(closed_trades),
+        "total_observations": len(returns),
         "composite_score": round(composite, 4),
         "total_pnl": round(total_pnl, 2),
         "brier_score": None,  # / needs prediction+outcome pairs, wired in later phase

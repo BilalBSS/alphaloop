@@ -640,7 +640,7 @@ function PositionPanel({ symbol }) {
 
   if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
   if (!data || data.length === 0) {
-    return <div className="text-text-muted text-sm py-2">No open positions for this symbol</div>
+    return <div className="text-text-muted text-sm py-2">No open positions — no strategy is currently holding this symbol.</div>
   }
 
   return (
@@ -734,7 +734,7 @@ function QuantMetricsPanel({ symbol }) {
   if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
 
   if (!data || data.length === 0) {
-    return <div className="text-text-muted text-sm py-2">No quant metrics yet — strategies need live/paper trades</div>
+    return <div className="text-text-muted text-sm py-2">No quant metrics yet — populated once a strategy closes at least 3 trades on this symbol.</div>
   }
 
   return (
@@ -838,7 +838,7 @@ function AiAnalysisPanel({ score }) {
 // / evolution history table
 function EvolutionPanel({ evolution }) {
   if (!evolution || evolution.length === 0) {
-    return <div className="text-text-muted text-sm py-2">No evolution events for this symbol.</div>
+    return <div className="text-text-muted text-sm py-2">No evolution events for this symbol yet. Evolution runs nightly at midnight ET and logs kills/mutations/promotions here.</div>
   }
   const actionColor = {
     spawn: 'text-accent', spawn_tier2: 'text-accent', mutate: 'text-accent',

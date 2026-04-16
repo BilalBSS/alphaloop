@@ -290,6 +290,9 @@ async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str =
 
 async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[dict[str, Any]]:
     # / yfinance 1h bars — free, 730 day lookback
+    # / bug e2: yfinance returns multiindex columns like ('Open', 'AAPL') even for single
+    # / ticker, so float(row["Open"]) raised valueerror and swallowed every equity intraday
+    # / fetch. flatten columns to top level before iterating.
     def _fetch():
         import yfinance as yf
         earliest = date.today() - timedelta(days=729)
@@ -300,18 +303,25 @@ async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[di
         )
         if df is None or df.empty:
             return []
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            df.columns = df.columns.get_level_values(0)
         bars = []
         for idx, row in df.iterrows():
             ts = idx.to_pydatetime()
+            try:
+                o = float(row["Open"]); h = float(row["High"])
+                low = float(row["Low"]); c = float(row["Close"])
+            except (ValueError, TypeError, KeyError):
+                continue
             bars.append({
                 "symbol": symbol,
                 "date": ts.date(),
                 "timestamp": ts,
-                "open": Decimal(str(round(float(row["Open"]), 4))),
-                "high": Decimal(str(round(float(row["High"]), 4))),
-                "low": Decimal(str(round(float(row["Low"]), 4))),
-                "close": Decimal(str(round(float(row["Close"]), 4))),
-                "volume": int(row.get("Volume", 0)),
+                "open": Decimal(str(round(o, 4))),
+                "high": Decimal(str(round(h, 4))),
+                "low": Decimal(str(round(low, 4))),
+                "close": Decimal(str(round(c, 4))),
+                "volume": int(row.get("Volume", 0) or 0),
                 "vwap": None,
             })
         return bars

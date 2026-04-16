@@ -190,21 +190,36 @@ class EvolutionEngine:
         else:
             bottom = strategy_pool.bottom_quartile()
 
-        # / bug e: dormancy kill — strategies alive 30+ days with zero trades are dead weight
-        # / prevents evolution from idling forever when quartile gate is starved
+        # / bug e2 clean slate: dormancy kill is GATED until the system accumulates at least
+        # / 10 closed trades across any strategy. prior historical "dormancy" is polluted by
+        # / broken intraday + broken consensus gates that were fixed in phase e — killing
+        # / strategies off that data would erase work that never got a fair run. once we have
+        # / real trade data from the fixed pipeline, the gate flips and dormancy kicks in.
         bottom_ids = {e.strategy.strategy_id for e in bottom}
         dormant: list = []
-        for entry in strategy_pool.ranked():
-            if entry.strategy.strategy_id in bottom_ids or entry.status == "killed":
-                continue
-            days_alive = (datetime.now(timezone.utc) - entry.status_changed_at).days
-            trade_count = entry.score.total_trades if entry.score else 0
-            if days_alive >= 30 and trade_count == 0:
-                dormant.append(entry)
-                logger.info(
-                    "evolution_dormancy_kill_candidate",
-                    strategy_id=entry.strategy.strategy_id, days=days_alive, trades=trade_count,
-                )
+        total_closed_trades = sum(
+            (e.score.total_trades if e.score else 0)
+            for e in strategy_pool.ranked()
+        )
+        clean_slate_enabled = total_closed_trades >= 10
+        if not clean_slate_enabled:
+            logger.info(
+                "evolution_dormancy_gated_clean_slate",
+                total_closed_trades=total_closed_trades,
+                reason="system needs >=10 closed trades before dormancy kills engage",
+            )
+        else:
+            for entry in strategy_pool.ranked():
+                if entry.strategy.strategy_id in bottom_ids or entry.status == "killed":
+                    continue
+                days_alive = (datetime.now(timezone.utc) - entry.status_changed_at).days
+                trade_count = entry.score.total_trades if entry.score else 0
+                if days_alive >= 30 and trade_count == 0:
+                    dormant.append(entry)
+                    logger.info(
+                        "evolution_dormancy_kill_candidate",
+                        strategy_id=entry.strategy.strategy_id, days=days_alive, trades=trade_count,
+                    )
 
         killed_configs: list[dict] = []
         for entry in list(bottom) + dormant:
