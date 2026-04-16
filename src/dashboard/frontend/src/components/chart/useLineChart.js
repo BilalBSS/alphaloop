@@ -60,10 +60,15 @@ export function useLineChart(containerRef, { theme, color, height = 220, seriesT
     }
 
     // / chart sized to container; ResizeObserver fires once on mount too
+    // / bug e: guard applyOptions against disposed chart — RO callback may fire after cleanup
+    let disposed = false
     const ro = new ResizeObserver(entries => {
+      if (disposed) return
       for (const entry of entries) {
         const { width, height: h } = entry.contentRect
-        if (width > 0 && h > 0) chart.applyOptions({ width, height: h })
+        if (width > 0 && h > 0) {
+          try { chart.applyOptions({ width, height: h }) } catch { /* disposed race */ }
+        }
       }
     })
     ro.observe(container)
@@ -71,6 +76,7 @@ export function useLineChart(containerRef, { theme, color, height = 220, seriesT
     setState({ chart, lineSeries, isReady: true })
 
     return () => {
+      disposed = true
       ro.disconnect()
       try {
         chart.remove()
