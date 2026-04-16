@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -369,6 +369,73 @@ async def backfill_intraday(
             logger.warning("intraday_backfill_failed", symbol=symbol, error=str(exc))
             results[symbol] = 0
 
+    return results
+
+
+async def aggregate_intraday_to_2h(
+    pool,
+    symbols: list[str],
+    days: int = 10,
+) -> dict[str, int]:
+    # / build 2Hour bars from stored 1Hour bars via sql window aggregation
+    # / bucket every pair of consecutive 1h bars into the lower one's even-hour timestamp
+    # / idempotent upsert into market_data_intraday with timeframe='2Hour'
+    if not symbols:
+        return {}
+    results: dict[str, int] = {}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    async with pool.acquire() as conn:
+        for symbol in symbols:
+            try:
+                rows = await conn.fetch(
+                    """WITH src AS (
+                        SELECT date_trunc('hour', timestamp)
+                               - MAKE_INTERVAL(hours => MOD(EXTRACT(HOUR FROM timestamp)::int, 2)) AS bucket,
+                               open, high, low, close, volume, vwap, timestamp
+                        FROM market_data_intraday
+                        WHERE symbol = $1 AND timeframe = '1Hour' AND timestamp >= $2
+                    )
+                    SELECT bucket AS timestamp,
+                           (ARRAY_AGG(open ORDER BY timestamp ASC))[1] AS open,
+                           MAX(high) AS high,
+                           MIN(low) AS low,
+                           (ARRAY_AGG(close ORDER BY timestamp DESC))[1] AS close,
+                           SUM(volume) AS volume,
+                           AVG(vwap) AS vwap
+                    FROM src
+                    GROUP BY bucket
+                    HAVING COUNT(*) > 0
+                    ORDER BY bucket ASC""",
+                    symbol, cutoff,
+                )
+                if not rows:
+                    results[symbol] = 0
+                    continue
+                inserted = 0
+                for r in rows:
+                    try:
+                        await conn.execute(
+                            """INSERT INTO market_data_intraday
+                                (symbol, timestamp, timeframe, open, high, low, close, volume, vwap)
+                            VALUES ($1, $2, '2Hour', $3, $4, $5, $6, $7, $8)
+                            ON CONFLICT (symbol, timestamp, timeframe) DO UPDATE SET
+                                open = EXCLUDED.open,
+                                high = EXCLUDED.high,
+                                low = EXCLUDED.low,
+                                close = EXCLUDED.close,
+                                volume = EXCLUDED.volume,
+                                vwap = EXCLUDED.vwap""",
+                            symbol, r["timestamp"],
+                            r["open"], r["high"], r["low"], r["close"],
+                            int(r["volume"] or 0), r["vwap"],
+                        )
+                        inserted += 1
+                    except Exception as exc:
+                        logger.warning("2h_bar_insert_failed", symbol=symbol, error=str(exc))
+                results[symbol] = inserted
+            except Exception as exc:
+                logger.warning("2h_aggregate_failed", symbol=symbol, error=str(exc))
+                results[symbol] = 0
     return results
 
 

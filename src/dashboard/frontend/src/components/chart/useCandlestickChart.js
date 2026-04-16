@@ -46,10 +46,15 @@ export function useCandlestickChart(containerRef, { theme, showVolume = true }) 
     }
 
     // / keep chart sized to container; ResizeObserver fires once on mount too
+    // / bug e: guard applyOptions against disposed chart — RO callback may fire after cleanup
+    let disposed = false
     const ro = new ResizeObserver(entries => {
+      if (disposed) return
       for (const entry of entries) {
         const { width, height } = entry.contentRect
-        if (width > 0 && height > 0) chart.applyOptions({ width, height })
+        if (width > 0 && height > 0) {
+          try { chart.applyOptions({ width, height }) } catch { /* disposed race */ }
+        }
       }
     })
     ro.observe(container)
@@ -57,6 +62,7 @@ export function useCandlestickChart(containerRef, { theme, showVolume = true }) 
     setState({ chart, priceSeries, volumeSeries, isReady: true })
 
     return () => {
+      disposed = true
       ro.disconnect()
       try {
         chart.remove()

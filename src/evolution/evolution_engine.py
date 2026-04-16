@@ -174,24 +174,49 @@ class EvolutionEngine:
     async def _kill_bottom_quartile(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> list[dict]:
-        # / 2. RANK + 3. KILL: bottom quartile
-        # / skip killing if strategies haven't accumulated enough trade data
+        # / 2. RANK + 3. KILL: bottom quartile + dormancy fallback
+        # / skip quartile kill if strategies haven't accumulated enough trade data
         scored_count = sum(
             1 for e in strategy_pool.ranked()
             if e.score and e.score.total_trades >= 3
         )
         if scored_count < 3:
-            logger.info("evolution_skip_kill", reason="not enough strategies with trades", scored=scored_count)
+            logger.info(
+                "evolution_skip_quartile_kill",
+                reason="not enough strategies with >=3 trades",
+                scored=scored_count, pool_size=strategy_pool.size,
+            )
             bottom = []
         else:
             bottom = strategy_pool.bottom_quartile()
+
+        # / bug e: dormancy kill — strategies alive 30+ days with zero trades are dead weight
+        # / prevents evolution from idling forever when quartile gate is starved
+        bottom_ids = {e.strategy.strategy_id for e in bottom}
+        dormant: list = []
+        for entry in strategy_pool.ranked():
+            if entry.strategy.strategy_id in bottom_ids or entry.status == "killed":
+                continue
+            days_alive = (datetime.now(timezone.utc) - entry.status_changed_at).days
+            trade_count = entry.score.total_trades if entry.score else 0
+            if days_alive >= 30 and trade_count == 0:
+                dormant.append(entry)
+                logger.info(
+                    "evolution_dormancy_kill_candidate",
+                    strategy_id=entry.strategy.strategy_id, days=days_alive, trades=trade_count,
+                )
+
         killed_configs: list[dict] = []
-        for entry in bottom:
+        for entry in list(bottom) + dormant:
             sid = entry.strategy.strategy_id
             config = entry.strategy.config
-            reason = "bottom quartile"
-            if entry.score:
-                reason += f" (composite={entry.score.composite_score:.4f})"
+            if entry in dormant:
+                days_alive = (datetime.now(timezone.utc) - entry.status_changed_at).days
+                reason = f"dormant (alive {days_alive}d, 0 trades)"
+            else:
+                reason = "bottom quartile"
+                if entry.score:
+                    reason += f" (composite={entry.score.composite_score:.4f})"
 
             strategy_pool.update_status(sid, "killed")
             # / persist kill to disk so restart doesn't resurrect the strategy
@@ -199,7 +224,15 @@ class EvolutionEngine:
             try:
                 save_config(config)
             except Exception as exc:
+                # / bug e: save_config silently failed before; now loudly notify so stale configs get surfaced
                 logger.error("kill_save_config_failed", strategy_id=sid, error=str(exc))
+                try:
+                    from src.notifications.notifier import notify_system_error
+                    notify_system_error(
+                        f"kill_save_config_failed strategy={sid}: {str(exc)[:100]}", "evolution",
+                    )
+                except Exception:
+                    pass
             killed_configs.append({"id": sid, "config": config, "reason": reason})
             summary["killed"].append({"id": sid, "reason": reason})
 
@@ -235,6 +268,13 @@ class EvolutionEngine:
                     save_config(config)
                 except Exception as exc:
                     logger.error("tier2_kill_save_failed", strategy_id=sid, error=str(exc))
+                    try:
+                        from src.notifications.notifier import notify_system_error
+                        notify_system_error(
+                            f"tier2_kill_save_failed strategy={sid}: {str(exc)[:100]}", "evolution",
+                        )
+                    except Exception:
+                        pass
                 killed_configs.append({"id": sid, "config": config, "reason": reason})
                 summary["killed"].append({"id": sid, "reason": reason})
                 try:

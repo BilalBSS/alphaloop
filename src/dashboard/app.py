@@ -201,11 +201,33 @@ async def get_strategy_positions(symbol: str | None = None):
 
 @app.get("/api/positions")
 async def get_positions():
-    # / pull live positions from alpaca
+    # / pull live positions from alpaca, attach strategy_id via strategy_positions
+    # / bug e: /api/positions used to omit strategy ownership entirely; now joins with sp
     try:
         broker = _get_broker()
         positions = await broker.get_positions()
-        return [_serialize_position(p) for p in positions]
+        # / bucket strategy_positions by symbol (a symbol can be split across strategies)
+        sp_rows = await _query(
+            """SELECT symbol, strategy_id, qty, avg_entry_price
+            FROM strategy_positions ORDER BY symbol, strategy_id"""
+        )
+        sp_by_symbol: dict[str, list[dict]] = {}
+        for r in sp_rows:
+            sp_by_symbol.setdefault(r["symbol"], []).append(r)
+        result = []
+        for p in positions:
+            d = _serialize_position(p)
+            owners = sp_by_symbol.get(p.symbol, [])
+            # / prefer a real strategy owner over the 'untracked' projection
+            primary = next((o for o in owners if o.get("strategy_id") and o["strategy_id"] != "untracked"), None)
+            untracked = next((o for o in owners if o.get("strategy_id") == "untracked"), None)
+            d["strategy_id"] = primary["strategy_id"] if primary else None
+            d["owned_by_real"] = bool(primary)
+            d["tracked_qty"] = float(primary["qty"]) if primary and primary.get("qty") is not None else (
+                float(untracked["qty"]) if untracked and untracked.get("qty") is not None else None
+            )
+            result.append(d)
+        return result
     except Exception as exc:
         logger.debug("positions_alpaca_fallback", error=str(exc))
         rows = await _query(
@@ -613,6 +635,15 @@ async def get_health():
     if "cerebras" not in sources:
         sources["cerebras"] = {"status": "pending", "last_error": None, "errors_24h": 0}
 
+    # / bug e: baseline orchestrator loops — show as pending until first cycle logs an event
+    for _loop in (
+        "intraday_backfill", "daily_bar_backfill", "price_refresh",
+        "fundamentals_backfill", "insider_backfill", "regime_backfill",
+        "alert", "alternative_data", "macro_backfill",
+    ):
+        if _loop not in sources:
+            sources[_loop] = {"status": "pending", "last_error": None, "errors_24h": 0}
+
     return {
         "db_connected": db_ok,
         "storage": {
@@ -936,11 +967,13 @@ async def list_drawings_endpoint(symbol: str):
 @app.post("/api/drawings/{symbol}")
 async def create_drawing_endpoint(symbol: str, body: dict):
     # / create a drawing from a whitelisted type + opaque jsonb payload
+    # / bug e: accept both `drawing_type` (canonical) and `type` (stale-bundle fallback)
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if _pool is None:
         return JSONResponse(status_code=503, content={"error": "db_not_ready"})
-    dt = drawings_mod.sanitize_drawing_type(body.get("drawing_type", ""))
+    raw_type = body.get("drawing_type") or body.get("type") or ""
+    dt = drawings_mod.sanitize_drawing_type(raw_type)
     if dt is None:
         return JSONResponse(status_code=400, content={"error": "invalid_drawing_type"})
     payload = body.get("payload")
@@ -1134,6 +1167,7 @@ async def get_ict_indicators(symbol: str):
 @app.get("/api/quant-metrics/{symbol}")
 async def get_quant_metrics(symbol: str):
     # / bug 4d: broaden the join — strategy scored this symbol via any signal OR actual trade
+    # / bug e: also include strategy_positions so open-only positions (no closes yet) surface
     # / DISTINCT ON picks the latest strategy_scores row per strategy_id
     rows = await _query(
         """SELECT DISTINCT ON (ss.strategy_id) ss.*
@@ -1142,11 +1176,34 @@ async def get_quant_metrics(symbol: str):
             SELECT strategy_id FROM trade_signals WHERE symbol = $1 AND strategy_id IS NOT NULL
             UNION
             SELECT strategy_id FROM trade_log WHERE symbol = $1 AND strategy_id IS NOT NULL
+            UNION
+            SELECT strategy_id FROM strategy_positions WHERE symbol = $1
+              AND strategy_id IS NOT NULL AND strategy_id <> 'untracked' AND qty > 0
         )
         ORDER BY ss.strategy_id, ss.created_at DESC""",
         symbol,
     )
-    # / secondary sort by sharpe for display
+    # / bug e: position stubs for strategies that own the symbol but have no closed trades yet
+    seen_ids = {r.get("strategy_id") for r in rows}
+    stubs = await _query(
+        """SELECT DISTINCT sp.strategy_id, sp.avg_entry_price, sp.qty, sp.updated_at
+        FROM strategy_positions sp
+        WHERE sp.symbol = $1
+          AND sp.strategy_id IS NOT NULL AND sp.strategy_id <> 'untracked'
+          AND sp.qty > 0""",
+        symbol,
+    )
+    for s in stubs:
+        if s["strategy_id"] not in seen_ids:
+            rows.append({
+                "strategy_id": s["strategy_id"],
+                "sharpe_ratio": None, "sortino_ratio": None, "win_rate": None,
+                "max_drawdown": None, "composite_score": None, "total_trades": 0,
+                "period_start": None, "period_end": None,
+                "regime_breakdown": {"source": "position_stub"},
+                "created_at": s["updated_at"],
+            })
+    # / secondary sort by sharpe for display (null/missing push to end)
     rows_sorted = sorted(
         rows,
         key=lambda r: float(r.get("sharpe_ratio") or -999),
