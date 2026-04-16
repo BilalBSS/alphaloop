@@ -1183,27 +1183,9 @@ async def get_quant_metrics(symbol: str):
         ORDER BY ss.strategy_id, ss.created_at DESC""",
         symbol,
     )
-    # / bug e: position stubs for strategies that own the symbol but have no closed trades yet
-    seen_ids = {r.get("strategy_id") for r in rows}
-    stubs = await _query(
-        """SELECT DISTINCT sp.strategy_id, sp.avg_entry_price, sp.qty, sp.updated_at
-        FROM strategy_positions sp
-        WHERE sp.symbol = $1
-          AND sp.strategy_id IS NOT NULL AND sp.strategy_id <> 'untracked'
-          AND sp.qty > 0""",
-        symbol,
-    )
-    for s in stubs:
-        if s["strategy_id"] not in seen_ids:
-            rows.append({
-                "strategy_id": s["strategy_id"],
-                "sharpe_ratio": None, "sortino_ratio": None, "win_rate": None,
-                "max_drawdown": None, "composite_score": None, "total_trades": 0,
-                "period_start": None, "period_end": None,
-                "regime_breakdown": {"source": "position_stub"},
-                "created_at": s["updated_at"],
-            })
-    # / secondary sort by sharpe for display (null/missing push to end)
+    # / bug e2: prior stub emitted null-valued rows that rendered as 0.00/0%/0.000 on the ui,
+    # / making strategies look dead when they were actually paper-trading with no closed trades.
+    # / preferred path: no row unless we have real metrics; ui shows informative empty state.
     rows_sorted = sorted(
         rows,
         key=lambda r: float(r.get("sharpe_ratio") or -999),

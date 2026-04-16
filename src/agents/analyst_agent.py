@@ -641,6 +641,31 @@ class AnalystAgent:
         # / fetch strategy positions for llm context
         strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
 
+        # / bug e2: enrich each position with its strategy's latest quant metrics so the llm
+        # / sees paper-mode performance (sharpe/sortino/win rate/maxdd) and can reason about
+        # / which strategies are actually working vs which need adjustment
+        if strat_positions:
+            try:
+                async with pool.acquire() as conn:
+                    score_rows = await conn.fetch(
+                        """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio, sortino_ratio,
+                            win_rate, max_drawdown, composite_score, total_trades, regime_breakdown
+                        FROM strategy_scores
+                        WHERE strategy_id = ANY($1::varchar[])
+                        ORDER BY strategy_id, created_at DESC""",
+                        [p["strategy_id"] for p in strat_positions],
+                    )
+                score_by_id = {r["strategy_id"]: dict(r) for r in score_rows}
+                for p in strat_positions:
+                    sc = score_by_id.get(p["strategy_id"])
+                    if sc:
+                        p["sharpe"] = float(sc["sharpe_ratio"]) if sc.get("sharpe_ratio") is not None else None
+                        p["win_rate"] = float(sc["win_rate"]) if sc.get("win_rate") is not None else None
+                        p["max_drawdown"] = float(sc["max_drawdown"]) if sc.get("max_drawdown") is not None else None
+                        p["total_trades"] = int(sc["total_trades"] or 0)
+            except Exception as exc:
+                logger.debug("analyst_position_metrics_enrich_failed", symbol=symbol, error=str(exc)[:100])
+
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
         regime_with_trend = regime
         if symbol_trend != "unknown":
