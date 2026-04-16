@@ -17,6 +17,23 @@ from src.notifications.notifier import notify_trade_executed, notify_trade_error
 logger = structlog.get_logger(__name__)
 
 
+def _strategy_killed_on_disk(strategy_id: str) -> bool:
+    # / bug e: disk fallback for kill gate — defends against stale/missing in-memory pool
+    # / reads the strategy config json directly to see the authoritative status
+    import json as _json
+    import re as _re
+    from pathlib import Path as _Path
+    if not strategy_id or not _re.match(r"^[a-zA-Z0-9_-]+$", strategy_id):
+        return False
+    path = _Path(__file__).parent.parent.parent / "configs" / "strategies" / f"{strategy_id}.json"
+    try:
+        with open(path) as f:
+            cfg = _json.load(f)
+        return (cfg.get("metadata") or {}).get("status") == "killed"
+    except Exception:
+        return False
+
+
 class ExecutorAgent:
 
     async def execute_trade(
@@ -37,9 +54,20 @@ class ExecutorAgent:
         # / killed-strategy gate: reject trades from strategies marked killed in the pool
         # / prevents orphaned approved_trades from executing after evolution kills a strategy
         # / status value must fit VARCHAR(20) on approved_trades.status
-        if strategy_pool is not None and strategy_id:
-            entry = strategy_pool.get(strategy_id)
-            if entry is not None and entry.status == "killed":
+        # / bug e: also check on-disk config when in-memory pool is missing/stale
+        if strategy_id:
+            killed = False
+            if strategy_pool is not None:
+                entry = strategy_pool.get(strategy_id)
+                if entry is not None and entry.status == "killed":
+                    killed = True
+            # / disk fallback: authoritative source when pool is None or entry missing
+            if not killed:
+                try:
+                    killed = _strategy_killed_on_disk(strategy_id)
+                except Exception:
+                    killed = False
+            if killed:
                 await tools.update_trade_status(pool, "approved_trades", trade_id, "killed_strategy")
                 logger.warning(
                     "executor_rejected_killed_strategy",

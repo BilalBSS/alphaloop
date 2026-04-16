@@ -377,6 +377,8 @@ class AnalystAgent:
             pass
 
         # / fetch indicators + sentiment from db for llm prompt enrichment
+        # / bug e: lazy compute from market_data if computed_indicators has no row — prevents
+        # / technical_score starvation when strategy_agent hasn't written for this symbol yet
         indicator_data: dict | None = None
         sentiment_data: dict | None = None
         try:
@@ -390,6 +392,31 @@ class AnalystAgent:
                     indicator_data = dict(ind_row)
         except Exception:
             pass
+        if indicator_data is None:
+            try:
+                import pandas as pd
+                from src.indicators.momentum import rsi
+                from src.indicators.trend import macd, adx
+                async with pool.acquire() as conn:
+                    ohlc_rows = await conn.fetch(
+                        """SELECT high, low, close FROM market_data
+                        WHERE symbol = $1 ORDER BY date DESC LIMIT 100""",
+                        symbol,
+                    )
+                if ohlc_rows and len(ohlc_rows) >= 28:
+                    closes = pd.Series([float(r["close"]) for r in reversed(ohlc_rows)])
+                    highs = pd.Series([float(r["high"]) for r in reversed(ohlc_rows)])
+                    lows = pd.Series([float(r["low"]) for r in reversed(ohlc_rows)])
+                    rsi_val = rsi(closes, 14)
+                    macd_res = macd(closes, 12, 26, 9)
+                    adx_val = adx(highs, lows, closes, 14)
+                    indicator_data = {
+                        "rsi14": float(rsi_val.iloc[-1]) if not rsi_val.empty and pd.notna(rsi_val.iloc[-1]) else None,
+                        "macd_histogram": float(macd_res.histogram.iloc[-1]) if not macd_res.histogram.empty and pd.notna(macd_res.histogram.iloc[-1]) else None,
+                        "adx": float(adx_val.iloc[-1]) if not adx_val.empty and pd.notna(adx_val.iloc[-1]) else None,
+                    }
+            except Exception as exc:
+                logger.debug("analyst_lazy_indicators_failed", symbol=symbol, error=str(exc)[:100])
         try:
             async with pool.acquire() as conn:
                 news_row = await conn.fetchrow(
@@ -781,7 +808,12 @@ class AnalystAgent:
         if ratio:
             d["pe_ratio"] = float(ratio.details.get("pe_ratio")) if ratio.details.get("pe_ratio") else None
             d["ps_ratio"] = float(ratio.details.get("ps_ratio")) if ratio.details.get("ps_ratio") else None
-            d["peg_ratio"] = float(ratio.details.get("peg_ratio")) if ratio.details.get("peg_ratio") else None
+            # / bug e: peg=0 means unknown/divide-by-zero — never display as 0.00
+            _peg = ratio.details.get("peg_ratio")
+            try:
+                d["peg_ratio"] = float(_peg) if _peg and float(_peg) > 0 else None
+            except (TypeError, ValueError):
+                d["peg_ratio"] = None
             d["fcf_margin"] = float(ratio.details.get("fcf_margin")) if ratio.details.get("fcf_margin") else None
             d["debt_to_equity"] = float(ratio.details.get("debt_to_equity")) if ratio.details.get("debt_to_equity") else None
             d["revenue_growth"] = float(ratio.details.get("revenue_growth_1y")) if ratio.details.get("revenue_growth_1y") else None

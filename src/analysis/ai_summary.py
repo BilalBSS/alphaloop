@@ -943,8 +943,10 @@ Output ONLY valid JSON. No explanation outside the JSON."""
 
     # / bug 4e: parse with sanitization + retry + groq fallback so one bad deepseek response
     # / doesn't blank the whole synthesis card
+    # / bug e: keep the raw llm payload from every attempt; don't overwrite with parser exception text
     result: dict | None = None
     raw: str = ""
+    raw_attempts: list[str] = []
     errors: list[str] = []
 
     for attempt, (provider, model) in enumerate([
@@ -954,6 +956,7 @@ Output ONLY valid JSON. No explanation outside the JSON."""
     ]):
         try:
             raw = await _call(provider, model)
+            raw_attempts.append(f"[{provider}/{model}] {raw!r}" if raw else f"[{provider}/{model}] <empty>")
             result = _parse_synthesis_json(raw)
             if result is not None:
                 break
@@ -963,11 +966,15 @@ Output ONLY valid JSON. No explanation outside the JSON."""
 
     if result is None:
         logger.error("daily_synthesis_failed", errors=errors)
+        # / bug e: show actual llm output (or empty markers) alongside parser errors so user can debug
+        fallback_body = "\n".join(raw_attempts) + ("\n--errors--\n" + "; ".join(errors) if errors else "")
+        if not fallback_body.strip():
+            fallback_body = raw or "; ".join(errors) or "<no response>"
         try:
             await store_daily_synthesis(
                 pool, today, "deepseek-reasoner",
                 None, None, None, None,
-                (raw or "; ".join(errors))[:2000],
+                fallback_body[:2000],
             )
         except Exception:
             pass
