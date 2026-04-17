@@ -8,3 +8,6 @@ venv/
 tests/
 node_modules/
 .gstack/
+reports/
+trading-wiki/
+data/charts/
