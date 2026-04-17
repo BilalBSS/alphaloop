@@ -812,7 +812,7 @@ function AiAnalysisPanel({ score }) {
       <div className="space-y-3">
         <div className="bg-bg-primary p-4 border border-border">
           <div className="text-[11px] uppercase text-text-secondary mb-2">
-            Groq ({groqModel || 'llama-3.1-8b-instant'})
+            Groq ({groqModel || 'llama-3.3-70b-versatile'})
             {groqSignal && <span className={`ml-2 font-semibold ${signalColor(groqSignal)}`}>{groqSignal}</span>}
           </div>
           {groqText
