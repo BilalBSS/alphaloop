@@ -492,6 +492,118 @@ async def get_evolution():
     return _serialize(rows)
 
 
+# / phase 2: knowledge base endpoints
+# / wiki_documents rows for sidebar browsing, raw markdown for content pane,
+# / plus dedicated post_mortems + regime_shifts feeds for their own panels
+
+_VALID_WIKI_CATEGORIES = {
+    "regimes", "post-mortems", "strategies", "evolution", "symbols", "meta", "archive",
+}
+
+
+@app.get("/api/wiki/documents")
+async def get_wiki_documents(
+    category: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    limit: int = 200,
+):
+    # / list wiki_documents with optional filters; sidebar uses this to build the tree
+    limit = max(1, min(int(limit), 500))
+    clauses: list[str] = []
+    params: list = []
+    if category:
+        if category not in _VALID_WIKI_CATEGORIES:
+            return JSONResponse({"error": "invalid category"}, status_code=400)
+        params.append(category)
+        clauses.append(f"category = ${len(params)}")
+    if symbol:
+        params.append(symbol.upper())
+        clauses.append(f"${len(params)} = ANY(symbols)")
+    if strategy_id:
+        params.append(strategy_id)
+        clauses.append(f"${len(params)} = ANY(strategy_ids)")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    sql = (
+        f"SELECT id, path, category, title, symbols, strategy_ids, "
+        f"word_count, confidence, created_at, updated_at "
+        f"FROM wiki_documents {where} "
+        f"ORDER BY updated_at DESC LIMIT ${len(params)}"
+    )
+    rows = await _query(sql, *params)
+    return _serialize(rows)
+
+
+@app.get("/api/wiki/document")
+async def get_wiki_document(path: str):
+    # / return raw markdown for a given wiki path; security: must be in wiki_documents table
+    if not path or ".." in path or path.startswith("/"):
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    row = await _query_one(
+        "SELECT path, category, title FROM wiki_documents WHERE path = $1", path,
+    )
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        from src.knowledge.wiki_writer import WikiWriter
+        writer = WikiWriter(pool=_pool)
+        content = await writer.read_document(path)
+    except Exception as exc:
+        logger.warning("wiki_read_failed", path=path, error=str(exc)[:120])
+        return JSONResponse({"error": "read failed"}, status_code=500)
+    if content is None:
+        return JSONResponse({"error": "file missing"}, status_code=404)
+    return {
+        "path": row["path"],
+        "category": row["category"],
+        "title": row["title"],
+        "content": content,
+    }
+
+
+@app.get("/api/post-mortems")
+async def get_post_mortems(strategy_id: str | None = None, limit: int = 50):
+    # / recent post-mortems ordered newest first; optional strategy filter
+    limit = max(1, min(int(limit), 200))
+    if strategy_id:
+        sql = (
+            "SELECT id, strategy_id, symbol, trigger_type, pnl, expected_pnl, "
+            "deviation_sigma, details, wiki_path, created_at FROM post_mortems "
+            "WHERE strategy_id = $1 ORDER BY created_at DESC LIMIT $2"
+        )
+        rows = await _query(sql, strategy_id, limit)
+    else:
+        sql = (
+            "SELECT id, strategy_id, symbol, trigger_type, pnl, expected_pnl, "
+            "deviation_sigma, details, wiki_path, created_at FROM post_mortems "
+            "ORDER BY created_at DESC LIMIT $1"
+        )
+        rows = await _query(sql, limit)
+    return _serialize(rows)
+
+
+@app.get("/api/regime-shifts")
+async def get_regime_shifts(market: str | None = None, limit: int = 50):
+    # / recent regime transitions; optional market (equity|crypto) filter
+    limit = max(1, min(int(limit), 200))
+    if market:
+        if market not in ("equity", "crypto"):
+            return JSONResponse({"error": "invalid market"}, status_code=400)
+        sql = (
+            "SELECT id, old_regime, new_regime, market, confidence, wiki_path, detected_at "
+            "FROM regime_shifts WHERE market = $1 ORDER BY detected_at DESC LIMIT $2"
+        )
+        rows = await _query(sql, market, limit)
+    else:
+        sql = (
+            "SELECT id, old_regime, new_regime, market, confidence, wiki_path, detected_at "
+            "FROM regime_shifts ORDER BY detected_at DESC LIMIT $1"
+        )
+        rows = await _query(sql, limit)
+    return _serialize(rows)
+
+
 @app.get("/api/health")
 async def get_health():
     # / system health v2: db, cycles, storage, connections, events
