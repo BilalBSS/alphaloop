@@ -16,7 +16,12 @@ _COST_RATES: dict[str, tuple[float, float]] = {
     "cerebras": (0.0, 0.0),
     "deepseek-chat": (0.14, 0.28),
     "deepseek-reasoner": (0.55, 2.19),
+    "gemini-3-flash": (0.50, 3.00),
+    "ollama-nomic-embed-text": (0.0, 0.0),
 }
+
+# / gemini 3 flash bills 1290 tokens per image at standard resolution
+IMAGE_TOKENS_PER_CALL = 1290
 
 # / in-memory accumulator: {(date, source): {call_count, tokens_in, tokens_out, cost}}
 _daily_costs: dict[tuple[date, str], dict] = defaultdict(lambda: {
@@ -76,3 +81,36 @@ async def flush_to_db(pool) -> int:
                 logger.warning("cost_tracker_flush_failed", source=source, error=str(exc))
     _daily_costs.clear()
     return written
+
+
+async def get_daily_call_count(pool, source: str) -> int:
+    # / sum today's api_costs.call_count for a source + in-memory pending
+    # / accounts for costs that haven't flushed to db yet this cycle
+    today = date.today()
+    db_count = 0
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT COALESCE(SUM(call_count), 0) AS n FROM api_costs
+                WHERE source = $1 AND date = $2""",
+                source, today,
+            )
+            if row and row["n"] is not None:
+                db_count = int(row["n"])
+    except Exception as exc:
+        logger.warning("get_daily_call_count_failed", source=source, error=str(exc))
+
+    pending = _daily_costs.get((today, source), {}).get("call_count", 0)
+    return db_count + int(pending)
+
+
+def track_vision_cost(
+    source: str,
+    model: str,
+    images: int,
+    in_tokens: int,
+    out_tokens: int,
+) -> None:
+    # / gemini bills image tokens at input rate — fold image tokens into the input bucket
+    total_in = int(in_tokens) + int(images) * IMAGE_TOKENS_PER_CALL
+    track_llm_cost(source, model, total_in, int(out_tokens))

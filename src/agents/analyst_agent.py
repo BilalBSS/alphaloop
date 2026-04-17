@@ -17,6 +17,7 @@ from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
 from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.agents import tools
+from src.vision.db_helpers import fetch_latest_chart_analysis
 from src.data.crypto_data import fetch_coin_data, fetch_funding_rates, get_funding_rate
 from src.data.crypto_liquidations import fetch_liquidation_data
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
@@ -213,6 +214,13 @@ class AnalystAgent:
         # / fetch strategy positions for llm context
         strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
 
+        # / chart vision — gemini 3 flash 1d analysis if fresh enough (<=36h)
+        chart_row: dict | None = None
+        try:
+            chart_row = await fetch_latest_chart_analysis(pool, symbol, max_age_hours=36)
+        except Exception as exc:
+            logger.debug("analyst_chart_fetch_failed", symbol=symbol, error=str(exc)[:120])
+
         deepseek_text: str | None = None
         ai_confidence: float = 0.0
         if getattr(self, "_run_deepseek", True):
@@ -221,6 +229,7 @@ class AnalystAgent:
                 dual = await generate_dual_analysis(
                     symbol, crypto_data=crypto_data,
                     positions=strat_positions,
+                    chart_analysis=chart_row,
                 )
                 ai_signal = dual.consensus
                 ai_confidence = dual.consensus_confidence
@@ -234,6 +243,7 @@ class AnalystAgent:
                 summary = await generate_summary(
                     symbol, crypto_data=crypto_data,
                     positions=strat_positions,
+                    chart_analysis=chart_row,
                 )
                 if summary:
                     ai_signal = summary.signal
@@ -666,6 +676,13 @@ class AnalystAgent:
             except Exception as exc:
                 logger.debug("analyst_position_metrics_enrich_failed", symbol=symbol, error=str(exc)[:100])
 
+        # / chart vision — gemini 3 flash 1d analysis if fresh enough (<=36h)
+        chart_row: dict | None = None
+        try:
+            chart_row = await fetch_latest_chart_analysis(pool, symbol, max_age_hours=36)
+        except Exception as exc:
+            logger.debug("analyst_chart_fetch_failed", symbol=symbol, error=str(exc)[:120])
+
         # / llm analysis: groq every cycle, deepseek only on hourly cycle
         regime_with_trend = regime
         if symbol_trend != "unknown":
@@ -676,7 +693,7 @@ class AnalystAgent:
                     symbol, ratio=ratio_score, dcf=dcf_result,
                     earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
-                    positions=strat_positions,
+                    positions=strat_positions, chart_analysis=chart_row,
                 )
             else:
                 # / groq only, skip deepseek call
@@ -684,7 +701,7 @@ class AnalystAgent:
                     symbol, ratio=ratio_score, dcf=dcf_result,
                     earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
                     indicators=indicator_data, sentiment=sentiment_data,
-                    positions=strat_positions,
+                    positions=strat_positions, chart_analysis=chart_row,
                 )
                 from src.analysis.ai_summary import DualAnalysis
                 dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal, consensus_confidence=groq_only.confidence)
