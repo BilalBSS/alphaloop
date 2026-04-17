@@ -32,6 +32,7 @@ async def mutate_strategy(
     top_config: dict,
     recent_trades: list[dict],
     rng: np.random.Generator | None = None,
+    wiki_context: str | None = None,
 ) -> list[dict]:
     # / propose mutated strategy configs using haiku + deepseek reasoner critique
     # / returns list[dict]: usually 1, sometimes 2 on disagreement
@@ -44,7 +45,10 @@ async def mutate_strategy(
         return [_random_tweak(killed_config, rng)]
 
     # / 1. deepseek v3 proposes (replaced haiku)
-    haiku_config = await _haiku_propose(api_key, killed_config, top_config, recent_trades, rng)
+    haiku_config = await _haiku_propose(
+        api_key, killed_config, top_config, recent_trades, rng,
+        wiki_context=wiki_context,
+    )
 
     # / 2. deepseek reasoner critiques
     critique = await _reasoner_critique(haiku_config, killed_config, top_config, recent_trades)
@@ -66,9 +70,12 @@ async def _haiku_propose(
     top_config: dict,
     recent_trades: list[dict],
     rng: np.random.Generator,
+    wiki_context: str | None = None,
 ) -> dict:
     # / haiku mutation with 3-retry loop (existing logic extracted)
-    prompt = _build_mutation_prompt(killed_config, top_config, recent_trades)
+    prompt = _build_mutation_prompt(
+        killed_config, top_config, recent_trades, wiki_context=wiki_context,
+    )
 
     for attempt in range(3):
         try:
@@ -196,12 +203,19 @@ async def _call_deepseek_v3(prompt: str) -> str:
 
 
 def _build_mutation_prompt(
-    killed_config: dict, top_config: dict, recent_trades: list[dict],
+    killed_config: dict,
+    top_config: dict,
+    recent_trades: list[dict],
+    wiki_context: str | None = None,
 ) -> str:
     # / construct the llm mutation prompt
     trades_summary = ""
     for t in recent_trades[:5]:
         trades_summary += f"  - {t.get('symbol', '?')} {t.get('side', '?')}: pnl={t.get('pnl', '?')}\n"
+
+    wiki_block = ""
+    if wiki_context:
+        wiki_block = f"\n## RELEVANT WIKI CONTEXT\n{wiki_context}\n"
 
     return f"""You are a quantitative strategy optimizer. A trading strategy was killed for poor performance. Your job is to propose a new, improved strategy config.
 
@@ -217,7 +231,7 @@ TOP PERFORMING STRATEGY (reference for what works):
 
 RECENT TRADES FROM KILLED STRATEGY:
 {trades_summary or "  No recent trades."}
-
+{wiki_block}
 RULES:
 - Output ONLY valid JSON. No explanation, no markdown fences, just the JSON object.
 - The config must have: id, name, version, asset_class, universe, entry_conditions (with operator AND/OR and signals array), exit_conditions (with stop_loss), position_sizing.
