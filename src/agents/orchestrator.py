@@ -153,9 +153,6 @@ class AgentOrchestrator:
             # / phase 2: knowledge base upkeep
             asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
-            # / phase 3: chart vision
-            asyncio.create_task(self._chart_vision_loop(), name="chart_vision"),
-            asyncio.create_task(self._chart_rotation_loop(), name="chart_rotation"),
         ]
 
         try:
@@ -984,59 +981,3 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("wiki_archive_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_archive_loop")
-
-    # / ---- phase 3: chart vision loops ----
-
-    async def _chart_vision_loop(self) -> None:
-        # / 2x/day chart vision at 08:30 et + 16:15 et for held + top-10 analyst picks
-        if await self._wait_or_stop(120):
-            return
-        try:
-            from src.vision.loops import chart_vision_loop
-            await chart_vision_loop(self._pool, self._build_chart_vision_targets)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.error("chart_vision_loop_error", error=str(exc)[:200])
-            notify_system_error(str(exc), "chart_vision_loop")
-
-    async def _chart_rotation_loop(self) -> None:
-        # / daily 03:00 et pruning of chart pngs older than 30 days
-        if await self._wait_or_stop(180):
-            return
-        try:
-            from src.vision.loops import chart_rotation_loop
-            await chart_rotation_loop(retention_days=30, rotate_hour_et=3)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.error("chart_rotation_loop_error", error=str(exc)[:200])
-            notify_system_error(str(exc), "chart_rotation_loop")
-
-    async def _build_chart_vision_targets(self) -> list[str]:
-        # / held strategy positions (equity + crypto) ∪ top-10 analysis_scores (last 3d)
-        if self._pool is None:
-            return []
-        try:
-            async with self._pool.acquire() as conn:
-                held_rows = await conn.fetch(
-                    "SELECT DISTINCT symbol FROM strategy_positions WHERE qty > 0"
-                )
-                held = [r["symbol"] for r in held_rows]
-                top_rows = await conn.fetch(
-                    """SELECT symbol FROM analysis_scores
-                       WHERE date >= CURRENT_DATE - INTERVAL '3 days'
-                       ORDER BY composite_score DESC NULLS LAST LIMIT 10"""
-                )
-                top = [r["symbol"] for r in top_rows]
-            # / dedupe preserving order: held first, then any top-10 not already held
-            combined: list[str] = []
-            seen: set[str] = set()
-            for s in held + top:
-                if s not in seen:
-                    seen.add(s)
-                    combined.append(s)
-            return combined
-        except Exception as exc:
-            logger.warning("chart_vision_targets_failed", error=str(exc)[:200])
-            return []

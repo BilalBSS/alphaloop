@@ -50,48 +50,6 @@ class DualAnalysis:
     consensus_confidence: float = 0.0
 
 
-def _chart_technicals_lines(chart_analysis: dict | None) -> list[str]:
-    # / format a gemini chart_analyses row for llm consumption; empty list when missing
-    if not chart_analysis:
-        return []
-    trend = chart_analysis.get("trend") or "unknown"
-    patterns = chart_analysis.get("patterns_detected") or chart_analysis.get("patterns") or []
-    if isinstance(patterns, str):
-        try:
-            patterns = json.loads(patterns)
-        except Exception:
-            patterns = [patterns]
-    pattern_str = ", ".join(str(p) for p in patterns) if patterns else "none"
-    supports = chart_analysis.get("support_levels") or []
-    resistances = chart_analysis.get("resistance_levels") or []
-    try:
-        supports_fmt = [f"{float(x):.2f}" for x in supports]
-    except (TypeError, ValueError):
-        supports_fmt = []
-    try:
-        resistances_fmt = [f"{float(x):.2f}" for x in resistances]
-    except (TypeError, ValueError):
-        resistances_fmt = []
-    bullish_score = chart_analysis.get("bullish_score")
-    try:
-        bullish_str = f"{float(bullish_score):.2f}" if bullish_score is not None else "n/a"
-    except (TypeError, ValueError):
-        bullish_str = "n/a"
-    summary_text = chart_analysis.get("analysis_text") or ""
-    if isinstance(summary_text, str) and len(summary_text) > 400:
-        summary_text = summary_text[:400].rstrip() + "…"
-
-    out = [f"\n## Chart Technicals (Gemini vision)"]
-    out.append(f"  Trend: {trend}")
-    out.append(f"  Patterns: {pattern_str}")
-    out.append(f"  Support: {supports_fmt if supports_fmt else 'none'}")
-    out.append(f"  Resistance: {resistances_fmt if resistances_fmt else 'none'}")
-    out.append(f"  Bullish score: {bullish_str}")
-    if summary_text:
-        out.append(f"  Summary: {summary_text}")
-    return out
-
-
 def _build_prompt(
     symbol: str,
     ratio: RatioScore | None,
@@ -102,7 +60,6 @@ def _build_prompt(
     indicators: dict | None = None,
     sentiment: dict | None = None,
     positions: list[dict] | None = None,
-    chart_analysis: dict | None = None,
 ) -> str:
     # / construct structured analysis prompt with analytical instructions
     parts = [f"Analyze {symbol} and provide an investment signal."]
@@ -212,8 +169,6 @@ def _build_prompt(
                     s += f", {float(bull):.0%} bullish"
                 parts.append(s)
 
-    parts.extend(_chart_technicals_lines(chart_analysis))
-
     if positions:
         parts.append(f"\n## Current Positions & Strategy Performance")
         parts.append(f"{len(positions)} strategies currently hold this stock:")
@@ -255,7 +210,6 @@ def _build_crypto_prompt(
     sentiment_score: float | None = None,
     regime: str | None = None,
     positions: list[dict] | None = None,
-    chart_analysis: dict | None = None,
 ) -> str:
     # / construct crypto-specific analysis prompt
     parts = [f"Analyze {symbol} and provide a trading signal."]
@@ -296,8 +250,6 @@ def _build_crypto_prompt(
             parts.append(f"  Fear & Greed: {fear_greed:.0f}/100 ({label})")
         if sentiment_score is not None:
             parts.append(f"  News sentiment: {sentiment_score:+.2f}")
-
-    parts.extend(_chart_technicals_lines(chart_analysis))
 
     if positions:
         parts.append(f"\n## Current Positions")
@@ -590,18 +542,17 @@ def _dispatch_prompt(
     crypto_data: dict | None,
     positions: list[dict] | None,
     system_override: str | None = None,
-    chart_analysis: dict | None = None,
 ) -> tuple[str, str]:
     # / build prompt + system message, dispatching crypto vs equity
     if crypto_data is not None:
         prompt = _build_crypto_prompt(
-            **crypto_data, positions=positions, chart_analysis=chart_analysis,
+            **crypto_data, positions=positions,
         )
         sys_msg = _CRYPTO_SYSTEM_MSG
     else:
         prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
                                indicators=indicators, sentiment=sentiment,
-                               positions=positions, chart_analysis=chart_analysis)
+                               positions=positions)
         sys_msg = system_override or _EQUITY_SYSTEM_MSG
     return prompt, sys_msg
 
@@ -761,13 +712,11 @@ async def generate_summary(
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
-    chart_analysis: dict | None = None,
 ) -> AnalysisSummary:
     # / try groq llm, fall back to structured summary
     prompt, sys_msg = _dispatch_prompt(
         symbol, ratio, dcf, earnings, insider, regime,
         indicators, sentiment, crypto_data, positions,
-        chart_analysis=chart_analysis,
     )
 
     api_key = os.environ.get("GROQ_API_KEY")
@@ -810,7 +759,6 @@ async def _generate_deepseek_summary(
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
-    chart_analysis: dict | None = None,
 ) -> AnalysisSummary | None:
     # / independent second opinion via deepseek — gets same raw data, NOT groq's output
     api_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -821,7 +769,6 @@ async def _generate_deepseek_summary(
         symbol, ratio, dcf, earnings, insider, regime,
         indicators, sentiment, crypto_data, positions,
         system_override=_DEEPSEEK_SYSTEM_MSG,
-        chart_analysis=chart_analysis,
     )
 
     # / retry once on 429 or transient errors
@@ -899,17 +846,14 @@ async def generate_dual_analysis(
     sentiment: dict | None = None,
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
-    chart_analysis: dict | None = None,
 ) -> DualAnalysis:
     # / run groq + deepseek in parallel, compute consensus
     groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
                                  indicators=indicators, sentiment=sentiment,
-                                 crypto_data=crypto_data, positions=positions,
-                                 chart_analysis=chart_analysis)
+                                 crypto_data=crypto_data, positions=positions)
     deepseek_task = _generate_deepseek_summary(symbol, ratio, dcf, earnings, insider, regime,
                                                 indicators=indicators, sentiment=sentiment,
-                                                crypto_data=crypto_data, positions=positions,
-                                                chart_analysis=chart_analysis)
+                                                crypto_data=crypto_data, positions=positions)
 
     groq_result, deepseek_result = await asyncio.gather(groq_task, deepseek_task)
 

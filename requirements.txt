@@ -34,10 +34,6 @@ arch>=6.0.0
 # / pgvector python client is optional — raw SQL also works
 # / ollama runs locally; no python client required (uses httpx)
 
-# Phase 3: chart vision (mplfinance + gemini 3 flash)
-mplfinance>=0.12.10
-google-generativeai>=0.8.0
-
 # Testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
