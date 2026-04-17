@@ -13,6 +13,8 @@ from typing import Any
 import numpy as np
 import structlog
 
+from src.data.llm_client import llm_call
+
 logger = structlog.get_logger(__name__)
 
 # / parameters eligible for random tweaking
@@ -126,8 +128,6 @@ async def _reasoner_critique(
         return {"decision": "approve", "reason": "no api key"}
 
     try:
-        from src.data.llm_client import llm_call
-
         trades_summary = ""
         for t in recent_trades[:5]:
             trades_summary += f"  - {t.get('symbol', '?')} {t.get('side', '?')}: pnl={t.get('pnl', '?')}\n"
