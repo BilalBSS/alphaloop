@@ -21,6 +21,8 @@ VALID_CATEGORIES = {
 _WIKI_ROOT: Path | None = None
 _PATH_LOCKS: dict[str, asyncio.Lock] = {}
 _LOCKS_GUARD = asyncio.Lock()
+# / strong refs to fire-and-forget embed tasks so the event loop doesn't gc them
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 def get_wiki_root() -> Path:
@@ -86,11 +88,22 @@ class WikiWriter:
     ) -> str:
         # / write (or overwrite) a markdown file, register in wiki_documents
         _validate_category(category)
-        if not filename.endswith(".md"):
-            filename = f"{filename}.md"
-        rel_path = f"{category}/{filename}"
+        # / security: slugify filename to block ../, backslash, null, and other path-escape chars
+        stem = filename[:-3] if filename.endswith(".md") else filename
+        safe_stem = _slugify(stem)
+        rel_path = f"{category}/{safe_stem}.md"
         abs_path = self._abs_path(rel_path)
+        # / security: confirm resolved path stays under the wiki root
+        try:
+            resolved = abs_path.resolve()
+            root_resolved = self._root.resolve()
+            if not str(resolved).startswith(str(root_resolved)):
+                raise ValueError(f"wiki path escape: {rel_path!r}")
+        except (OSError, ValueError) as exc:
+            logger.error("wiki_write_path_rejected", rel_path=rel_path, error=str(exc)[:120])
+            raise
 
+        document_id: int | None = None
         lock = await _lock_for(rel_path)
         async with lock:
             abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,11 +111,21 @@ class WikiWriter:
                 await f.write(content)
 
             if self._pool is not None:
-                await self._register(
+                document_id = await self._register(
                     rel_path, category, title, symbols or [], strategy_ids or [],
                     _count_words(content), confidence, content,
                 )
         logger.info("wiki_document_written", path=rel_path, words=_count_words(content))
+
+        # / fire-and-forget embedding; failures must never break the write
+        if document_id is not None:
+            try:
+                task = asyncio.create_task(self._embed_async(document_id, content))
+                _BACKGROUND_TASKS.add(task)
+                task.add_done_callback(_BACKGROUND_TASKS.discard)
+            except RuntimeError:
+                # / no running loop (e.g., sync test context) — skip background embed
+                pass
         return rel_path
 
     async def append_section(
@@ -215,9 +238,9 @@ class WikiWriter:
         word_count: int,
         confidence: str,
         content: str,
-    ) -> None:
+    ) -> int | None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
                 INSERT INTO wiki_documents (path, category, title, symbols, strategy_ids,
                     word_count, confidence, content_tsv, created_at, updated_at)
@@ -231,8 +254,38 @@ class WikiWriter:
                     confidence = EXCLUDED.confidence,
                     content_tsv = to_tsvector('english', $8),
                     updated_at = NOW()
+                RETURNING id
                 """,
                 path, category, title, symbols, strategy_ids, word_count, confidence, content,
+            )
+        return int(row["id"]) if row else None
+
+    async def _embed_async(self, document_id: int, content: str) -> None:
+        # / background task: chunk + embed + upsert into wiki_embeddings
+        # / any failure is logged and swallowed — never propagates to the caller
+        from src.knowledge.chunker import chunk_markdown
+        from src.knowledge.embedder import OllamaEmbedder
+        from src.knowledge.vector_store import VectorStore
+
+        try:
+            chunks = chunk_markdown(content)
+            if not chunks:
+                return
+            embedder = OllamaEmbedder()
+            try:
+                embeddings = await embedder.embed_batch(chunks)
+                if not any(e is not None for e in embeddings):
+                    logger.info("wiki_embed_all_none", document_id=document_id)
+                    return
+                store = VectorStore(self._pool)
+                await store.upsert_chunks(document_id, chunks, embeddings)
+            finally:
+                # / prevent httpx client leak on fire-and-forget tasks
+                await embedder.close()
+        except Exception as exc:
+            logger.info(
+                "wiki_embed_background_failed",
+                document_id=document_id, error=str(exc)[:200],
             )
 
     async def _touch(self, path: str, word_count: int, content: str) -> None:
