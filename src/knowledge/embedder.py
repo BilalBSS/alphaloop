@@ -47,19 +47,24 @@ class OllamaEmbedder:
         self._client = None
 
     async def embed(self, text: str) -> list[float] | None:
-        # / embed a single string, returns None on any failure
+        # / embed a single string via ollama /api/embed, returns None on any failure
         if not text or not text.strip():
             return None
         try:
             client = await self._get_client()
             resp = await client.post(
-                f"{self._base_url}/api/embeddings",
-                json={"model": self._model, "prompt": text},
+                f"{self._base_url}/api/embed",
+                json={"model": self._model, "input": text},
                 timeout=self._timeout,
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
-            vec = data.get("embedding")
+            # / /api/embed returns {"embeddings": [[...]]}; take the first vector
+            vecs = data.get("embeddings")
+            if not isinstance(vecs, list) or not vecs:
+                logger.warning("ollama_embed_empty_response", keys=list(data.keys()))
+                return None
+            vec = vecs[0]
             if not isinstance(vec, list) or len(vec) != EMBED_DIM:
                 logger.warning(
                     "ollama_embed_bad_shape",
@@ -75,18 +80,37 @@ class OllamaEmbedder:
     async def embed_batch(
         self, texts: list[str], batch_size: int = 8,
     ) -> list[list[float] | None]:
-        # / embed many strings concurrently in bounded batches
+        # / embed many strings server-side via /api/embed; one http call per batch_size chunk
         if not texts:
             return []
         results: list[list[float] | None] = [None] * len(texts)
         for start in range(0, len(texts), batch_size):
             chunk = texts[start:start + batch_size]
-            tasks = [self.embed(t) for t in chunk]
-            done = await asyncio.gather(*tasks, return_exceptions=True)
-            for i, r in enumerate(done):
-                if isinstance(r, Exception):
-                    logger.info("ollama_embed_batch_item_failed", error=str(r)[:120])
-                    results[start + i] = None
-                else:
-                    results[start + i] = r
+            # / filter out empty/whitespace strings per /api/embed contract
+            valid_pairs = [(i, t) for i, t in enumerate(chunk) if t and t.strip()]
+            if not valid_pairs:
+                continue
+            indices = [i for i, _ in valid_pairs]
+            payload_texts = [t for _, t in valid_pairs]
+            try:
+                client = await self._get_client()
+                resp = await client.post(
+                    f"{self._base_url}/api/embed",
+                    json={"model": self._model, "input": payload_texts},
+                    timeout=self._timeout,
+                )
+                resp.raise_for_status()
+                data: dict[str, Any] = resp.json()
+                vecs = data.get("embeddings") or []
+                if len(vecs) != len(payload_texts):
+                    logger.warning(
+                        "ollama_embed_batch_shape_mismatch",
+                        got=len(vecs), expected=len(payload_texts),
+                    )
+                    continue
+                for local_i, vec in zip(indices, vecs):
+                    if isinstance(vec, list) and len(vec) == EMBED_DIM:
+                        results[start + local_i] = [float(v) for v in vec]
+            except Exception as exc:
+                logger.info("ollama_embed_batch_failed", error=str(exc)[:120])
         return results
