@@ -22,10 +22,8 @@ exchange_calendars>=4.5.0
 fastapi>=0.100.0
 uvicorn>=0.22.0
 
-# ML (hmmlearn + arch may be culled in phase 4 step 3 if hmm_regime/garch_nn are removed)
+# ML (used by src/quant/ml_signals.py for gradient-boosted signal prediction)
 lightgbm>=4.0.0
-hmmlearn>=0.3.0
-arch>=6.0.0
 
 # Testing
 pytest>=7.0.0

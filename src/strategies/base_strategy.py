@@ -72,7 +72,6 @@ class AnalysisData:
     intermarket_score: float | None = None
     sector_relative_strength: float | None = None
     hurst: float | None = None
-    liquidation_imbalance: float | None = None
 
 
 class StrategyInterface(ABC):

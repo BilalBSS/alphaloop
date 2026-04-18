@@ -199,46 +199,6 @@ async def get_strategy_positions(symbol: str | None = None):
     return _serialize(rows)
 
 
-@app.get("/api/positions")
-async def get_positions():
-    # / pull live positions from alpaca, attach strategy_id via strategy_positions
-    # / bug e: /api/positions used to omit strategy ownership entirely; now joins with sp
-    try:
-        broker = _get_broker()
-        positions = await broker.get_positions()
-        # / bucket strategy_positions by symbol (a symbol can be split across strategies)
-        sp_rows = await _query(
-            """SELECT symbol, strategy_id, qty, avg_entry_price
-            FROM strategy_positions ORDER BY symbol, strategy_id"""
-        )
-        sp_by_symbol: dict[str, list[dict]] = {}
-        for r in sp_rows:
-            sp_by_symbol.setdefault(r["symbol"], []).append(r)
-        result = []
-        for p in positions:
-            d = _serialize_position(p)
-            owners = sp_by_symbol.get(p.symbol, [])
-            # / prefer a real strategy owner over the 'untracked' projection
-            primary = next((o for o in owners if o.get("strategy_id") and o["strategy_id"] != "untracked"), None)
-            untracked = next((o for o in owners if o.get("strategy_id") == "untracked"), None)
-            d["strategy_id"] = primary["strategy_id"] if primary else None
-            d["owned_by_real"] = bool(primary)
-            d["tracked_qty"] = float(primary["qty"]) if primary and primary.get("qty") is not None else (
-                float(untracked["qty"]) if untracked and untracked.get("qty") is not None else None
-            )
-            result.append(d)
-        return result
-    except Exception as exc:
-        logger.debug("positions_alpaca_fallback", error=str(exc))
-        rows = await _query(
-            """SELECT tl.symbol, tl.side, tl.qty, tl.price as entry_price,
-                    tl.strategy_id, tl.created_at
-            FROM trade_log tl WHERE tl.exit_price IS NULL
-            ORDER BY tl.created_at DESC"""
-        )
-        return _serialize(rows)
-
-
 @app.get("/api/trades")
 async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = None):
     limit = max(1, min(limit, 500))
@@ -827,17 +787,6 @@ async def get_insider(symbol: str):
     }
 
 
-@app.get("/api/signals")
-async def get_signals(limit: int = 50):
-    limit = max(1, min(limit, 500))
-    rows = await _query(
-        """SELECT * FROM trade_signals
-        ORDER BY created_at DESC LIMIT $1""",
-        limit,
-    )
-    return _serialize(rows)
-
-
 @app.get("/api/synthesis")
 async def get_synthesis():
     # / latest daily synthesis from 5PM reasoner
@@ -845,17 +794,6 @@ async def get_synthesis():
         "SELECT * FROM daily_synthesis ORDER BY date DESC LIMIT 1"
     )
     return _serialize_one(row)
-
-
-@app.get("/api/synthesis/history")
-async def get_synthesis_history(days: int = 7):
-    days = max(1, min(days, 30))
-    rows = await _query(
-        """SELECT * FROM daily_synthesis
-        ORDER BY date DESC LIMIT $1""",
-        days,
-    )
-    return _serialize(rows)
 
 
 @app.get("/api/indicators/{symbol}")
@@ -905,18 +843,6 @@ def _intraday_cache_put(key: tuple, payload: object) -> None:
 def _intraday_cache_clear() -> None:
     # / test helper
     _INTRADAY_CACHE.clear()
-
-
-@app.get("/api/chart/candles/{symbol}")
-async def get_chart_candles(symbol: str, days: int = 10, timeframe: str = "1Hour"):
-    # / alias for /api/intraday without indicator overlays — bug 3a
-    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators="")
-
-
-@app.get("/api/chart/indicators/{symbol}")
-async def get_chart_indicators(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
-    # / alias for /api/intraday focused on indicator dispatch — bug 3a
-    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators=indicators)
 
 
 @app.get("/api/intraday/{symbol}")

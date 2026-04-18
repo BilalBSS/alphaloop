@@ -23,7 +23,7 @@ Dashboard: http://localhost:8000 after `uvicorn src.dashboard.app:app` (or acces
 
 - **`src/agents/`** — analyst, strategy, risk, executor + orchestrator
 - **`src/data/`** — ingestion (market, fundamentals, SEC, FRED, congressional, analyst, short, options, dark pool, crypto, sentiment)
-- **`src/indicators/`** — technical indicators (trend, momentum, volatility, volume, structure, breadth, intermarket)
+- **`src/indicators/`** — technical indicators (trend, momentum, volatility, volume, structure, intermarket, sector rotation, mean reversion)
 - **`src/analysis/`** — ratio, DCF, earnings signals, insider, AI summary, strategy decay
 - **`src/quant/`** — Monte Carlo, particle filter, copulas, risk metrics, Brier calibration
 - **`src/strategies/`** — config-driven strategies + backtest + walk-forward

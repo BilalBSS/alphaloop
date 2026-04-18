@@ -124,20 +124,17 @@ async def _run_migrations(pool: asyncpg.Pool) -> None:
 
 
 async def cleanup_old_data(pool: asyncpg.Pool) -> dict[str, int]:
-    # / data retention policy for neon 512mb limit
-    # / news_sentiment: 180d, crypto_onchain: 180d, data_quality: 180d, notification_log: 30d, ui_events: 30d
+    # / data retention — keeps VPS Postgres small
+    # / news_sentiment: 180d, crypto_onchain: 180d
     retention = {
         "news_sentiment": 180,
         "crypto_onchain": 180,
-        "data_quality": 180,
-        "notification_log": 30,
-        "ui_events": 30,
     }
     results = {}
     async with pool.acquire() as conn:
         for table, days in retention.items():
             try:
-                date_col = "created_at" if table in ("notification_log", "crypto_onchain", "ui_events") else "date"
+                date_col = "created_at" if table == "crypto_onchain" else "date"
                 result = await conn.execute(
                     f"DELETE FROM {table} WHERE {date_col} < NOW() - INTERVAL '{days} days'"
                 )

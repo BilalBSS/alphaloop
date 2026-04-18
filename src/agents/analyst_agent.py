@@ -18,7 +18,6 @@ from src.analysis.insider_activity import InsiderSignal, analyze_insider_activit
 from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.agents import tools
 from src.data.crypto_data import fetch_coin_data, fetch_funding_rates, get_funding_rate
-from src.data.crypto_liquidations import fetch_liquidation_data
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
@@ -184,15 +183,6 @@ class AnalystAgent:
         except Exception:
             pass
 
-        # / fetch liquidation imbalance
-        liquidation_imbalance: float | None = None
-        try:
-            liq_data = await fetch_liquidation_data(symbol)
-            if liq_data:
-                liquidation_imbalance = liq_data.get("liquidation_imbalance")
-        except Exception as exc:
-            logger.warning("analyst_crypto_liquidation_failed", symbol=symbol, error=str(exc))
-
         # / llm analysis: same dual-llm path as equities
         # / 30-min cycle: groq only, hourly cycle: groq + deepseek
         ai_signal: str | None = None
@@ -242,33 +232,28 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
 
-        # / compute crypto composite: sentiment 0.15, nvt 0.15, funding 0.15, momentum 0.15, liquidation 0.10, AI 0.3
+        # / crypto composite weights: sentiment .17, nvt .17, funding .16, momentum .17, ai .33
         components: list[tuple[float, float]] = []
         if sentiment_score is not None and sentiment_score != 0.0:
             sent_100 = max(0.0, min(100.0, (sentiment_score + 1.0) * 50.0))
-            components.append((sent_100, 0.15))
+            components.append((sent_100, 0.17))
         if nvt is not None:
             mvr_score = max(0.0, min(100.0, (15.0 - nvt) / 15.0 * 80.0 + 10.0))
-            components.append((mvr_score, 0.15))
+            components.append((mvr_score, 0.17))
         if funding_rate is not None:
             fr_score = max(0.0, min(100.0, (0.01 - funding_rate) / 0.02 * 100.0))
-            components.append((fr_score, 0.15))
-        # / price momentum: 24h and 7d changes (already fetched, previously unused in scoring)
+            components.append((fr_score, 0.16))
+        # / price momentum: 24h + 7d blend mapped to 0-100
         if coin_data:
             pct_24h = coin_data.get("price_change_24h_pct")
             pct_7d = coin_data.get("price_change_7d_pct")
             if pct_24h is not None or pct_7d is not None:
-                # / blend: 60% 7d + 40% 24h, map [-30%, +30%] to [0, 100]
                 avg_pct = ((pct_7d or 0) * 0.6 + (pct_24h or 0) * 0.4)
                 momentum_score = max(0.0, min(100.0, (avg_pct + 30.0) / 60.0 * 100.0))
-                components.append((momentum_score, 0.15))
-        # / liquidation imbalance: positive = more longs liquidated (bearish), map to 0-100
-        if liquidation_imbalance is not None:
-            liq_score = max(0.0, min(100.0, (1.0 - liquidation_imbalance) * 50.0))
-            components.append((liq_score, 0.10))
+                components.append((momentum_score, 0.17))
         if ai_signal:
             signal_map = {"bullish": 80.0, "neutral": 50.0, "bearish": 20.0}
-            components.append((signal_map.get(ai_signal, 50.0), 0.3))
+            components.append((signal_map.get(ai_signal, 50.0), 0.33))
 
         composite: float | None = None
         if components:
@@ -283,7 +268,6 @@ class AnalystAgent:
             "ai_consensus_confidence": ai_confidence,
             "news_sentiment_score": sentiment_score,
             "regime": regime,
-            "liquidation_imbalance": liquidation_imbalance,
         }
         # / fear_greed_index on 0-100 scale for dashboard display
         if fear_greed is not None:
