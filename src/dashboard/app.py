@@ -218,6 +218,40 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = Non
     return _serialize(rows)
 
 
+@app.get("/api/trades/{trade_id}/detail")
+async def get_trade_detail(trade_id: int):
+    # / expanded trade view: trade_log row + originating signal + approved_trade + analysis snapshot
+    trade = await _query_one(
+        "SELECT * FROM trade_log WHERE id = $1", trade_id,
+    )
+    if not trade:
+        return JSONResponse({"error": "trade not found"}, status_code=404)
+    signal = None
+    approved = None
+    if trade.get("trade_id") is not None:
+        approved = await _query_one(
+            "SELECT * FROM approved_trades WHERE id = $1", trade["trade_id"],
+        )
+        if approved and approved.get("signal_id") is not None:
+            signal = await _query_one(
+                "SELECT * FROM trade_signals WHERE id = $1", approved["signal_id"],
+            )
+    analysis = await _query_one(
+        """SELECT date, overall_score, fundamental_score, dcf_fair_value, dcf_upside_pct,
+                consensus, ai_summary
+        FROM analysis_scores
+        WHERE symbol = $1 AND date <= $2::date
+        ORDER BY date DESC LIMIT 1""",
+        trade["symbol"], trade.get("created_at"),
+    )
+    return {
+        "trade": _serialize_one(trade),
+        "signal": _serialize_one(signal) if signal else None,
+        "approved": _serialize_one(approved) if approved else None,
+        "analysis": _serialize_one(analysis) if analysis else None,
+    }
+
+
 @app.get("/api/analysis/{symbol}")
 async def get_analysis(symbol: str):
     # / full deep-dive: fundamentals, DCF, dual-llm, indicators, trades, sentiment
@@ -450,6 +484,36 @@ async def get_evolution():
         ORDER BY generation DESC, created_at DESC LIMIT 50"""
     )
     return _serialize(rows)
+
+
+@app.get("/api/evolution/mutations")
+async def get_evolution_mutations(limit: int = 100):
+    # / wiki-guided A/B feed: recent evolution_mutations with wiki_guided flag + survival outcome
+    limit = max(1, min(int(limit), 500))
+    if _pool is None:
+        return {"mutations": [], "wiki_guided_count": 0, "random_count": 0, "wiki_win_rate": None, "random_win_rate": None}
+    rows = await _query(
+        """SELECT id, generation, parent_strategy_id, mutant_strategy_id,
+                wiki_guided, wiki_context_tokens, parent_sharpe, mutant_sharpe,
+                sharpe_delta, survived, created_at
+        FROM evolution_mutations
+        ORDER BY created_at DESC LIMIT $1""",
+        limit,
+    )
+    mutations = _serialize(rows)
+    wiki_rows = [m for m in mutations if m.get("wiki_guided")]
+    rand_rows = [m for m in mutations if not m.get("wiki_guided")]
+    wiki_survived = [m for m in wiki_rows if m.get("survived") is True]
+    rand_survived = [m for m in rand_rows if m.get("survived") is True]
+    wiki_win = (len(wiki_survived) / len(wiki_rows)) if wiki_rows else None
+    rand_win = (len(rand_survived) / len(rand_rows)) if rand_rows else None
+    return {
+        "mutations": mutations,
+        "wiki_guided_count": len(wiki_rows),
+        "random_count": len(rand_rows),
+        "wiki_win_rate": round(wiki_win, 3) if wiki_win is not None else None,
+        "random_win_rate": round(rand_win, 3) if rand_win is not None else None,
+    }
 
 
 # / phase 2: knowledge base endpoints
