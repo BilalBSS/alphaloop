@@ -795,62 +795,126 @@ class AgentOrchestrator:
             if await self._wait_or_stop(ALERT_CHECK_INTERVAL):
                 break
 
-    async def _alternative_data_loop(self) -> None:
+    async def _alternative_data_loop(self, use_registry: bool = True) -> None:
         # / backfill alternative data: analyst ratings, short interest, options, etc
+        # / use_registry=True (default): drive the cycle from src.data.source_registry.
+        # / use_registry=False: legacy per-source code path (kept as fallback for the one
+        # / cycle of transition; remove once registry has proven itself in prod)
         if await self._wait_or_stop(300):
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
-                from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
-                from src.data.short_interest import fetch_short_interest, store_short_interest
-                from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
-                from src.data.options_data import fetch_options_data, store_options_data
-                from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
-                from src.data.symbols import get_sector
-
-                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
-                for symbol in symbols:
-                    is_etf = get_sector(symbol) == "etfs"
-                    try:
-                        if not is_etf:
-                            # / analyst ratings
-                            ratings = await fetch_analyst_ratings(symbol)
-                            if ratings:
-                                await store_analyst_ratings(self._pool, symbol, ratings)
-                            # / earnings revisions
-                            estimates = await fetch_earnings_estimates(symbol)
-                            if estimates:
-                                await store_earnings_estimates(self._pool, estimates)
-                            # / congressional trades
-                            trades = await fetch_congressional_trades(symbol)
-                            if trades:
-                                await store_congressional_trades(self._pool, trades)
-                            # / options
-                            options = await fetch_options_data(symbol)
-                            if options:
-                                await store_options_data(self._pool, options)
-                        # / short interest (works for etfs too)
-                        si = await fetch_short_interest(symbol)
-                        if si:
-                            await store_short_interest(self._pool, si)
-                        # / dark pool — pass pool so ratio is computed + stored in one call
-                        dp = await fetch_dark_pool_data(symbol, pool=self._pool)
-                        if dp:
-                            await store_dark_pool(self._pool, dp)
-                    except Exception as exc:
-                        logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
-                    await asyncio.sleep(2)  # / throttle api calls
-                logger.info("alternative_data_backfill_complete", count=len(symbols))
-                await tools.log_event(
-                    self._pool, "info", "alternative_data", f"symbols={len(symbols)}",
-                )
+                if use_registry:
+                    await self._run_alternative_data_registry_cycle()
+                else:
+                    await self._run_alternative_data_legacy_cycle()
             except Exception as exc:
                 logger.error("alternative_data_error", exc_info=True)
                 notify_system_error(str(exc), "alternative_data")
                 await tools.log_event(self._pool, "error", "alternative_data", str(exc)[:200])
             if await self._wait_or_stop(ALTERNATIVE_DATA_INTERVAL):
                 break
+
+    async def _run_alternative_data_registry_cycle(self) -> None:
+        # / canonical path — iterate registered alt-data sources
+        from src.data.source_registry import all_sources
+        from src.data.symbols import get_sector
+
+        sources = all_sources()
+        # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
+        # / (for two fields) but we only want to hit yfinance once per symbol
+        by_name_deduped: dict[str, "AltDataSource"] = {}  # noqa: F821
+        for src in sources:
+            by_name_deduped.setdefault(src.name, src)
+
+        # / global sources first (macro) — one fetch, no symbol iteration
+        for src in by_name_deduped.values():
+            if not src.is_global:
+                continue
+            try:
+                await src.fetch(self._pool)
+            except Exception as exc:
+                logger.warning("alt_data_global_fetch_failed", source=src.name, error=str(exc)[:120])
+
+        # / per-symbol sources
+        symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+        per_symbol_sources = [s for s in by_name_deduped.values() if not s.is_global]
+
+        for symbol in symbols:
+            is_etf = get_sector(symbol) == "etfs"
+            for src in per_symbol_sources:
+                if is_etf and src.skip_etfs:
+                    continue
+                try:
+                    # / dark_pool accepts (symbol, pool=...) — detect via kwarg name
+                    if src.name == "dark_pool":
+                        data = await src.fetch(symbol, pool=self._pool)
+                    else:
+                        data = await src.fetch(symbol)
+                    if not data:
+                        continue
+                    if src.store_needs_symbol:
+                        await src.store(self._pool, symbol, data)
+                    else:
+                        await src.store(self._pool, data)
+                except Exception as exc:
+                    logger.warning(
+                        "alt_data_source_error",
+                        source=src.name, symbol=symbol, error=str(exc)[:120],
+                    )
+            await asyncio.sleep(2)  # / throttle api calls
+        logger.info("alternative_data_backfill_complete", count=len(symbols), via="registry")
+        await tools.log_event(
+            self._pool, "info", "alternative_data", f"symbols={len(symbols)} via=registry",
+        )
+
+    async def _run_alternative_data_legacy_cycle(self) -> None:
+        # / legacy per-source hardcoded code path — kept as fallback during the transition
+        # / deprecated path
+        from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
+        from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
+        from src.data.short_interest import fetch_short_interest, store_short_interest
+        from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
+        from src.data.options_data import fetch_options_data, store_options_data
+        from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
+        from src.data.symbols import get_sector
+
+        symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+        for symbol in symbols:
+            is_etf = get_sector(symbol) == "etfs"
+            try:
+                if not is_etf:
+                    # / analyst ratings
+                    ratings = await fetch_analyst_ratings(symbol)
+                    if ratings:
+                        await store_analyst_ratings(self._pool, symbol, ratings)
+                    # / earnings revisions
+                    estimates = await fetch_earnings_estimates(symbol)
+                    if estimates:
+                        await store_earnings_estimates(self._pool, estimates)
+                    # / congressional trades
+                    trades = await fetch_congressional_trades(symbol)
+                    if trades:
+                        await store_congressional_trades(self._pool, trades)
+                    # / options
+                    options = await fetch_options_data(symbol)
+                    if options:
+                        await store_options_data(self._pool, options)
+                # / short interest (works for etfs too)
+                si = await fetch_short_interest(symbol)
+                if si:
+                    await store_short_interest(self._pool, si)
+                # / dark pool — pass pool so ratio is computed + stored in one call
+                dp = await fetch_dark_pool_data(symbol, pool=self._pool)
+                if dp:
+                    await store_dark_pool(self._pool, dp)
+            except Exception as exc:
+                logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
+            await asyncio.sleep(2)  # / throttle api calls
+        logger.info("alternative_data_backfill_complete", count=len(symbols), via="legacy")
+        await tools.log_event(
+            self._pool, "info", "alternative_data", f"symbols={len(symbols)} via=legacy",
+        )
 
     async def _monitoring_loop(self) -> None:
         # / run monitoring checks: staleness, strategy decay, correlation
