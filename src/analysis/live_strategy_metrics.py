@@ -13,6 +13,7 @@ import numpy as np
 import structlog
 
 from src.agents import tools
+from src.quant.brier_score import brier_score
 from src.quant.risk_metrics import max_drawdown
 
 logger = structlog.get_logger(__name__)
@@ -219,6 +220,9 @@ async def _compute_for_strategy(
     # / composite score matches evolution ranking formula (sharpe 0.4 / win 0.3 / dd 0.3)
     composite = sharpe * 0.4 + win_rate * 0.3 - max_dd_pct * 0.3
 
+    # / brier calibration: how well did signal strength predict the outcome?
+    brier = await _compute_brier(pool, strategy_id, period_start, period_end)
+
     return {
         "sharpe_ratio": round(sharpe, 4),
         "sortino_ratio": round(sortino, 4),
@@ -229,8 +233,39 @@ async def _compute_for_strategy(
         "total_observations": len(returns),
         "composite_score": round(composite, 4),
         "total_pnl": round(total_pnl, 2),
-        "brier_score": None,  # / needs prediction+outcome pairs, wired in later phase
+        "brier_score": round(brier, 4) if brier is not None else None,
     }
+
+
+async def _compute_brier(
+    pool, strategy_id: str, period_start: date, period_end: date,
+) -> float | None:
+    # / pair trade_signals.strength (predictions 0..1) with trade_log.pnl>0 (binary outcome).
+    # / join on signal_id so each prediction is tied to its actual trade outcome.
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT ts.strength, tl.pnl
+                FROM trade_signals ts
+                JOIN approved_trades at_ ON at_.signal_id = ts.id
+                JOIN trade_log tl ON tl.order_id = at_.order_id
+                WHERE ts.strategy_id = $1
+                  AND ts.signal_type = 'buy'
+                  AND ts.strength IS NOT NULL
+                  AND tl.pnl IS NOT NULL
+                  AND tl.side = 'sell'
+                  AND tl.created_at >= $2
+                  AND tl.created_at < ($3::date + INTERVAL '1 day')""",
+                strategy_id, period_start, period_end,
+            )
+        if not rows or len(rows) < 3:
+            return None
+        predictions = np.array([max(0.0, min(1.0, float(r["strength"]))) for r in rows])
+        outcomes = np.array([1.0 if float(r["pnl"]) > 0 else 0.0 for r in rows])
+        return float(brier_score(predictions, outcomes))
+    except Exception as exc:
+        logger.debug("brier_compute_failed", strategy_id=strategy_id, error=str(exc)[:100])
+        return None
 
 
 def _fifo_match_returns(
