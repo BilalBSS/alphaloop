@@ -119,6 +119,17 @@ class FundamentalFiltersConfig(BaseModel):
     nvt_max: float | None = None
     funding_rate_max: float | None = None
     news_sentiment_min: float | None = None
+    # / alt-data filters (phase 4)
+    macro_score_min: float | None = None
+    congressional_buy_ratio_min: float | None = None
+    analyst_consensus_min: float | None = None
+    price_target_upside_min: float | None = None
+    earnings_revision_momentum_min: float | None = None
+    short_pct_float_max: float | None = None
+    dark_pool_ratio_max: float | None = None
+    iv_rank_min: float | None = None
+    iv_rank_max: float | None = None
+    put_call_ratio_max: float | None = None
 
 
 class BearMarketOverridesConfig(BaseModel):
