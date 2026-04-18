@@ -56,6 +56,23 @@ class StopLossConfig(BaseModel):
     multiplier: float | None = None
     period: int | None = None
 
+    @model_validator(mode="after")
+    def validate_actionable(self) -> "StopLossConfig":
+        # / require_stop_loss from risk_limits.json: every stop_loss must have teeth
+        # / fixed_pct → pct required; atr_trailing / atr_stop → multiplier required
+        t = (self.type or "fixed_pct").lower()
+        if t in ("fixed_pct", "percent", "pct"):
+            if self.pct is None or self.pct <= 0 or self.pct >= 1.0:
+                raise ValueError(
+                    f"stop_loss type={t!r} requires pct in (0, 1), got {self.pct!r}"
+                )
+        elif "atr" in t or t in ("trailing", "chandelier"):
+            if self.multiplier is None or self.multiplier <= 0:
+                raise ValueError(
+                    f"stop_loss type={t!r} requires multiplier > 0, got {self.multiplier!r}"
+                )
+        return self
+
 
 class TakeProfitConfig(BaseModel):
     indicator: str | None = None

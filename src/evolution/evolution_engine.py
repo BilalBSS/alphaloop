@@ -49,11 +49,17 @@ DEFAULT_WIKI_GUIDED_RATIO = 0.80
 class EvolutionEngine:
     def __init__(self, rng: np.random.Generator | None = None, risk_limits: dict | None = None):
         self._rng = rng or np.random.default_rng()
-        evo = (risk_limits or {}).get("evolution", {})
+        rl = risk_limits or {}
+        evo = rl.get("evolution", {})
         self._tier2_spawn_trades = evo.get("tier2_spawn_trades", 20)
         self._tier2_kill_trades = evo.get("tier2_kill_trades", 20)
         self._tier3_graduate_trades = evo.get("tier3_graduate_trades", 100)
         self._tier3_sharpe_delta = evo.get("tier3_sharpe_delta", 0.2)
+        self._tier2_param_freedom = evo.get("tier2_param_freedom", 0.20)
+        # / promotion gates from risk_limits.json (were hardcoded 14/0.8 with no win_rate)
+        self._paper_trade_min_days = int(rl.get("paper_trade_min_days", 14))
+        self._promotion_min_sharpe = float(rl.get("promotion_min_sharpe", 0.8))
+        self._promotion_min_win_rate = float(rl.get("promotion_min_win_rate", 0.45))
         try:
             self._wiki_guided_ratio = float(
                 os.environ.get("WIKI_GUIDED_RATIO", DEFAULT_WIKI_GUIDED_RATIO),
@@ -645,24 +651,34 @@ class EvolutionEngine:
     async def _promote_paper(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> None:
-        # / 8. PROMOTE: paper_trading strategies with 14+ days and sharpe >= 0.8
+        # / 8. PROMOTE: paper_trading strategies must clear ALL risk_limits gates
         paper_strategies = strategy_pool.list_by_status("paper_trading")
         for entry in paper_strategies:
-            # / compute paper_days dynamically from status_changed_at instead of
-            # / static config value which is never incremented
+            # / compute paper_days dynamically from status_changed_at
             paper_days = (datetime.now(timezone.utc) - entry.status_changed_at).days
-            if entry.score and paper_days >= 14 and entry.score.sharpe_ratio >= 0.8:
+            if not entry.score:
+                continue
+            sharpe = entry.score.sharpe_ratio
+            win_rate = entry.score.win_rate
+            if (
+                paper_days >= self._paper_trade_min_days
+                and sharpe >= self._promotion_min_sharpe
+                and win_rate >= self._promotion_min_win_rate
+            ):
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "live")
                 summary["promoted"].append({"id": sid})
-                notify_strategy_promoted(sid, entry.score.sharpe_ratio, paper_days)
-                logger.info("strategy_promoted", strategy_id=sid, sharpe=entry.score.sharpe_ratio, days=paper_days)
+                notify_strategy_promoted(sid, sharpe, paper_days)
+                logger.info(
+                    "strategy_promoted",
+                    strategy_id=sid, sharpe=sharpe, win_rate=win_rate, days=paper_days,
+                )
 
                 try:
                     await store_evolution_log(
                         pool, generation, "promote", sid,
                         entry.strategy.config.get("parent_id"),
-                        f"paper_trading {paper_days}d, sharpe={entry.score.sharpe_ratio:.2f}",
+                        f"paper_trading {paper_days}d, sharpe={sharpe:.2f}, win_rate={win_rate:.2f}",
                     )
                 except Exception as exc:
                     logger.error("evolution_log_promote_failed", error=str(exc))

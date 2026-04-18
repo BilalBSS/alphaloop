@@ -56,17 +56,32 @@ class AgentOrchestrator:
         self._pool = None
         self._broker_factory: BrokerFactory | None = None
         self._strategy_pool = StrategyPool()
+        # / load risk_limits once and pass to agents that enforce them
+        rl = self._load_risk_limits()
         self._analyst = AnalystAgent()
         self._strategy = StrategyAgent()
-        self._risk = RiskAgent()
+        self._risk = RiskAgent(risk_limits=rl)
         self._executor = ExecutorAgent()
-        self._evolution = EvolutionEngine()
+        self._evolution = EvolutionEngine(risk_limits=rl)
+        self._risk_limits = rl
         self._tasks: list[asyncio.Task] = []
         self._last_drift: dict[str, float] = {}
         self._alert_prev_prices: dict[str, float] = {}
         # / phase 2: track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
+
+    @staticmethod
+    def _load_risk_limits() -> dict:
+        # / load configs/risk_limits.json once at startup; shared by all agents
+        from pathlib import Path
+        path = Path(__file__).parent.parent.parent / "configs" / "risk_limits.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception as exc:
+                logger.warning("risk_limits_load_failed", error=str(exc)[:120])
+        return {}
 
     async def start(self) -> None:
         # / initialize resources and start all agent loops
