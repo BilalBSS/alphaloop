@@ -1,5 +1,5 @@
 # / postgres tsvector-based full-text search over wiki_documents
-# / hybrid search (tsvector + pgvector) lives in src.rag.retriever
+# / hybrid search (tsvector + pgvector) lives in src.knowledge.hybrid_retriever
 
 from __future__ import annotations
 

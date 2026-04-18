@@ -116,7 +116,6 @@ META_KNOWN_ISSUES_BODY = (
     "- Paper broker simulation assumes perfect fills — live slippage may differ\n\n"
     "## Known Issues\n"
     "- Regime detection uses 20-day vol window — may lag transitions by several days\n"
-    "- Analyst prompts do not yet incorporate chart vision signals (Track V / Phase 3)\n"
     "- Wiki context injection is evolution-only — analyst stays stateless\n\n"
     "## Rules for Strategy Mutation\n"
     "- Never exceed 10% position size\n"

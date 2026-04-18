@@ -15,7 +15,7 @@ def _format_vector(vec: Sequence[float]) -> str:
 
 
 class VectorStore:
-    # / wraps pgvector ops for wiki_embeddings and chart_analyses
+    # / wraps pgvector ops for wiki_embeddings
 
     def __init__(self, pool):
         self._pool = pool

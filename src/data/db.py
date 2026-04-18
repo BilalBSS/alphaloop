@@ -1,4 +1,4 @@
-# / asyncpg pool + migration runner for neon postgres
+# / asyncpg pool + migration runner for VPS Postgres
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def init_db(database_url: str | None = None) -> asyncpg.Pool:
-    # / connect to neon pooled endpoint and run pending migrations
+    # / connect to VPS Postgres pooled endpoint and run pending migrations
     global _pool
 
     if _pool is not None:
@@ -40,7 +40,7 @@ async def init_db(database_url: str | None = None) -> asyncpg.Pool:
         url = database_url or os.environ.get("DATABASE_URL")
         if not url:
             raise RuntimeError(
-                "DATABASE_URL not set. use a neon pooled connection string."
+                "DATABASE_URL not set. use a VPS Postgres pooled connection string."
             )
 
         logger.info("connecting_to_database", url=_mask_url(url))
