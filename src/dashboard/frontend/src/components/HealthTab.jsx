@@ -66,15 +66,20 @@ function CostPanel() {
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
   if (!data) return <div className="text-text-muted text-sm py-2">No cost data</div>
 
-  // / accept either array or { providers: [...], total: ... }
-  const providers = Array.isArray(data) ? data : (data.providers || [])
+  // / accept either flat array, { costs: [...], total_usd }, or legacy { providers: [...] }
+  const providers = Array.isArray(data)
+    ? data
+    : (data.costs || data.providers || [])
   if (providers.length === 0) return <div className="text-text-muted text-sm py-2">No cost entries</div>
 
-  const totalUsd = providers.reduce((s, p) => s + (parseFloat(p.usd) || 0), 0)
+  const usdOf = (p) => parseFloat(p.estimated_cost_usd ?? p.usd) || 0
+  const totalUsd = data.total_usd != null
+    ? parseFloat(data.total_usd) || 0
+    : providers.reduce((s, p) => s + usdOf(p), 0)
   const totalCalls = providers.reduce((s, p) => s + (parseInt(p.call_count) || 0), 0)
   const totalTokensIn = providers.reduce((s, p) => s + (parseInt(p.tokens_in) || 0), 0)
   const totalTokensOut = providers.reduce((s, p) => s + (parseInt(p.tokens_out) || 0), 0)
-  const period = data.period || '24h'
+  const period = data.period || '100 rows'
 
   return (
     <div>
@@ -123,9 +128,20 @@ function CostPanel() {
   )
 }
 
+// / derive a freshness status tier from the staleness_monitor payload:
+// / red = is_stale true; yellow = staleness_hours > 60% of threshold; green otherwise.
+function stalenessStatus(item) {
+  if (item.status) return item.status
+  if (item.is_stale) return 'red'
+  const s = parseFloat(item.staleness_hours)
+  const t = parseFloat(item.threshold_hours)
+  if (!Number.isFinite(s) || !Number.isFinite(t) || t <= 0) return 'unknown'
+  return s / t > 0.6 ? 'yellow' : 'green'
+}
+
 // / individual staleness tile — colored by freshness status
 function StalenessTile({ item, onClick }) {
-  const status = item.status || 'unknown'
+  const status = stalenessStatus(item)
   const color = {
     green: { bg: 'bg-profit/10', border: 'border-profit/40', dot: 'bg-profit', text: 'text-profit' },
     yellow: { bg: 'bg-warning/10', border: 'border-warning/40', dot: 'bg-warning', text: 'text-warning' },
@@ -160,14 +176,15 @@ function StalenessPanel() {
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!Array.isArray(data) || data.length === 0) {
+  const sources = Array.isArray(data) ? data : (data?.sources || [])
+  if (sources.length === 0) {
     return <div className="text-text-muted text-sm py-2">No staleness data available</div>
   }
 
   // / legend row
   const counts = { green: 0, yellow: 0, red: 0, unknown: 0 }
-  for (const d of data) {
-    const s = d.status || 'unknown'
+  for (const d of sources) {
+    const s = stalenessStatus(d)
     counts[s] = (counts[s] || 0) + 1
   }
 
@@ -179,7 +196,7 @@ function StalenessPanel() {
         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-loss" />{counts.red} critical</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
-        {data.map((item, i) => (
+        {sources.map((item, i) => (
           <StalenessTile key={`${item.source}-${i}`} item={item} onClick={setSelected} />
         ))}
       </div>
@@ -192,15 +209,19 @@ function StalenessPanel() {
           <div className="grid grid-cols-2 gap-2 text-[11px]">
             <div>
               <div className="text-text-muted uppercase text-[10px]">Status</div>
-              <div className="font-semibold uppercase">{selected.status || '--'}</div>
+              <div className="font-semibold uppercase">{stalenessStatus(selected)}</div>
             </div>
             <div>
               <div className="text-text-muted uppercase text-[10px]">Last Update</div>
               <div className="font-mono">{timeAgo(selected.last_update)}</div>
             </div>
             <div>
-              <div className="text-text-muted uppercase text-[10px]">Errors (24h)</div>
-              <div className="font-mono">{selected.error_count_24h || 0}</div>
+              <div className="text-text-muted uppercase text-[10px]">Staleness</div>
+              <div className="font-mono">{selected.staleness_hours != null ? `${selected.staleness_hours}h` : '--'}</div>
+            </div>
+            <div>
+              <div className="text-text-muted uppercase text-[10px]">Threshold</div>
+              <div className="font-mono">{selected.threshold_hours != null ? `${selected.threshold_hours}h` : '--'}</div>
             </div>
             {selected.last_error && (
               <div className="col-span-2">

@@ -5,17 +5,31 @@ const CATEGORIES = ['all', 'regimes', 'post-mortems', 'strategies', 'evolution',
 
 export default function WikiBrowser() {
   const [category, setCategory] = useState('all')
+  const [query, setQuery] = useState('')
   const listUrl = category === 'all'
     ? '/api/wiki/documents?limit=300'
     : `/api/wiki/documents?category=${encodeURIComponent(category)}&limit=300`
   const { data: docs, loading } = useApi(listUrl)
   const [selected, setSelected] = useState(null)
 
+  // / client-side path + title fuzzy filter; keeps behavior snappy across 78+ docs
+  // / without a round-trip. The /api/wiki/search pgvector endpoint is preserved for
+  // / a future semantic-search UI but this covers the "find a symbol" case.
+  const filtered = !docs
+    ? []
+    : query.trim() === ''
+      ? docs
+      : docs.filter((d) => {
+          const q = query.toLowerCase()
+          return (d.path || '').toLowerCase().includes(q)
+            || (d.title || '').toLowerCase().includes(q)
+        })
+
   return (
     <div className="flex gap-3 h-[70vh]">
       {/* sidebar: category filter + doc list */}
       <aside className="w-72 shrink-0 flex flex-col border border-border rounded">
-        <div className="p-2 border-b border-border">
+        <div className="p-2 border-b border-border space-y-2">
           <select
             value={category}
             onChange={(e) => { setCategory(e.target.value); setSelected(null) }}
@@ -25,13 +39,22 @@ export default function WikiBrowser() {
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="search path or title..."
+            className="w-full text-xs bg-bg-primary text-text-primary border border-border rounded px-2 py-1 placeholder:text-text-muted"
+          />
         </div>
         <ul className="flex-1 overflow-y-auto text-xs">
           {loading && <li className="p-2 text-text-muted">loading…</li>}
-          {!loading && (!docs || docs.length === 0) && (
-            <li className="p-2 text-text-muted">no documents</li>
+          {!loading && filtered.length === 0 && (
+            <li className="p-2 text-text-muted">
+              {query ? `no matches for "${query}"` : 'no documents'}
+            </li>
           )}
-          {!loading && docs && docs.map((d) => (
+          {!loading && filtered.map((d) => (
             <li key={d.id}>
               <button
                 onClick={() => setSelected(d.path)}

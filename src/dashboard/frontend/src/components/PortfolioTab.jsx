@@ -369,19 +369,20 @@ function SectorConcentration() {
 
   if (loading && !data) return <SkeletonTable rows={5} cols={2} />
   if (error) return <div className="text-loss text-sm py-4">Failed to load: {error}</div>
-  if (!Array.isArray(data) || data.length === 0) {
+  const sectors = Array.isArray(data) ? data : data?.sectors
+  if (!Array.isArray(sectors) || sectors.length === 0) {
     return <div className="text-text-muted text-sm py-4">No sector breakdown available</div>
   }
 
   // / normalize + sort by pct desc; max width at the largest bar
-  const rows = [...data].sort((a, b) => (parseFloat(b.pct_of_equity) || 0) - (parseFloat(a.pct_of_equity) || 0))
-  const maxPct = rows.reduce((m, r) => Math.max(m, parseFloat(r.pct_of_equity) || 0), 0) || 1
+  const rows = [...sectors].sort((a, b) => (parseFloat(b.pct_of_portfolio ?? b.pct_of_equity) || 0) - (parseFloat(a.pct_of_portfolio ?? a.pct_of_equity) || 0))
+  const maxPct = rows.reduce((m, r) => Math.max(m, parseFloat(r.pct_of_portfolio ?? r.pct_of_equity) || 0), 0) || 1
 
   return (
     <div className="space-y-1.5">
       {rows.map(r => {
-        const pct = parseFloat(r.pct_of_equity) || 0
-        const usd = parseFloat(r.value_usd) || 0
+        const pct = parseFloat(r.pct_of_portfolio ?? r.pct_of_equity) || 0
+        const usd = parseFloat(r.value ?? r.value_usd) || 0
         const overConcentrated = pct > 0.30
         const barWidth = (pct / maxPct) * 100
         return (
@@ -415,14 +416,16 @@ function TailDependenceCard() {
 
   if (loading && !data) return <div className="skeleton h-20 w-full" />
   if (error) return <div className="text-loss text-sm py-4">Failed to load: {error}</div>
-  if (!data || data.aggregated_lambda == null) {
+  const lamRaw = data?.lambda_lower ?? data?.aggregated_lambda
+  if (!data || lamRaw == null) {
     return <div className="text-text-muted text-sm py-4">No tail dependence — need ≥2 positions</div>
   }
 
-  const lam = parseFloat(data.aggregated_lambda) || 0
-  const color = lam < 0.2 ? 'text-profit' : lam < 0.3 ? 'text-warning' : 'text-loss'
-  const label = lam < 0.2 ? 'LOW' : lam < 0.3 ? 'ELEVATED' : 'HIGH'
-  const borderColor = lam < 0.2 ? 'border-l-profit' : lam < 0.3 ? 'border-l-warning' : 'border-l-loss'
+  const lam = parseFloat(lamRaw) || 0
+  const threshold = parseFloat(data.threshold) || 0.3
+  const color = lam < 0.2 ? 'text-profit' : lam < threshold ? 'text-warning' : 'text-loss'
+  const label = lam < 0.2 ? 'LOW' : lam < threshold ? 'ELEVATED' : 'HIGH'
+  const borderColor = lam < 0.2 ? 'border-l-profit' : lam < threshold ? 'border-l-warning' : 'border-l-loss'
   const perPos = Array.isArray(data.per_position) ? data.per_position : []
 
   return (

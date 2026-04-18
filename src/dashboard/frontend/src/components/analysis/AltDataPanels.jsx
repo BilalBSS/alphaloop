@@ -64,22 +64,23 @@ export function AnalystConsensusCard({ symbol }) {
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!data || data.consensus_score == null) {
+  // / backend returns { history: [{...latest, consensus_score}] }; accept flat or history[0]
+  const latest = data?.consensus_score != null ? data : (Array.isArray(data?.history) ? data.history[0] : null)
+  if (!latest || latest.consensus_score == null) {
     return <div className="text-text-muted text-sm py-2">No analyst ratings</div>
   }
-
-  const score = parseFloat(data.consensus_score) || 0
+  const score = parseFloat(latest.consensus_score) || 0
   // / map [-1, +1] → [0, 100] percentage for gauge
   const pct = ((score + 1) / 2) * 100
   const color = score >= 0.4 ? 'text-profit' : score <= -0.4 ? 'text-loss' : 'text-warning'
   const label = score >= 0.6 ? 'Strong Buy' : score >= 0.2 ? 'Buy' : score > -0.2 ? 'Hold' : score > -0.6 ? 'Sell' : 'Strong Sell'
 
   const dist = [
-    { key: 'strong_buy', label: 'SB', count: data.strong_buy || 0, color: 'bg-profit' },
-    { key: 'buy', label: 'B', count: data.buy || 0, color: 'bg-profit/60' },
-    { key: 'hold', label: 'H', count: data.hold || 0, color: 'bg-warning' },
-    { key: 'sell', label: 'S', count: data.sell || 0, color: 'bg-loss/60' },
-    { key: 'strong_sell', label: 'SS', count: data.strong_sell || 0, color: 'bg-loss' },
+    { key: 'strong_buy', label: 'SB', count: latest.strong_buy || 0, color: 'bg-profit' },
+    { key: 'buy', label: 'B', count: latest.buy || 0, color: 'bg-profit/60' },
+    { key: 'hold', label: 'H', count: latest.hold || 0, color: 'bg-warning' },
+    { key: 'sell', label: 'S', count: latest.sell || 0, color: 'bg-loss/60' },
+    { key: 'strong_sell', label: 'SS', count: latest.strong_sell || 0, color: 'bg-loss' },
   ]
   const totalCount = dist.reduce((s, d) => s + d.count, 0)
 
@@ -128,10 +129,10 @@ export function AnalystConsensusCard({ symbol }) {
         </div>
       )}
 
-      {data.target_mean != null && (
+      {latest.target_mean != null && (
         <div className="flex items-center justify-between text-xs">
           <span className="text-text-secondary uppercase text-[10px]">Avg Target</span>
-          <span className="font-mono font-semibold">${parseFloat(data.target_mean).toFixed(2)}</span>
+          <span className="font-mono font-semibold">${parseFloat(latest.target_mean).toFixed(2)}</span>
         </div>
       )}
     </div>
@@ -144,13 +145,17 @@ export function OptionsFlowCard({ symbol }) {
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!data || (data.iv_rank == null && data.put_call_ratio == null && data.max_pain == null)) {
+  // / backend: { history: [...], latest }. legacy flat shape still accepted.
+  const latest = data?.latest ?? (Array.isArray(data?.history) ? data.history[0] : data)
+  if (!latest || (latest.iv_rank == null && latest.put_call_ratio == null && latest.max_pain == null)) {
     return <div className="text-text-muted text-sm py-2">No options data</div>
   }
 
-  const ivRank = data.iv_rank != null ? parseFloat(data.iv_rank) : null
-  const pcr = data.put_call_ratio != null ? parseFloat(data.put_call_ratio) : null
-  const maxPain = data.max_pain != null ? parseFloat(data.max_pain) : null
+  // / backend stores iv_rank as 0..1 fraction; earlier draft emitted 0..100 directly
+  const ivRaw = latest.iv_rank != null ? parseFloat(latest.iv_rank) : null
+  const ivRank = ivRaw == null ? null : (ivRaw <= 1 ? ivRaw * 100 : ivRaw)
+  const pcr = latest.put_call_ratio != null ? parseFloat(latest.put_call_ratio) : null
+  const maxPain = latest.max_pain != null ? parseFloat(latest.max_pain) : null
 
   const ivColor = ivRank == null ? 'text-text-muted' : ivRank > 70 ? 'text-loss' : ivRank > 40 ? 'text-warning' : 'text-profit'
   const pcrColor = pcr == null ? 'text-text-muted' : pcr > 1.2 ? 'text-loss' : pcr > 0.8 ? 'text-warning' : 'text-profit'
@@ -213,11 +218,14 @@ export function DarkPoolCard({ symbol }) {
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!data || data.latest_ratio == null) {
+  // / backend: { history: [...], latest: { dark_pool_ratio, ats_volume, total_volume, week_start } }
+  const latest = data?.latest ?? (Array.isArray(data?.history) ? data.history[0] : data)
+  const rawRatio = latest?.dark_pool_ratio ?? latest?.latest_ratio
+  if (!latest || rawRatio == null) {
     return <div className="text-text-muted text-sm py-2">No dark pool data</div>
   }
 
-  const ratio = parseFloat(data.latest_ratio) || 0
+  const ratio = parseFloat(rawRatio) || 0
   const pct = ratio * 100
   // / >45% suggests institutional accumulation
   const color = pct > 45 ? 'text-accent' : pct > 35 ? 'text-warning' : 'text-text-secondary'
@@ -238,13 +246,13 @@ export function DarkPoolCard({ symbol }) {
           />
         </div>
       </div>
-      {Array.isArray(data.weekly_trend) && data.weekly_trend.length > 0 && (
+      {Array.isArray(data?.history) && data.history.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase text-text-muted mb-1">4-Week Trend</div>
+          <div className="text-[10px] uppercase text-text-muted mb-1">Weekly Trend</div>
           <TimeSeriesLineChart
-            data={data.weekly_trend}
-            timeKey="week"
-            valueKey="ratio"
+            data={[...data.history].reverse()}
+            timeKey="week_start"
+            valueKey="dark_pool_ratio"
             color="#3b82f6"
             height={80}
             valueFmt={v => `${(v * 100).toFixed(1)}%`}
@@ -267,7 +275,8 @@ export function CongressionalCard({ symbol }) {
   }
 
   const trades = data.trades || []
-  const ratio = data.ratio != null ? parseFloat(data.ratio) : null
+  const ratioRaw = data.net_buy_ratio ?? data.ratio
+  const ratio = ratioRaw != null ? parseFloat(ratioRaw) : null
   const buys = trades.filter(t => (t.transaction_type || t.side || '').toLowerCase().includes('buy')).length
   const sells = trades.length - buys
   const total = buys + sells
@@ -342,46 +351,54 @@ export function CongressionalCard({ symbol }) {
   )
 }
 
-// / short squeeze risk: short % float + trend
+// / short squeeze risk: days-to-cover ratio + trend. short_ratio >= 5 is typically tight.
 export function ShortSqueezeCard({ symbol }) {
   const { data, loading, error } = useApi(`/api/short/${symbol}`, 300000)
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!data || data.short_pct_float == null) {
+  // / backend: { history: [{short_volume, total_volume, short_ratio}], latest }
+  const latest = data?.latest ?? (Array.isArray(data?.history) ? data.history[0] : data)
+  const rawRatio = latest?.short_ratio ?? latest?.short_pct_float
+  if (!latest || rawRatio == null) {
     return <div className="text-text-muted text-sm py-2">No short interest data</div>
   }
 
-  const pct = parseFloat(data.short_pct_float) || 0
-  // / scale displays: 0-10% normal, 10-20% elevated, >20% squeeze risk
-  const color = pct > 20 ? 'text-loss' : pct > 10 ? 'text-warning' : 'text-text-secondary'
-  const label = pct > 20 ? 'Squeeze Risk' : pct > 10 ? 'Elevated' : 'Normal'
+  const ratio = parseFloat(rawRatio) || 0
+  // / days-to-cover thresholds: <2 low, 2-5 normal, 5-10 elevated, >10 squeeze-risk
+  const color = ratio > 10 ? 'text-loss' : ratio > 5 ? 'text-warning' : 'text-text-secondary'
+  const label = ratio > 10 ? 'Squeeze Risk' : ratio > 5 ? 'Elevated' : 'Normal'
 
   return (
     <div className="space-y-2">
       <div className="bg-bg-primary border border-border p-2">
-        <div className="text-[10px] uppercase text-text-muted">Short % of Float</div>
+        <div className="text-[10px] uppercase text-text-muted">Days to Cover</div>
         <div className="flex items-baseline gap-2">
-          <span className={`text-2xl font-mono font-bold ${color}`}>{pct.toFixed(1)}%</span>
+          <span className={`text-2xl font-mono font-bold ${color}`}>{ratio.toFixed(2)}</span>
           <span className={`text-[10px] uppercase font-semibold ${color}`}>{label}</span>
         </div>
         <div className="mt-1 h-1.5 bg-bg-surface rounded overflow-hidden">
           <div
-            className={pct > 20 ? 'bg-loss h-full' : pct > 10 ? 'bg-warning h-full' : 'bg-text-secondary h-full'}
-            style={{ width: `${Math.min(100, pct * 4)}%` }}
+            className={ratio > 10 ? 'bg-loss h-full' : ratio > 5 ? 'bg-warning h-full' : 'bg-text-secondary h-full'}
+            style={{ width: `${Math.min(100, ratio * 8)}%` }}
           />
         </div>
+        {latest.short_volume != null && (
+          <div className="text-[10px] text-text-muted mt-1">
+            Short vol: {Number(latest.short_volume).toLocaleString()}
+          </div>
+        )}
       </div>
-      {Array.isArray(data.trend) && data.trend.length > 0 && (
+      {Array.isArray(data?.history) && data.history.length > 0 && (
         <div>
           <div className="text-[10px] uppercase text-text-muted mb-1">Trend</div>
           <TimeSeriesLineChart
-            data={data.trend}
+            data={[...data.history].reverse()}
             timeKey="date"
-            valueKey="short_pct_float"
+            valueKey="short_ratio"
             color="#f59e0b"
             height={80}
-            valueFmt={v => `${v.toFixed(1)}%`}
+            valueFmt={v => `${v.toFixed(2)}`}
             emptyText="--"
           />
         </div>
@@ -396,13 +413,28 @@ export function EarningsRevisionsCard({ symbol }) {
 
   if (loading && !data) return <div className="skeleton h-24 w-full" />
   if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
-  if (!data || (data.up_revisions == null && data.down_revisions == null && data.momentum == null)) {
+  const hasData = data && (data.momentum != null || (Array.isArray(data.history) && data.history.length > 0))
+  if (!hasData) {
     return <div className="text-text-muted text-sm py-2">No revision data</div>
   }
 
   const momentum = data.momentum != null ? parseFloat(data.momentum) : null
-  const ups = data.up_revisions || 0
-  const downs = data.down_revisions || 0
+  // / derive up/down counts from eps_estimate deltas in history (newest-first)
+  let ups = data.up_revisions
+  let downs = data.down_revisions
+  if (ups == null && downs == null && Array.isArray(data.history)) {
+    ups = 0; downs = 0
+    const h = data.history
+    for (let i = 0; i < h.length - 1; i++) {
+      const cur = parseFloat(h[i].eps_estimate)
+      const prev = parseFloat(h[i + 1].eps_estimate)
+      if (!Number.isFinite(cur) || !Number.isFinite(prev)) continue
+      if (cur > prev) ups += 1
+      else if (cur < prev) downs += 1
+    }
+  }
+  ups = ups || 0
+  downs = downs || 0
   const total = ups + downs
   const upPct = total > 0 ? (ups / total) * 100 : 0
   const downPct = total > 0 ? (downs / total) * 100 : 0
