@@ -80,8 +80,12 @@ class RiskAgent:
             logger.error("risk_process_signal_error", signal_id=signal_id, error=str(exc))
             try:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "error")
-            except Exception:
-                pass
+            except Exception as inner:
+                # / db write failure: signal stuck pending, will retry next loop
+                logger.warning(
+                    "risk_signal_status_update_failed",
+                    signal_id=signal_id, error=str(inner)[:120],
+                )
             return {"status": "error", "reason": str(exc)}
 
     async def _process_signal_inner(
@@ -257,8 +261,9 @@ class RiskAgent:
                 regime_label = regime.get("regime", "insufficient_data") if regime else "insufficient_data"
                 regime_mult = self._regime_multipliers.get(regime_label, 0.5)
                 qty = int(qty * regime_mult)
-            except Exception:
-                pass
+            except Exception as exc:
+                # / regime lookup failed — proceed at full size (conservative default)
+                logger.debug("regime_sizing_skipped", symbol=symbol, error=str(exc)[:100])
 
         # / beta-adjusted sizing (buys only)
         if side == "buy":
@@ -267,8 +272,9 @@ class RiskAgent:
                 if beta is not None and beta > 1.5:
                     qty = max(1, int(qty * (1.0 / beta)))
                     logger.info("beta_adjusted", symbol=symbol, beta=beta, qty=qty)
-            except Exception:
-                pass
+            except Exception as exc:
+                # / beta lookup failed — proceed without adjustment
+                logger.debug("beta_sizing_skipped", symbol=symbol, error=str(exc)[:100])
 
         if qty <= 0:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")

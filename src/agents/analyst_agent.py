@@ -513,9 +513,9 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("alt_short_interest_failed", symbol=symbol, error=str(exc))
 
-        # / dark pool
+        # / dark pool — pass pool so we can compute ratio against market_data total volume
         try:
-            dp_data = await fetch_dark_pool_data(symbol)
+            dp_data = await fetch_dark_pool_data(symbol, pool=pool)
             if dp_data:
                 alt["dark_pool_ratio"] = dp_data.get("dark_pool_ratio")
         except Exception as exc:

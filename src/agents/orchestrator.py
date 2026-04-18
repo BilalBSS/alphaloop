@@ -75,14 +75,17 @@ class AgentOrchestrator:
         # / init db
         self._pool = await init_db()
 
-        # / prune old system events (keep 30 days)
+        # / prune old system events (keep 30 days). table may not exist on first run.
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM system_events WHERE timestamp < NOW() - INTERVAL '30 days'"
                 )
-        except Exception:
-            pass  # / table may not exist yet on first run
+        except Exception as exc:
+            # / explicitly tolerate UndefinedTable on bootstrap; log anything else
+            msg = str(exc).lower()
+            if "does not exist" not in msg and "undefined" not in msg:
+                logger.warning("system_events_prune_failed", error=str(exc)[:120])
 
         # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
         try:
@@ -181,8 +184,8 @@ class AgentOrchestrator:
             await close_http_client()
             await close_llm_clients()
             await close_alpaca_client()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("http_client_shutdown_failed", error=str(exc)[:100])
 
         # / close db
         await close_db()
@@ -257,13 +260,13 @@ class AgentOrchestrator:
             try:
                 symbols = self._get_symbols()
                 await self._analyst.run(self._pool, symbols, run_deepseek=False)
-                # / broadcast analysis update (fire-and-forget)
+                # / broadcast analysis update (fire-and-forget); dashboard may not be running
                 try:
                     from src.dashboard.app import broadcast, _ws_clients
                     if _ws_clients:
                         asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
-                except Exception:
-                    pass  # dashboard may not be running
+                except Exception as exc:
+                    logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -333,13 +336,13 @@ class AgentOrchestrator:
                 await self._strategy.run(
                     self._pool, self._strategy_pool, broker,
                 )
-                # / broadcast strategy evaluation (fire-and-forget)
+                # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
                 try:
                     from src.dashboard.app import broadcast, _ws_clients
                     if _ws_clients:
                         asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("broadcast_strategy_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("strategy_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_loop")
@@ -374,8 +377,12 @@ class AgentOrchestrator:
                             await tools.update_trade_status(
                                 self._pool, "trade_signals", signal["id"], "error",
                             )
-                        except Exception:
-                            pass
+                        except Exception as inner:
+                            # / db write failure: signal stuck pending, will retry next poll
+                            logger.warning(
+                                "risk_poll_status_update_failed",
+                                signal_id=signal["id"], error=str(inner)[:120],
+                            )
             except Exception:
                 logger.error("risk_poll_error", exc_info=True)
 
@@ -812,8 +819,8 @@ class AgentOrchestrator:
                         si = await fetch_short_interest(symbol)
                         if si:
                             await store_short_interest(self._pool, si)
-                        # / dark pool
-                        dp = await fetch_dark_pool_data(symbol)
+                        # / dark pool — pass pool so ratio is computed + stored in one call
+                        dp = await fetch_dark_pool_data(symbol, pool=self._pool)
                         if dp:
                             await store_dark_pool(self._pool, dp)
                     except Exception as exc:
