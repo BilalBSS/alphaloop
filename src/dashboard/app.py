@@ -237,8 +237,8 @@ async def get_trade_detail(trade_id: int):
                 "SELECT * FROM trade_signals WHERE id = $1", approved["signal_id"],
             )
     analysis = await _query_one(
-        """SELECT date, overall_score, fundamental_score, dcf_fair_value, dcf_upside_pct,
-                consensus, ai_summary
+        """SELECT date, composite_score, fundamental_score, technical_score,
+                regime, regime_confidence, details
         FROM analysis_scores
         WHERE symbol = $1 AND date <= $2::date
         ORDER BY date DESC LIMIT 1""",
