@@ -1243,6 +1243,335 @@ async def get_strategy_evaluations(limit: int = 20):
     return _serialize(rows)
 
 
+# / phase 4: alt-data endpoints — one per source backed by the source_registry
+
+@app.get("/api/macro-context")
+async def get_macro_context():
+    # / latest FRED indicators (DFF, CPI, UNRATE, 10Y, 2Y, yield spread)
+    # / returns normalized values in [-1, 1] + absolute values + timestamp
+    if _pool is None:
+        return {"indicators": [], "yield_curve_spread": None}
+    rows = await _query(
+        """SELECT DISTINCT ON (series_id) series_id, date, value, normalized
+        FROM macro_data
+        ORDER BY series_id, date DESC"""
+    )
+    by_series = {r["series_id"]: r for r in rows}
+    # / derive 10y-2y spread from latest values if both are present
+    spread = None
+    dgs10 = by_series.get("DGS10")
+    dgs2 = by_series.get("DGS2")
+    if dgs10 and dgs2:
+        try:
+            raw = float(dgs10["value"]) - float(dgs2["value"])
+            spread = {
+                "value": round(raw, 3),
+                "normalized": round(max(-1.0, min(1.0, raw / 2.0)), 3),
+                "inverted": raw < 0,
+            }
+        except (TypeError, ValueError):
+            spread = None
+    return {
+        "indicators": _serialize(rows),
+        "yield_curve_spread": spread,
+    }
+
+
+@app.get("/api/congressional/{symbol}")
+async def get_congressional(symbol: str):
+    # / last 20 congressional trades for symbol + computed net_buy_ratio
+    sym = symbol.upper()
+    if _pool is None:
+        return {"trades": [], "net_buy_ratio": 0.0}
+    rows = await _query(
+        """SELECT filing_date, name, transaction_type, amount_range
+        FROM congressional_trades
+        WHERE symbol = $1
+        ORDER BY filing_date DESC LIMIT 20""",
+        sym,
+    )
+    from src.data.congressional_trades import compute_net_buy_ratio
+    ratio = compute_net_buy_ratio(rows) if rows else 0.0
+    return {
+        "trades": _serialize(rows),
+        "net_buy_ratio": round(float(ratio), 3),
+    }
+
+
+@app.get("/api/analyst-ratings/{symbol}")
+async def get_analyst_ratings(symbol: str):
+    # / consensus_score history from analyst_ratings table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": []}
+    rows = await _query(
+        """SELECT date, strong_buy, buy, hold, sell, strong_sell,
+                target_high, target_low, target_mean
+        FROM analyst_ratings
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    # / compute consensus per row (same formula as analyst_ratings.compute_consensus_score)
+    from src.data.analyst_ratings import compute_consensus_score
+    history = []
+    for r in rows:
+        rec = {
+            "strongBuy": r.get("strong_buy") or 0,
+            "buy": r.get("buy") or 0,
+            "hold": r.get("hold") or 0,
+            "sell": r.get("sell") or 0,
+            "strongSell": r.get("strong_sell") or 0,
+        }
+        consensus = compute_consensus_score(rec)
+        serialized = _serialize_one(r)
+        if serialized is not None:
+            serialized["consensus_score"] = round(consensus, 3)
+            history.append(serialized)
+    return {"history": history}
+
+
+@app.get("/api/options/{symbol}")
+async def get_options(symbol: str):
+    # / iv_rank + put_call_ratio + max_pain history from options_data
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT date, iv_current, iv_rank, put_call_ratio, max_pain
+        FROM options_data
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/short/{symbol}")
+async def get_short(symbol: str):
+    # / short_pct_float history from short_interest table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT date, short_volume, total_volume, short_ratio
+        FROM short_interest
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/dark-pool/{symbol}")
+async def get_dark_pool(symbol: str):
+    # / weekly dark_pool rows for symbol
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT week_start, ats_volume, total_volume, dark_pool_ratio
+        FROM dark_pool
+        WHERE symbol = $1
+        ORDER BY week_start DESC LIMIT 26""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/earnings-revisions/{symbol}")
+async def get_earnings_revisions(symbol: str):
+    # / recent eps estimate revisions from earnings_revisions table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "momentum": 0.0}
+    rows = await _query(
+        """SELECT period, estimate_date, eps_estimate, revenue_estimate
+        FROM earnings_revisions
+        WHERE symbol = $1
+        ORDER BY estimate_date DESC LIMIT 40""",
+        sym,
+    )
+    # / compute revision momentum using the same helper the analyst uses
+    from src.data.earnings_revisions import compute_revision_momentum
+    estimates = [
+        {"eps_avg": float(r["eps_estimate"]) if r.get("eps_estimate") is not None else None}
+        for r in rows
+    ]
+    momentum = compute_revision_momentum(estimates) if estimates else 0.0
+    return {
+        "history": _serialize(rows),
+        "momentum": round(float(momentum), 3),
+    }
+
+
+@app.get("/api/portfolio/correlation")
+async def get_portfolio_correlation():
+    # / pairwise correlation matrix of held positions via correlation_monitor
+    # / returns matrix + symbol labels + avg correlation + concentration flag
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+    except Exception as exc:
+        logger.debug("portfolio_correlation_broker_failed", error=str(exc))
+        return {"symbols": [], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+    if _pool is None or len(positions) < 2:
+        return {"symbols": [s.symbol for s in positions], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+    try:
+        from src.quant.correlation_monitor import check_portfolio_correlation
+        # / rebuild the matrix here because check_portfolio_correlation only returns summary stats
+        import numpy as np
+        symbols = [p.symbol for p in positions]
+        returns_map: dict[str, list[float]] = {}
+        async with _pool.acquire() as conn:
+            for sym in symbols:
+                rows = await conn.fetch(
+                    """SELECT close FROM market_data
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 21""",
+                    sym,
+                )
+                if len(rows) >= 10:
+                    prices = [float(r["close"]) for r in reversed(rows)]
+                    rets = np.diff(prices) / np.array(prices[:-1])
+                    returns_map[sym] = rets.tolist()
+        if len(returns_map) < 2:
+            return {"symbols": symbols, "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+        min_len = min(len(r) for r in returns_map.values())
+        aligned_syms = list(returns_map.keys())
+        aligned = np.array([returns_map[s][-min_len:] for s in aligned_syms])
+        matrix = np.corrcoef(aligned).tolist()
+        alert = await check_portfolio_correlation(_pool, positions)
+        return {
+            "symbols": aligned_syms,
+            "matrix": [[round(float(v), 3) for v in row] for row in matrix],
+            "avg_correlation": round(alert.avg_correlation, 3) if alert else 0.0,
+            "max_pair": list(alert.max_pair) if alert else [],
+            "max_correlation": round(alert.max_correlation, 3) if alert else 0.0,
+            "is_concentrated": alert.is_concentrated if alert else False,
+        }
+    except Exception as exc:
+        logger.debug("portfolio_correlation_compute_failed", error=str(exc))
+        return {"symbols": [], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+
+
+@app.get("/api/portfolio/sectors")
+async def get_portfolio_sectors():
+    # / sector concentration derived from strategy_positions + fundamentals sector mapping
+    # / returns per-sector dollar exposure + percent of portfolio
+    from src.data.symbols import get_sector
+    if _pool is None:
+        return {"sectors": [], "total_value": 0.0}
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+        total_value = sum(float(p.market_value or 0) for p in positions)
+        by_sector: dict[str, float] = {}
+        for p in positions:
+            sec = get_sector(p.symbol) or "unknown"
+            by_sector[sec] = by_sector.get(sec, 0.0) + float(p.market_value or 0)
+        sectors = [
+            {
+                "sector": sec,
+                "value": round(val, 2),
+                "pct_of_portfolio": round(val / total_value, 4) if total_value > 0 else 0.0,
+            }
+            for sec, val in sorted(by_sector.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+        return {"sectors": sectors, "total_value": round(total_value, 2)}
+    except Exception as exc:
+        logger.debug("portfolio_sectors_failed", error=str(exc))
+        return {"sectors": [], "total_value": 0.0}
+
+
+@app.get("/api/portfolio/tail-dependence")
+async def get_portfolio_tail_dependence():
+    # / aggregated t-copula lambda_lower across current positions — computed fresh
+    # / uses the same math as risk_agent._check_tail_dependence but portfolio-wide
+    if _pool is None:
+        return {"lambda_lower": None, "positions_count": 0, "status": "pool_unavailable"}
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+        if len(positions) < 2:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_positions"}
+        import numpy as np
+        from scipy.stats import rankdata
+        from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
+
+        position_symbols = [p.symbol for p in positions]
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT symbol, date, close FROM market_data
+                WHERE symbol = ANY($1)
+                ORDER BY date DESC LIMIT $2""",
+                position_symbols, 252 * len(position_symbols),
+            )
+        if not rows:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "no_data"}
+        import pandas as pd
+        df = pd.DataFrame([dict(r) for r in rows])
+        pivot = df.pivot_table(index="date", columns="symbol", values="close")
+        if pivot.shape[0] < 10 or pivot.shape[1] < 2:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_history"}
+        returns = pivot.pct_change().dropna()
+        if returns.shape[0] < 10:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_returns"}
+        u_data = np.column_stack([
+            rankdata(returns.iloc[:, j]) / (returns.shape[0] + 1)
+            for j in range(returns.shape[1])
+        ])
+        nu, corr = student_t_copula_fit(u_data)
+        td = tail_dependence_coefficient("student_t", (nu, corr))
+        lam = td.get("lambda_lower", 0.0)
+        return {
+            "lambda_lower": round(float(lam), 4),
+            "positions_count": len(positions),
+            "status": "ok",
+            "nu": round(float(nu), 2),
+            "threshold": 0.30,
+            "is_concentrated": lam > 0.30,
+        }
+    except Exception as exc:
+        logger.debug("tail_dependence_compute_failed", error=str(exc))
+        return {"lambda_lower": None, "positions_count": 0, "status": "compute_failed"}
+
+
+@app.get("/api/regime-timeline")
+async def get_regime_timeline(market: str = "equity", days: int = 180):
+    # / daily regime_history rows for a market, plus regime_shifts events inside the window
+    if market not in ("equity", "crypto"):
+        return JSONResponse({"error": "invalid market"}, status_code=400)
+    days = max(1, min(days, 3650))
+    if _pool is None:
+        return {"market": market, "days": days, "history": [], "shifts": []}
+    history = await _query(
+        """SELECT date, regime, confidence, volatility_20d, trend_sma50_above_200, drawdown_from_high
+        FROM regime_history
+        WHERE market = $1 AND date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
+        ORDER BY date ASC""",
+        market, str(days),
+    )
+    shifts = await _query(
+        """SELECT id, old_regime, new_regime, confidence, wiki_path, detected_at
+        FROM regime_shifts
+        WHERE market = $1 AND detected_at >= NOW() - ($2 || ' days')::INTERVAL
+        ORDER BY detected_at ASC""",
+        market, str(days),
+    )
+    return {
+        "market": market,
+        "days": days,
+        "history": _serialize(history),
+        "shifts": _serialize(shifts),
+    }
+
+
 @app.get("/api/costs")
 async def get_costs():
     # / api and llm cost tracking

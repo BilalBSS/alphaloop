@@ -489,11 +489,16 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("alt_earnings_revisions_failed", symbol=symbol, error=str(exc))
 
-        # / short interest
+        # / short interest — prefer yfinance's short_percent_float (fraction of float shorted)
+        # / fall back to short_ratio (days-to-cover) or raw short_interest if that's all we have
         try:
             si_data = await fetch_short_interest(symbol)
             if si_data:
-                alt["short_pct_float"] = si_data.get("short_interest")
+                alt["short_pct_float"] = (
+                    si_data.get("short_percent_float")
+                    or si_data.get("short_ratio")
+                    or si_data.get("short_interest")
+                )
         except Exception as exc:
             logger.warning("alt_short_interest_failed", symbol=symbol, error=str(exc))
 
