@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import Panel from './Panel'
+import { useApi } from '../hooks/useApi'
 
 // / relative time display
 function timeAgo(ts) {
@@ -50,6 +52,163 @@ function SourceCard({ name, source }) {
       {source.last_error && (
         <div className="text-[10px] text-text-muted mt-1">
           Last error: {timeAgo(source.last_error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// / LLM + data API cost panel
+function CostPanel() {
+  const { data, loading, error } = useApi('/api/costs', 60000)
+
+  if (loading && !data) return <div className="skeleton h-20 w-full" />
+  if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
+  if (!data) return <div className="text-text-muted text-sm py-2">No cost data</div>
+
+  // / accept either array or { providers: [...], total: ... }
+  const providers = Array.isArray(data) ? data : (data.providers || [])
+  if (providers.length === 0) return <div className="text-text-muted text-sm py-2">No cost entries</div>
+
+  const totalUsd = providers.reduce((s, p) => s + (parseFloat(p.usd) || 0), 0)
+  const totalCalls = providers.reduce((s, p) => s + (parseInt(p.call_count) || 0), 0)
+  const totalTokensIn = providers.reduce((s, p) => s + (parseInt(p.tokens_in) || 0), 0)
+  const totalTokensOut = providers.reduce((s, p) => s + (parseInt(p.tokens_out) || 0), 0)
+  const period = data.period || '24h'
+
+  return (
+    <div>
+      <div className="text-[10px] uppercase text-text-muted mb-1">Period: {period}</div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-secondary text-[11px] uppercase">
+            <th className="text-left px-2 py-1">Source</th>
+            <th className="text-right px-2 py-1">Calls</th>
+            <th className="text-right px-2 py-1">In</th>
+            <th className="text-right px-2 py-1">Out</th>
+            <th className="text-right px-2 py-1">USD</th>
+          </tr>
+        </thead>
+        <tbody>
+          {providers.map((p, i) => {
+            const usd = parseFloat(p.usd) || 0
+            const calls = parseInt(p.call_count) || 0
+            const tin = parseInt(p.tokens_in) || 0
+            const tout = parseInt(p.tokens_out) || 0
+            return (
+              <tr key={i} className="border-t border-border" style={{ height: 30 }}>
+                <td className="px-2 py-1 font-mono">{p.source}</td>
+                <td className="px-2 py-1 text-right font-mono text-text-secondary">{calls.toLocaleString()}</td>
+                <td className="px-2 py-1 text-right font-mono text-text-muted">{tin ? (tin / 1000).toFixed(1) + 'k' : '--'}</td>
+                <td className="px-2 py-1 text-right font-mono text-text-muted">{tout ? (tout / 1000).toFixed(1) + 'k' : '--'}</td>
+                <td className={`px-2 py-1 text-right font-mono font-semibold ${usd > 1 ? 'text-warning' : 'text-text-primary'}`}>
+                  ${usd.toFixed(4)}
+                </td>
+              </tr>
+            )
+          })}
+          {/* totals footer */}
+          <tr className="border-t-2 border-accent bg-bg-primary" style={{ height: 32 }}>
+            <td className="px-2 py-1 font-mono font-semibold uppercase text-[10px]">Total</td>
+            <td className="px-2 py-1 text-right font-mono font-semibold">{totalCalls.toLocaleString()}</td>
+            <td className="px-2 py-1 text-right font-mono text-text-secondary">{totalTokensIn ? (totalTokensIn / 1000).toFixed(1) + 'k' : '--'}</td>
+            <td className="px-2 py-1 text-right font-mono text-text-secondary">{totalTokensOut ? (totalTokensOut / 1000).toFixed(1) + 'k' : '--'}</td>
+            <td className={`px-2 py-1 text-right font-mono font-bold ${totalUsd > 5 ? 'text-loss' : totalUsd > 1 ? 'text-warning' : 'text-profit'}`}>
+              ${totalUsd.toFixed(4)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// / individual staleness tile — colored by freshness status
+function StalenessTile({ item, onClick }) {
+  const status = item.status || 'unknown'
+  const color = {
+    green: { bg: 'bg-profit/10', border: 'border-profit/40', dot: 'bg-profit', text: 'text-profit' },
+    yellow: { bg: 'bg-warning/10', border: 'border-warning/40', dot: 'bg-warning', text: 'text-warning' },
+    red: { bg: 'bg-loss/10', border: 'border-loss/40', dot: 'bg-loss', text: 'text-loss' },
+    unknown: { bg: 'bg-bg-primary', border: 'border-border', dot: 'bg-text-muted', text: 'text-text-muted' },
+  }[status] || { bg: 'bg-bg-primary', border: 'border-border', dot: 'bg-text-muted', text: 'text-text-muted' }
+  const errs = item.error_count_24h || 0
+  return (
+    <button
+      onClick={() => onClick && onClick(item)}
+      className={`${color.bg} border ${color.border} p-2 text-left hover:bg-bg-hover transition-colors`}
+    >
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold uppercase font-mono truncate">{item.source}</span>
+        <div className={`w-2 h-2 rounded-full ${color.dot}`} />
+      </div>
+      <div className="text-[10px] text-text-secondary">
+        {timeAgo(item.last_update)}
+      </div>
+      {errs > 0 && (
+        <div className={`text-[10px] ${color.text}`}>
+          {errs} err (24h)
+        </div>
+      )}
+    </button>
+  )
+}
+
+function StalenessPanel() {
+  const { data, loading, error } = useApi('/api/staleness', 60000)
+  const [selected, setSelected] = useState(null)
+
+  if (loading && !data) return <div className="skeleton h-24 w-full" />
+  if (error) return <div className="text-loss text-sm py-2">Failed to load: {error}</div>
+  if (!Array.isArray(data) || data.length === 0) {
+    return <div className="text-text-muted text-sm py-2">No staleness data available</div>
+  }
+
+  // / legend row
+  const counts = { green: 0, yellow: 0, red: 0, unknown: 0 }
+  for (const d of data) {
+    const s = d.status || 'unknown'
+    counts[s] = (counts[s] || 0) + 1
+  }
+
+  return (
+    <div>
+      <div className="flex gap-3 mb-2 text-[10px] text-text-muted">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-profit" />{counts.green} fresh</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-warning" />{counts.yellow} stale</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-loss" />{counts.red} critical</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+        {data.map((item, i) => (
+          <StalenessTile key={`${item.source}-${i}`} item={item} onClick={setSelected} />
+        ))}
+      </div>
+      {selected && (
+        <div className="mt-3 bg-bg-primary border border-accent p-3 text-xs">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono font-semibold uppercase">{selected.source}</span>
+            <button onClick={() => setSelected(null)} className="text-text-muted hover:text-text-primary">✕</button>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-[11px]">
+            <div>
+              <div className="text-text-muted uppercase text-[10px]">Status</div>
+              <div className="font-semibold uppercase">{selected.status || '--'}</div>
+            </div>
+            <div>
+              <div className="text-text-muted uppercase text-[10px]">Last Update</div>
+              <div className="font-mono">{timeAgo(selected.last_update)}</div>
+            </div>
+            <div>
+              <div className="text-text-muted uppercase text-[10px]">Errors (24h)</div>
+              <div className="font-mono">{selected.error_count_24h || 0}</div>
+            </div>
+            {selected.last_error && (
+              <div className="col-span-2">
+                <div className="text-text-muted uppercase text-[10px]">Last Error</div>
+                <div className="text-loss">{selected.last_error}</div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -159,8 +318,18 @@ export default function HealthTab({ health, loading }) {
         </Panel>
       </div>
 
-      {/* row 2: source status cards */}
-      <Panel title="Data Sources">
+      {/* row 2: staleness tiles (primary source status) */}
+      <Panel title="Data Freshness">
+        <StalenessPanel />
+      </Panel>
+
+      {/* row 3: cost panel */}
+      <Panel title="API Costs">
+        <CostPanel />
+      </Panel>
+
+      {/* row 4: error-count source cards (secondary, aggregated from health payload) */}
+      <Panel title="Source Error Summary" collapsible defaultOpen={false}>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2">
           {allSourceKeys.map(key => (
             <SourceCard key={key} name={key} source={sources[key]} />
@@ -171,7 +340,7 @@ export default function HealthTab({ health, loading }) {
         </div>
       </Panel>
 
-      {/* row 3: storage table breakdown */}
+      {/* row 5: storage table breakdown */}
       {tables.length > 0 && (
         <Panel title="Storage Breakdown" collapsible defaultOpen={false}>
           <table className="w-full text-xs">
@@ -195,7 +364,7 @@ export default function HealthTab({ health, loading }) {
         </Panel>
       )}
 
-      {/* row 4: recent errors */}
+      {/* row 6: recent errors */}
       <Panel title="Recent Errors" collapsible defaultOpen={errors.length > 0}>
         {errors.length > 0 ? (
           <div style={{ maxHeight: 320, overflowY: 'auto' }}>

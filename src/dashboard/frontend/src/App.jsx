@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useApi, useWebSocket } from './hooks/useApi'
+import { WebSocketProvider, useWebSocketContext } from './contexts/WebSocketContext'
+import { useApiLive } from './hooks/useApiLive'
 import Header from './components/Header'
 import PortfolioTab from './components/PortfolioTab'
 import TradesTab from './components/TradesTab'
@@ -10,23 +11,24 @@ import KnowledgeTab from './components/KnowledgeTab'
 
 const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health', 'Analysis', 'Knowledge']
 
-export default function App() {
+function AppInner() {
   const [activeTab, setActiveTab] = useState(() =>
     localStorage.getItem('qts-tab') || 'Portfolio'
   )
-  const { status: wsStatus } = useWebSocket()
+  const { status: wsStatus } = useWebSocketContext()
 
-  const portfolio = useApi('/api/portfolio', 30000)
-  const trades = useApi('/api/trades?limit=100', 30000)
-  const strategies = useApi('/api/strategies', 60000)
-  const evolution = useApi('/api/evolution', 60000)
-  const health = useApi('/api/health', 60000)
+  // / top-level queries — live refresh on relevant ws events
+  const portfolio = useApiLive('/api/portfolio', 30000, ['position_update', 'trade_executed'])
+  const trades = useApiLive('/api/trades?limit=100', 30000, ['trade_executed'])
+  const strategies = useApiLive('/api/strategies', 60000, ['strategy_status_change'])
+  const evolution = useApiLive('/api/evolution', 60000, ['strategy_status_change'])
+  const health = useApiLive('/api/health', 60000, [])
 
   useEffect(() => {
     localStorage.setItem('qts-tab', activeTab)
   }, [activeTab])
 
-  // keyboard shortcut: 1-4 to switch tabs
+  // / keyboard shortcut: 1-N to switch tabs
   useEffect(() => {
     function handleKey(e) {
       const idx = parseInt(e.key) - 1
@@ -95,5 +97,13 @@ export default function App() {
         )}
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <WebSocketProvider>
+      <AppInner />
+    </WebSocketProvider>
   )
 }
