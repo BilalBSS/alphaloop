@@ -3,7 +3,7 @@
 -- strategy_scores + wiki_documents persisted, making them show up as "killed" in the UI.
 -- Archive their wiki pages rather than delete, so any inbound links stay resolvable.
 
-DELETE FROM strategy_pool WHERE strategy_id IN ('s0', 's1');
+-- strategy_pool is an in-memory Python class; persistence is via strategy_scores rows
 DELETE FROM strategy_scores WHERE strategy_id IN ('s0', 's1');
 DELETE FROM evolution_log WHERE strategy_id IN ('s0', 's1');
 DELETE FROM trade_signals WHERE strategy_id IN ('s0', 's1');
