@@ -1,16 +1,42 @@
-# React + Vite
+# Dashboard Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite + Tailwind. Charts via [TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts).
 
-Currently, two official plugins are available:
+## Dev
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev   # http://localhost:5173, proxies /api and /ws to http://localhost:8000
+```
 
-## React Compiler
+Backend must be running separately: `uvicorn src.dashboard.app:app --reload` from the repo root.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Build
 
-## Expanding the ESLint configuration
+```bash
+npm run build   # output in dist/, served by FastAPI at /
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Structure
+
+- `src/App.jsx` — top-level tab router + WebSocket provider
+- `src/components/<Tab>Tab.jsx` — one file per tab (Portfolio, Trades, Evolution, Health, Analysis, Knowledge)
+- `src/components/Panel.jsx` — shared card container with loading/error/empty states
+- `src/components/Skeleton.jsx` — skeleton loaders
+- `src/hooks/useApi.js` — REST fetch hook + WebSocket hook
+- `src/components/chart/` — candlestick + equity curve charts
+
+## Adding a panel
+
+1. Create `src/components/MyPanel.jsx`
+2. Use `const { data, loading, error } = useApi('/api/my-endpoint', 30000)`
+3. Wrap output in `<Panel title="..."><SkeletonTable /> or <Chart /></Panel>`
+4. Import into the relevant tab component
+
+## Conventions
+
+- No CSS modules or styled-components. Tailwind classes + CSS custom properties in `index.css`.
+- All state is component-local + `useApi`. No Redux / Zustand.
+- Error states: show `error` in Panel; don't render partial data.
+
+See `docs/ARCHITECTURE.md` at the repo root for backend + full architecture.
