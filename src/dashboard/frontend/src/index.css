@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
 @import "tailwindcss";
+@import "./design-tokens.css";
 
 @theme {
   --color-bg-primary: #0a0a0f;

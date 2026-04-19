@@ -1,0 +1,302 @@
+/* design tokens — single source of truth for spacing/type/color/radius/shadow
+   / dark theme (light-on-dark). keep tailwind's @theme for tailwind-class users
+   / but prefer these vars so components stay framework-agnostic. */
+
+:root {
+  /* spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* type scale */
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+
+  /* line heights — tied to type scale */
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+
+  /* font weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* semantic colors — aligned with existing tailwind theme in index.css
+     / so legacy `text-profit`/`text-loss` classes still resolve correctly. */
+  --color-positive: #00dc82;        /* green-500 (profit / bullish) */
+  --color-negative: #ff4757;        /* red-500   (loss / bearish) */
+  --color-warning: #f59e0b;         /* amber-500 */
+  --color-critical: #ef4444;        /* red-500 stronger — errors */
+  --color-neutral: #8888a0;         /* muted secondary */
+  --color-accent: #3b82f6;          /* blue-500 (informational / paper-trading) */
+
+  /* surface colors — layered dark */
+  --color-bg: #0a0a0f;              /* page background */
+  --color-surface: #12121a;         /* default card surface */
+  --color-surface-raised: #1a1a25;  /* hover / elevated surface */
+  --color-border: #1e1e2a;
+  --color-border-strong: #2a2a3a;
+
+  /* text */
+  --color-text-primary: #e8e8ec;
+  --color-text-muted: #8888a0;
+  --color-text-subtle: #555570;
+
+  /* radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* shadow — used sparingly on dark theme; subtle depth only */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 24px -4px rgba(0, 0, 0, 0.55);
+
+  /* z-layers */
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-overlay: 50;
+  --z-modal: 100;
+
+  /* motion */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 280ms;
+  --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* typography helpers — use these before reaching for arbitrary tailwind text sizes */
+.type-metric-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-tight);
+}
+
+.type-metric-value {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+  line-height: var(--leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.type-metric-value-sm {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+  line-height: var(--leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.type-card-title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+  line-height: var(--leading-snug);
+}
+
+.type-body {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  line-height: var(--leading-normal);
+}
+
+.type-caption {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: var(--leading-normal);
+}
+
+/* pnl helpers — semantic color by sign */
+.pnl-positive { color: var(--color-positive); }
+.pnl-negative { color: var(--color-negative); }
+.pnl-neutral  { color: var(--color-text-muted); }
+
+/* card surface — default padding + border consistent with design
+   / prefer this over ad-hoc bg-bg-surface / border utility combos. */
+.surface-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.surface-raised {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+/* stack helper — uniform vertical spacing */
+.stack-2 > * + * { margin-top: var(--space-2); }
+.stack-3 > * + * { margin-top: var(--space-3); }
+.stack-4 > * + * { margin-top: var(--space-4); }
+.stack-6 > * + * { margin-top: var(--space-6); }
+
+/* hero banner — tab-level "what's happening now" strip */
+.hero-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  background: linear-gradient(180deg, var(--color-surface) 0%, var(--color-bg) 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.hero-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hero-metric-label {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: var(--weight-semibold);
+}
+
+.hero-metric-value {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-tight);
+}
+
+.hero-metric-value-sm {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-tight);
+}
+
+/* table overflow fade — applied to overflow-x-auto wrappers.
+   / add class `table-scroll-fade` and the right-edge gradient hints at more content. */
+.table-scroll-fade {
+  position: relative;
+}
+.table-scroll-fade::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--color-surface) 100%
+  );
+  opacity: 0.8;
+}
+
+/* status chip base — combine with semantic modifier for color */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: var(--weight-semibold);
+  border: 1px solid transparent;
+  line-height: 1;
+}
+
+.chip-positive { color: var(--color-positive); background: rgba(0, 220, 130, 0.1);  border-color: rgba(0, 220, 130, 0.3); }
+.chip-negative { color: var(--color-negative); background: rgba(255, 71, 87, 0.1);  border-color: rgba(255, 71, 87, 0.3); }
+.chip-warning  { color: var(--color-warning);  background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
+.chip-accent   { color: var(--color-accent);   background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); }
+.chip-neutral  { color: var(--color-text-muted); background: rgba(136, 136, 160, 0.08); border-color: var(--color-border); }
+
+/* filter chip — togglable pill for has-position / sort / confidence filters */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: all var(--motion-fast) var(--motion-ease);
+  white-space: nowrap;
+}
+
+.filter-chip:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong);
+}
+
+.filter-chip.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--color-accent);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+/* content-shaped skeleton variants — use the base .skeleton animation from index.css */
+.skeleton-line {
+  height: 14px;
+  width: 100%;
+  margin-bottom: var(--space-2);
+}
+.skeleton-line-sm {
+  height: 10px;
+  width: 60%;
+  margin-bottom: var(--space-1);
+}
+.skeleton-metric {
+  height: 28px;
+  width: 80%;
+  margin-bottom: var(--space-1);
+}
+
+/* empty state — informative, not a literal "--" */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.empty-state-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.empty-state-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  max-width: 360px;
+  line-height: var(--leading-normal);
+}
