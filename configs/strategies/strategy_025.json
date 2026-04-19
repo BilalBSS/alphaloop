@@ -1,0 +1,40 @@
+{
+  "id": "strategy_025",
+  "name": "MeanRev_RSI30_Quality",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Buy deep oversold RSI<30 filtered on fundamental quality (revenue growth + low debt)",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": true,
+    "pe_ratio_max": 30,
+    "revenue_growth_min": 0.05,
+    "fcf_margin_min": 0.10,
+    "debt_to_equity_max": 1.5,
+    "dcf_upside_min": 0.10
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      { "indicator": "rsi", "condition": "below", "threshold": 30, "period": 14 },
+      { "indicator": "sma", "condition": "price_above", "period": 200 },
+      { "indicator": "volume", "condition": "above_average", "multiplier": 1.2, "period": 20 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "indicator": "rsi", "condition": "above", "threshold": 55, "period": 14 },
+    "stop_loss": { "type": "fixed_pct", "pct": 0.05 },
+    "time_exit": { "max_holding_days": 14 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.25
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
+}
