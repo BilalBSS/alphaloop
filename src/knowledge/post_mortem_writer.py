@@ -97,12 +97,12 @@ async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str
         logger.info("post_mortem_no_groq_key_using_template", symbol=symbol)
         return None, None
 
-    attempts: list[tuple[str, str]] = [
-        ("groq", DEFAULT_MODEL),
-        ("cerebras", CEREBRAS_FAST_MODEL),
-        ("groq", FALLBACK_MODEL),
-        ("cerebras", CEREBRAS_MODEL),
-    ]
+    # / primary provider is weighted by LLM_PROVIDER_SPLIT; cerebras-primary reverses the pairs
+    from src.data.llm_client import build_fallback_chain
+    attempts: list[tuple[str, str]] = build_fallback_chain(
+        groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
+        groq_slow=FALLBACK_MODEL, cerebras_slow=CEREBRAS_MODEL,
+    )
     for provider, model in attempts:
         try:
             if provider == "groq":

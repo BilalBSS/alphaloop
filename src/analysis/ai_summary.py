@@ -727,12 +727,12 @@ async def generate_summary(
     # / chain: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b -> structured fallback
     # / _call_llm retries 429 internally (4s/8s backoff); _RateLimited falls through to next
     # / cerebras calls are single-shot (no retries) — if they fail, move on
-    attempts: list[tuple[str, str]] = [
-        ("groq", DEFAULT_MODEL),
-        ("cerebras", CEREBRAS_FAST_MODEL),
-        ("groq", FALLBACK_MODEL),
-        ("cerebras", CEREBRAS_MODEL),
-    ]
+    # / primary provider is weighted by LLM_PROVIDER_SPLIT; cerebras-primary reverses the pairs
+    from src.data.llm_client import build_fallback_chain
+    attempts: list[tuple[str, str]] = build_fallback_chain(
+        groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
+        groq_slow=FALLBACK_MODEL, cerebras_slow=CEREBRAS_MODEL,
+    )
     for provider, model in attempts:
         try:
             if provider == "groq":
