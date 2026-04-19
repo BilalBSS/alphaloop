@@ -181,6 +181,8 @@ class AgentOrchestrator:
             asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
             # / phase 6 step 1: pull trigger_requests rows posted by dashboard /api/admin/trigger
             asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
+            # / phase 6 step 10: weekly kelly-weighted capital allocation refresh
+            asyncio.create_task(self._capital_allocator_loop(), name="capital_allocator"),
         ]
 
         try:
@@ -1302,6 +1304,30 @@ class AgentOrchestrator:
             if await self._wait_or_stop(KNOWLEDGE_HYDRATION_INTERVAL):
                 break
 
+    # / ---- phase 6 step 10: weekly kelly-weighted allocator ----
+
+    async def _capital_allocator_loop(self) -> None:
+        # / first run after 1h delay so strategy_scores has fresh data; then weekly
+        if await self._wait_or_stop(3600):
+            return
+        while not self._stop_event.is_set():
+            try:
+                async with loop_registry.track(self._pool, "capital_allocator"):
+                    from src.agents.capital_allocator import compute_allocations
+                    mpp = float(self._risk_limits.get("max_position_pct", 0.04))
+                    allocs = await compute_allocations(self._pool, max_position_pct=mpp)
+                    await tools.log_event(
+                        self._pool, "info", "capital_allocator",
+                        f"strategies={len(allocs)} max_pct={mpp}",
+                    )
+            except Exception as exc:
+                logger.error("capital_allocator_error", exc_info=True)
+                notify_system_error(str(exc), "capital_allocator")
+
+            # / refresh weekly
+            if await self._wait_or_stop(604800):
+                break
+
     # / ---- phase 6 step 1: dashboard-posted manual triggers ----
 
     async def _trigger_poll_loop(self) -> None:
@@ -1425,5 +1451,9 @@ class AgentOrchestrator:
         elif service == "cost_flush":
             from src.data.cost_tracker import flush_to_db
             await flush_to_db(self._pool)
+        elif service == "capital_allocator":
+            from src.agents.capital_allocator import compute_allocations
+            mpp = float(self._risk_limits.get("max_position_pct", 0.04))
+            await compute_allocations(self._pool, max_position_pct=mpp)
         else:
             raise ValueError(f"service not triggerable: {service}")

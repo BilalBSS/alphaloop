@@ -1,4 +1,5 @@
 {
+  "max_position_pct": 0.04,
   "max_portfolio_risk": 0.25,
   "max_open_positions": 15,
   "tail_dependence_threshold": 0.30,
@@ -34,7 +35,7 @@
 
   "tracks": {
     "fundamental_gated": {
-      "max_position_pct": 0.08,
+      "max_position_pct": 0.04,
       "requires_fundamentals": true,
       "description": "full conviction — fundamental + technical signals"
     },

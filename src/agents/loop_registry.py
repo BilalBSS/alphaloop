@@ -42,6 +42,7 @@ LOOP_METADATA: dict[str, dict[str, Any]] = {
     "wiki_embedding":       {"kind": "interval", "cadence_seconds": 21600,"description": "ollama embedding backfill"},
     "wiki_archive":         {"kind": "interval", "cadence_seconds": 86400,"description": "archive wiki docs > 180d"},
     "knowledge_hydration":  {"kind": "interval", "cadence_seconds": 86400,"description": "daily symbol wiki enrichment"},
+    "capital_allocator":    {"kind": "interval", "cadence_seconds": 604800,"description": "weekly kelly-weighted strategy allocation refresh"},
 }
 
 ALL_LOOP_NAMES: list[str] = list(LOOP_METADATA.keys())

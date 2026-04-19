@@ -12,6 +12,7 @@ import numpy as np
 import structlog
 
 from src.agents import tools
+from src.agents import capital_allocator
 from src.brokers.base import BrokerInterface
 from src.data.symbols import get_sector
 
@@ -250,7 +251,13 @@ class RiskAgent:
                 strat_pos = await tools.get_strategy_positions(pool, strategy_id=signal.get("strategy_id"), symbol=symbol)
                 qty = int(strat_pos[0]["qty"]) if strat_pos else 0
         else:
-            max_pct = self.max_position_pct
+            # / phase 6 step 10: kelly-weighted sizing via capital_allocator
+            # / returns allocated_weight per strategy; falls back to half max_pct
+            # / when no allocation row exists (first week) or under-sampled history
+            strategy_id = signal.get("strategy_id") or ""
+            max_pct = await capital_allocator.get_allocation(
+                pool, strategy_id, max_position_pct_default=self.max_position_pct,
+            )
             qty = (balance.equity * max_pct * strength) / price
             qty = max(0, int(qty))  # / whole shares
 
