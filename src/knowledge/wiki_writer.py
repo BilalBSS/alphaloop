@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -299,3 +300,199 @@ class WikiWriter:
                 """,
                 word_count, content, path,
             )
+
+
+# / ---- phase 5 step 3: symbol wiki enrichment ----
+
+_SYMBOL_ENRICH_SYSTEM_MSG = (
+    "You are a senior equity research analyst maintaining an internal playbook "
+    "for each ticker. The existing entry is a seed stub. Rewrite it using only "
+    "the provided analysis history, fundamentals, and insider activity — do not "
+    "invent facts, do not cite external sources.\n"
+    "Rules:\n"
+    "- 250 to 400 words\n"
+    "- Structure: ## Overview / ## Valuation / ## Technical Setup / ## Insider & Sentiment / ## Playbook\n"
+    "- End with 2-3 concrete trading heuristics derived from the data\n"
+    "- Plain markdown, no preamble, no emoji"
+)
+
+
+def _build_symbol_enrichment_prompt(
+    symbol: str,
+    analysis_history: list[dict],
+    fundamentals: dict | None,
+    insider_trades: list[dict] | None,
+) -> str:
+    # / compose the enrichment prompt from the symbol's recent analysis + fundamentals + insider activity
+    import json as _json
+
+    parts: list[str] = [
+        f"Rewrite the wiki entry for {symbol}.",
+        f"Data window: last 30 days of analysis scores, current fundamentals, last 90 days of insider trades.",
+    ]
+
+    if analysis_history:
+        parts.append("\n## Analysis History")
+        # / surface up to the 10 most recent scores + summary deltas so the model can spot trends
+        for row in analysis_history[:10]:
+            fund = row.get("fundamental_score")
+            tech = row.get("technical_score")
+            comp = row.get("composite_score")
+            regime = row.get("regime")
+            parts.append(
+                f"  - {row.get('date')}: composite={comp} fundamental={fund} "
+                f"technical={tech} regime={regime}"
+            )
+
+    if fundamentals:
+        parts.append("\n## Fundamentals (latest)")
+        for key in (
+            "pe_ratio", "pe_forward", "ps_ratio", "peg_ratio",
+            "revenue_growth_1y", "revenue_growth_3y", "fcf_margin",
+            "debt_to_equity", "sector", "sector_pe_avg",
+        ):
+            val = fundamentals.get(key)
+            if val is not None:
+                parts.append(f"  {key}: {val}")
+
+    if insider_trades:
+        buys = sum(1 for t in insider_trades if t.get("transaction_type") == "buy")
+        sells = sum(1 for t in insider_trades if t.get("transaction_type") == "sell")
+        parts.append(f"\n## Insider Activity (last 90d)")
+        parts.append(f"  buys: {buys}, sells: {sells}")
+        # / show top 5 largest transactions by total_value for context
+        def _val(t: dict) -> float:
+            try:
+                return float(t.get("total_value") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        top = sorted(insider_trades, key=_val, reverse=True)[:5]
+        for t in top:
+            parts.append(
+                "  - "
+                + _json.dumps({
+                    "date": str(t.get("filing_date")),
+                    "insider": t.get("insider_name"),
+                    "type": t.get("transaction_type"),
+                    "shares": float(t.get("shares") or 0),
+                    "value": _val(t),
+                }, default=str)
+            )
+
+    parts.append("\n## Task")
+    parts.append(f"Produce the rewritten {symbol} playbook following the section structure in the rules.")
+    return "\n".join(parts)
+
+
+async def _generate_symbol_enrichment(prompt: str, symbol: str) -> tuple[str | None, str | None]:
+    # / reuse the 4-tier groq/cerebras fallback chain, mirroring post_mortem_writer
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        logger.info("wiki_enrich_no_groq_key", symbol=symbol)
+        return None, None
+
+    from src.analysis.ai_summary import (
+        CEREBRAS_FAST_MODEL, CEREBRAS_MODEL,
+        DEFAULT_MODEL, FALLBACK_MODEL,
+        _RateLimited, _call_cerebras, _call_llm,
+    )
+    from src.data.llm_client import build_fallback_chain
+
+    attempts: list[tuple[str, str]] = build_fallback_chain(
+        groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
+        groq_slow=FALLBACK_MODEL, cerebras_slow=CEREBRAS_MODEL,
+    )
+    for provider, model in attempts:
+        try:
+            if provider == "groq":
+                result = await _call_llm(
+                    api_key, model, prompt, symbol,
+                    system_message=_SYMBOL_ENRICH_SYSTEM_MSG,
+                )
+            else:
+                result = await _call_cerebras(
+                    prompt, symbol, _SYMBOL_ENRICH_SYSTEM_MSG, model=model,
+                )
+            if result and result.summary:
+                return result.summary, model
+        except _RateLimited:
+            continue
+        except Exception as exc:
+            logger.info(
+                "wiki_enrich_attempt_failed",
+                symbol=symbol, model=model, error=str(exc)[:120],
+            )
+            continue
+    return None, None
+
+
+def _compose_symbol_markdown(
+    symbol: str, body: str, model_used: str | None,
+) -> str:
+    # / wrap the llm body with a small metadata header so readers know provenance
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    header = [
+        f"# {symbol} Playbook",
+        "",
+        f"- **Generated (UTC):** {timestamp}",
+        f"- **Source:** {model_used or 'seed stub'}",
+        "",
+    ]
+    return "\n".join(header) + body.strip() + "\n"
+
+
+async def enrich_symbol_doc(
+    pool,
+    symbol: str,
+    analysis_history: list[dict],
+    fundamentals: dict | None,
+    insider_trades: list[dict] | None,
+) -> tuple[int | None, str | None]:
+    # / rewrite the wiki entry for a symbol using llm + recent data
+    # / returns (document_id, new_content) or (none, none) on total failure
+    if not symbol:
+        return None, None
+
+    prompt = _build_symbol_enrichment_prompt(
+        symbol, analysis_history or [], fundamentals, insider_trades,
+    )
+    body, model_used = await _generate_symbol_enrichment(prompt, symbol)
+    if not body:
+        logger.info("wiki_enrich_llm_unavailable_skipping", symbol=symbol)
+        return None, None
+
+    content = _compose_symbol_markdown(symbol, body, model_used)
+    slug = symbol.lower().replace("/", "_")
+
+    writer = WikiWriter(pool=pool)
+    try:
+        wiki_path = await writer.write_document(
+            category="symbols",
+            filename=slug,
+            content=content,
+            title=f"{symbol} Playbook",
+            symbols=[symbol],
+            confidence="established",
+        )
+    except Exception as exc:
+        logger.error("wiki_enrich_write_failed", symbol=symbol, error=str(exc)[:200])
+        return None, None
+
+    # / look up the id we just wrote/updated so callers (hydration loop) can log it
+    doc_id: int | None = None
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id FROM wiki_documents WHERE path = $1", wiki_path,
+                )
+                if row:
+                    doc_id = int(row["id"])
+        except Exception as exc:
+            logger.info("wiki_enrich_id_lookup_failed", symbol=symbol, error=str(exc)[:120])
+
+    logger.info(
+        "wiki_enriched",
+        symbol=symbol, path=wiki_path, words=_count_words(content), model=model_used,
+    )
+    return doc_id, content

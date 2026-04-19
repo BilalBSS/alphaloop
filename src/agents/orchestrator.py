@@ -46,8 +46,12 @@ DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
 ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
 CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
-CRYPTO_FUNDAMENTALS_INTERVAL = 21600  # / 6 hours — cache refresh for nvt/funding/tvl/etc
 REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
+KNOWLEDGE_HYDRATION_INTERVAL = 86400  # / 24 hours — daily wiki enrichment pass
+KNOWLEDGE_HYDRATION_STARTUP_DELAY = 900  # / 15 min offset so we don't stack LLM calls at startup
+KNOWLEDGE_HYDRATION_DEFAULT_CAP = 5  # / hard cap on symbols enriched per day (free-tier LLM budget)
+WIKI_STUB_WORD_THRESHOLD = 150    # / docs below this word count count as seed stubs
+WIKI_MIN_ANALYSIS_ROWS = 5        # / need N recent analyses before we have enough signal to enrich
 
 
 class AgentOrchestrator:
@@ -158,7 +162,6 @@ class AgentOrchestrator:
             asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
-            asyncio.create_task(self._crypto_fundamentals_loop(), name="crypto_fundamentals"),
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
             asyncio.create_task(self._daily_bar_backfill_loop(), name="daily_bar_backfill"),
             asyncio.create_task(self._price_refresh_loop(), name="price_refresh"),
@@ -173,6 +176,8 @@ class AgentOrchestrator:
             # / phase 2: knowledge base upkeep
             asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
+            # / phase 5 step 3: daily symbol wiki hydration (writes stubs back as playbooks)
+            asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
         ]
 
         try:
@@ -543,46 +548,6 @@ class AgentOrchestrator:
             if await self._wait_or_stop(CRYPTO_BACKFILL_INTERVAL):
                 break
 
-    async def _crypto_fundamentals_loop(self) -> None:
-        # / refresh crypto fundamentals cache every 6h for CRYPTO_UNIVERSE.
-        # / each symbol is isolated — one failure doesn't stop the rest.
-        # / silently skips symbols where every source is null (keys missing etc).
-        if await self._wait_or_stop(240):
-            return
-        from src.data.crypto_fundamentals import (
-            fetch_live_fundamentals,
-            upsert_fundamentals,
-        )
-        from src.data.symbols import CRYPTO_UNIVERSE
-        while not self._stop_event.is_set():
-            refreshed = 0
-            for symbol in CRYPTO_UNIVERSE:
-                try:
-                    data = await fetch_live_fundamentals(symbol)
-                    if any(data.get(k) is not None for k in (
-                        "nvt_ratio", "funding_rate", "active_addresses",
-                        "exchange_inflow_usd", "hash_rate", "tvl_usd",
-                        "dex_volume_24h", "stablecoin_supply_ratio",
-                    )):
-                        await upsert_fundamentals(self._pool, symbol, data)
-                        refreshed += 1
-                except Exception as exc:
-                    logger.warning(
-                        "crypto_fundamentals_symbol_failed",
-                        symbol=symbol, error=str(exc)[:200],
-                    )
-            if refreshed:
-                logger.info("crypto_fundamentals_refreshed", count=refreshed)
-                try:
-                    await tools.log_event(
-                        self._pool, "info", "crypto_fundamentals",
-                        f"refreshed={refreshed}/{len(CRYPTO_UNIVERSE)}",
-                    )
-                except Exception:
-                    pass
-            if await self._wait_or_stop(CRYPTO_FUNDAMENTALS_INTERVAL):
-                break
-
     async def _regime_loop(self) -> None:
         # / compute equity + crypto regime history every 6h (not gated on market hours)
         if await self._wait_or_stop(180):
@@ -592,6 +557,7 @@ class AgentOrchestrator:
                 from src.data.regime_detector import (
                     backfill_regimes,
                     backfill_regimes_per_sector,
+                    snapshot_regime_daily,
                 )
                 equity_count = await backfill_regimes(self._pool, "SPY", "equity")
                 crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
@@ -615,6 +581,17 @@ class AgentOrchestrator:
                 # / phase 2: detect regime transitions and write wiki note + regime_shifts row
                 await self._check_regime_shift("equity")
                 await self._check_regime_shift("crypto")
+                # / phase 5 step 3: write daily snapshot rows so the timeline widget has
+                # / data points on non-shift days (otherwise it only populates on transitions)
+                try:
+                    equity_regime = await tools.fetch_latest_regime(self._pool, "equity")
+                    crypto_regime = await tools.fetch_latest_regime(self._pool, "crypto")
+                    if equity_regime:
+                        await snapshot_regime_daily(self._pool, "equity", equity_regime)
+                    if crypto_regime:
+                        await snapshot_regime_daily(self._pool, "crypto", crypto_regime)
+                except Exception as exc:
+                    logger.warning("regime_snapshot_failed", error=str(exc)[:200])
             except Exception as exc:
                 logger.error("regime_loop_error", exc_info=True)
                 notify_system_error(str(exc), "regime_loop")
@@ -1121,3 +1098,177 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.error("wiki_archive_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_archive_loop")
+
+    # / ---- phase 5 step 3: daily symbol wiki hydration ----
+
+    def _hydration_daily_cap(self) -> int:
+        # / configurable via env; defaults to 5 to stay in free-tier llm budget
+        raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP")
+        if not raw:
+            return KNOWLEDGE_HYDRATION_DEFAULT_CAP
+        try:
+            cap = int(raw)
+        except ValueError:
+            logger.warning("wiki_hydration_cap_parse_failed", raw=raw)
+            return KNOWLEDGE_HYDRATION_DEFAULT_CAP
+        return max(0, cap)
+
+    async def _fetch_hydration_candidates(self, cap: int) -> list[str]:
+        # / pick up to `cap` symbols whose wiki entry is a seed stub AND have
+        # / accumulated enough recent analyses to support a useful rewrite.
+        # / round-robin order by wiki_documents.updated_at ASC so stale docs rotate through.
+        if cap <= 0 or self._pool is None:
+            return []
+        symbols = self._get_symbols()
+        if not symbols:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                # / find stub docs first (seed confidence or below word threshold)
+                stub_rows = await conn.fetch(
+                    """
+                    SELECT unnest(symbols) AS symbol, updated_at
+                    FROM wiki_documents
+                    WHERE category = 'symbols'
+                      AND (confidence = 'seed' OR word_count < $1)
+                    ORDER BY updated_at ASC
+                    """,
+                    WIKI_STUB_WORD_THRESHOLD,
+                )
+                stub_symbols = [r["symbol"] for r in stub_rows if r["symbol"] in symbols]
+                # / symbols in the universe without any wiki doc are also stubs — add them last
+                have_docs = {r["symbol"] for r in stub_rows}
+                for sym in symbols:
+                    if sym not in have_docs and sym not in stub_symbols:
+                        stub_symbols.append(sym)
+
+                # / filter down to those with >= WIKI_MIN_ANALYSIS_ROWS recent analyses
+                if not stub_symbols:
+                    return []
+                analysis_rows = await conn.fetch(
+                    """
+                    SELECT symbol, COUNT(*) AS n
+                    FROM analysis_scores
+                    WHERE symbol = ANY($1::varchar[])
+                      AND date >= CURRENT_DATE - INTERVAL '7 days'
+                    GROUP BY symbol
+                    """,
+                    stub_symbols,
+                )
+                eligible = {r["symbol"] for r in analysis_rows if r["n"] >= WIKI_MIN_ANALYSIS_ROWS}
+        except Exception as exc:
+            logger.warning("wiki_hydration_candidate_fetch_failed", error=str(exc)[:200])
+            return []
+
+        # / preserve stub ordering (oldest-updated first) when picking the first `cap`
+        picks: list[str] = []
+        for sym in stub_symbols:
+            if sym in eligible and sym not in picks:
+                picks.append(sym)
+                if len(picks) >= cap:
+                    break
+        return picks
+
+    async def _load_hydration_bundle(
+        self, symbol: str,
+    ) -> tuple[list[dict], dict | None, list[dict]]:
+        # / fetch last 30 days of analysis_scores + latest fundamentals + last 90 days insider
+        analysis_rows: list[dict] = []
+        fundamentals: dict | None = None
+        insider: list[dict] = []
+        async with self._pool.acquire() as conn:
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT date, fundamental_score, technical_score, composite_score,
+                           regime, regime_confidence
+                    FROM analysis_scores
+                    WHERE symbol = $1
+                      AND date >= CURRENT_DATE - INTERVAL '30 days'
+                    ORDER BY date DESC
+                    """,
+                    symbol,
+                )
+                analysis_rows = [dict(r) for r in rows]
+            except Exception as exc:
+                logger.info("wiki_hydration_analysis_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+            try:
+                frow = await conn.fetchrow(
+                    """
+                    SELECT pe_ratio, pe_forward, ps_ratio, peg_ratio,
+                           revenue_growth_1y, revenue_growth_3y, fcf_margin,
+                           debt_to_equity, sector, sector_pe_avg
+                    FROM fundamentals
+                    WHERE symbol = $1
+                    ORDER BY date DESC LIMIT 1
+                    """,
+                    symbol,
+                )
+                fundamentals = dict(frow) if frow else None
+            except Exception as exc:
+                logger.info("wiki_hydration_fundamentals_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+            try:
+                irows = await conn.fetch(
+                    """
+                    SELECT filing_date, insider_name, insider_title, transaction_type,
+                           shares, price_per_share, total_value
+                    FROM insider_trades
+                    WHERE symbol = $1
+                      AND filing_date >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY filing_date DESC
+                    """,
+                    symbol,
+                )
+                insider = [dict(r) for r in irows]
+            except Exception as exc:
+                logger.info("wiki_hydration_insider_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+        return analysis_rows, fundamentals, insider
+
+    async def _knowledge_hydration_loop(self) -> None:
+        # / phase 5 step 3: daily enrichment of seed-stub symbol wiki docs
+        # / offset from other loops so llm calls don't stack at cold start
+        if await self._wait_or_stop(KNOWLEDGE_HYDRATION_STARTUP_DELAY):
+            return
+        while not self._stop_event.is_set():
+            try:
+                cap = self._hydration_daily_cap()
+                picks = await self._fetch_hydration_candidates(cap)
+                if not picks:
+                    logger.info("wiki_hydration_no_candidates", cap=cap)
+                else:
+                    from src.knowledge.wiki_writer import enrich_symbol_doc
+                    enriched = 0
+                    for symbol in picks:
+                        try:
+                            bundle = await self._load_hydration_bundle(symbol)
+                            analysis_rows, fundamentals, insider = bundle
+                            doc_id, _ = await enrich_symbol_doc(
+                                self._pool, symbol, analysis_rows, fundamentals, insider,
+                            )
+                            if doc_id is not None:
+                                enriched += 1
+                        except Exception as exc:
+                            logger.warning(
+                                "wiki_hydration_symbol_failed",
+                                symbol=symbol, error=str(exc)[:200],
+                            )
+                    logger.info(
+                        "wiki_hydration_cycle_complete",
+                        candidates=len(picks), enriched=enriched, cap=cap,
+                    )
+                    await tools.log_event(
+                        self._pool, "info", "knowledge_hydration",
+                        f"candidates={len(picks)} enriched={enriched} cap={cap}",
+                    )
+            except Exception as exc:
+                logger.error("knowledge_hydration_loop_error", exc_info=True)
+                notify_system_error(str(exc), "knowledge_hydration_loop")
+
+            if await self._wait_or_stop(KNOWLEDGE_HYDRATION_INTERVAL):
+                break

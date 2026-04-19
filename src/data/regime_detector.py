@@ -561,3 +561,48 @@ async def backfill_regimes_per_sector(pool) -> dict[str, int]:
 def _clear_sector_regime_cache() -> None:
     # / test helper — not for production call sites
     _sector_regime_cache.clear()
+
+
+async def snapshot_regime_daily(
+    pool, market: str, current_regime: str | None,
+    confidence: float | None = None,
+) -> bool:
+    # / phase 5 step 3: ensure a regime_history row exists for today even when
+    # / no shift occurred — otherwise the timeline widget only has scattered
+    # / shift-triggered rows and looks empty / uniform.
+    # / returns True if a snapshot row was inserted, False if one already existed or input was invalid.
+    if not market or not current_regime or current_regime == "insufficient_data":
+        return False
+
+    today = date.today()
+    try:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                """
+                SELECT 1 FROM regime_history
+                WHERE market = $1 AND date = $2
+                LIMIT 1
+                """,
+                market, today,
+            )
+            if existing:
+                return False
+
+            await conn.execute(
+                """
+                INSERT INTO regime_history (date, market, regime, confidence, is_snapshot)
+                VALUES ($1, $2, $3, $4, TRUE)
+                ON CONFLICT (date, market) DO NOTHING
+                """,
+                today, market, current_regime,
+                Decimal(str(round(confidence, 3))) if confidence is not None else None,
+            )
+    except Exception as exc:
+        logger.warning(
+            "regime_snapshot_write_failed",
+            market=market, regime=current_regime, error=str(exc)[:200],
+        )
+        return False
+
+    logger.info("regime_snapshot_written", market=market, regime=current_regime)
+    return True
