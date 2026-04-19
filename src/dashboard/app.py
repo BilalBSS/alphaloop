@@ -82,6 +82,20 @@ async def _head_fallback(request, call_next):
     return await call_next(request)
 
 
+# / cache-busting: vite fingerprints all js/css bundles so they're immutable, but
+# / /index.html references them by hash — serving a stale index means the browser
+# / asks for a bundle that no longer exists on disk. send no-cache for html only.
+@app.middleware("http")
+async def _no_cache_html(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith(".html") or path.endswith("/index.html"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 def _get_broker():
     # / lazy singleton — avoid re-instantiating on every request
     global _broker
