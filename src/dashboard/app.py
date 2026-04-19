@@ -1396,6 +1396,47 @@ async def get_macro_context():
     }
 
 
+@app.get("/api/feature-benchmark")
+async def get_feature_benchmark(symbol: str = "SPY"):
+    # / phase 6 step 9: run the handbuilt vs alpha158 a/b on one symbol's 5y daily bars
+    # / cached per symbol for an hour so the button is cheap to press repeatedly
+    import time as _time
+    global _feature_bench_cache
+    try:
+        _feature_bench_cache  # type: ignore[name-defined]
+    except NameError:
+        _feature_bench_cache = {}
+    cache_key = symbol.upper()
+    now = _time.time()
+    hit = _feature_bench_cache.get(cache_key)
+    if hit and (now - hit["ts"]) < 3600:
+        return hit["result"]
+
+    if _pool is None:
+        return {"error": "no_db"}
+    rows = await _query(
+        """SELECT date, open, high, low, close, volume FROM market_data
+        WHERE symbol = $1 ORDER BY date ASC""",
+        cache_key,
+    )
+    if not rows or len(rows) < 400:
+        return {"error": "insufficient_history", "rows": len(rows)}
+    import pandas as pd
+    df = pd.DataFrame([{
+        "open":   float(r["open"]) if r["open"] is not None else 0.0,
+        "high":   float(r["high"]) if r["high"] is not None else 0.0,
+        "low":    float(r["low"]) if r["low"] is not None else 0.0,
+        "close":  float(r["close"]) if r["close"] is not None else 0.0,
+        "volume": float(r["volume"]) if r["volume"] is not None else 0.0,
+    } for r in rows], index=pd.DatetimeIndex([r["date"] for r in rows]))
+
+    from src.quant.ml_signals import benchmark_feature_sets
+    result = await benchmark_feature_sets(df)
+    result["symbol"] = cache_key
+    _feature_bench_cache[cache_key] = {"ts": now, "result": result}
+    return result
+
+
 @app.get("/api/hydration-status")
 async def get_hydration_status():
     # / wiki symbol-doc hydration progress: today's count, daily cap, next fire
