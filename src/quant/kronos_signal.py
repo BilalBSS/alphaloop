@@ -65,13 +65,22 @@ def _available_memory_mb() -> float | None:
 
 KRONOS_MIN_MEMORY_MB = 1500  # / skip load if the box has less than ~1.5 GB free
 
+# / NeoQuasar is the canonical HF org for Kronos (the shiyu-coder github repo publishes
+# / weights to NeoQuasar/Kronos-*). both the tokenizer and model use trust_remote_code
+# / so the custom `Kronos`, `KronosTokenizer`, `KronosPredictor` classes get pulled in.
+# / defaults: Kronos-small (25M params) balances quality with 8GB vps memory budget.
+DEFAULT_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"
+DEFAULT_MODEL_ID = "NeoQuasar/Kronos-small"
+
+_predictor = None  # / KronosPredictor instance after successful load
+
 
 def _try_load_hf_model() -> bool:
     # / attempt to lazy-load the real Kronos HF model. returns True on success.
     # / caches result so we don't retry on every call.
-    global _model, _tokenizer, _model_load_attempted, _model_load_failed_reason
+    global _model, _tokenizer, _predictor, _model_load_attempted, _model_load_failed_reason
     if _model_load_attempted:
-        return _model is not None
+        return _predictor is not None
 
     _model_load_attempted = True
 
@@ -90,23 +99,47 @@ def _try_load_hf_model() -> bool:
         return False
 
     try:
-        from transformers import AutoModel, AutoTokenizer  # type: ignore
+        # / these imports depend on trust_remote_code pulling the Kronos classes from HF
+        from transformers import AutoModel, AutoTokenizer  # type: ignore  # noqa: F401
     except ImportError:
         _model_load_failed_reason = "transformers_not_installed"
         logger.info("kronos_transformers_missing_using_fallback")
         return False
 
-    model_id = os.environ.get("KRONOS_MODEL_ID", "shiyu-coder/Kronos-base")
+    tokenizer_id = os.environ.get("KRONOS_TOKENIZER_ID", DEFAULT_TOKENIZER_ID)
+    model_id = os.environ.get("KRONOS_MODEL_ID", DEFAULT_MODEL_ID)
+    device = os.environ.get("KRONOS_DEVICE", "cpu")
+    max_context = int(os.environ.get("KRONOS_MAX_CONTEXT", "512"))
     try:
-        _tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        # / the `Kronos`, `KronosTokenizer`, `KronosPredictor` classes live in the HF
+        # / repo's modeling code. loading with trust_remote_code=True registers them
+        # / under their real names; AutoModel.from_pretrained picks the custom class.
+        _tokenizer = AutoModel.from_pretrained(tokenizer_id, trust_remote_code=True)
         _model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
-        logger.info("kronos_hf_model_loaded", model_id=model_id)
+        # / KronosPredictor is a custom wrapper class that ships with the model. we
+        # / look it up on the loaded module rather than importing a top-level name
+        # / so we don't have to care which file the HF repo puts it in.
+        predictor_cls = None
+        for mod in (_model.__class__.__module__, _tokenizer.__class__.__module__):
+            try:
+                import importlib
+                m = importlib.import_module(mod)
+                predictor_cls = getattr(m, "KronosPredictor", None)
+                if predictor_cls is not None:
+                    break
+            except Exception:
+                continue
+        if predictor_cls is None:
+            raise RuntimeError("KronosPredictor class not found in loaded module")
+        _predictor = predictor_cls(_model, _tokenizer, device=device, max_context=max_context)
+        logger.info("kronos_hf_model_loaded", model_id=model_id, tokenizer_id=tokenizer_id, device=device)
         return True
     except Exception as exc:
-        _model_load_failed_reason = f"load_error: {str(exc)[:120]}"
-        logger.warning("kronos_hf_load_failed_using_fallback", error=str(exc)[:200])
+        _model_load_failed_reason = f"load_error: {str(exc)[:200]}"
+        logger.warning("kronos_hf_load_failed_using_fallback", error=str(exc)[:300])
         _model = None
         _tokenizer = None
+        _predictor = None
         return False
 
 
@@ -172,10 +205,14 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
 def _run_hf_inference(
     ohlcv: pd.DataFrame, lookback: int
 ) -> tuple[float, float, dict] | None:
-    # / runs real Kronos inference via HF transformers. Returns None on failure
-    # / so the caller can gracefully fall back.
-    global _model, _tokenizer
-    if _model is None or _tokenizer is None:
+    # / runs real Kronos inference via the KronosPredictor API. Returns None on
+    # / failure so the caller can gracefully fall back.
+    # /
+    # / Kronos's predictor takes an OHLCV dataframe + timestamps and returns point
+    # / forecasts. to get a probability, we run sample_count paths and count how
+    # / many end with next_close > last_actual_close.
+    global _predictor
+    if _predictor is None:
         return None
 
     try:
@@ -183,42 +220,49 @@ def _run_hf_inference(
         if len(window) < 32:
             return None
 
-        # / format ohlcv as token strings the tokenizer expects
-        # / exact protocol depends on Kronos release; documented on the model card
-        candles = window[["open", "high", "low", "close", "volume"]].to_numpy().tolist()
-        prompt = _format_candles_for_kronos(candles)
+        # / Kronos expects pandas DataFrame with columns open/high/low/close,
+        # / optionally volume + amount. we have ohlcv; skip `amount`.
+        df_in = window[["open", "high", "low", "close", "volume"]].astype(float).reset_index(drop=True)
 
-        inputs = _tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+        # / synthetic daily timestamps — only the cadence matters to the positional
+        # / embedding. real timestamps aren't exposed here so we fabricate them.
+        x_timestamp = pd.Series(pd.date_range(end=pd.Timestamp.utcnow().normalize(), periods=len(df_in), freq="D"))
+        y_timestamp = pd.Series(pd.date_range(start=x_timestamp.iloc[-1] + pd.Timedelta(days=1), periods=1, freq="D"))
 
-        import torch  # type: ignore
-        with torch.no_grad():
-            outputs = _model(**inputs, output_hidden_states=False)
+        sample_count = int(os.environ.get("KRONOS_SAMPLE_COUNT", "30"))
+        pred_df = _predictor.predict(
+            df=df_in,
+            x_timestamp=x_timestamp,
+            y_timestamp=y_timestamp,
+            pred_len=1,
+            T=1.0,
+            top_p=0.9,
+            sample_count=sample_count,
+        )
 
-        # / extract probability of up-move from final hidden state or lm logits
-        # / this is a placeholder protocol — replace with the actual head once we
-        # / validate against the model card's reference code
-        if hasattr(outputs, "logits"):
-            probs = torch.softmax(outputs.logits[:, -1, :], dim=-1)
-            # / assumes token id 1 == up, 0 == down (confirm with model card)
-            prob_up = float(probs[0, 1].item()) if probs.shape[-1] >= 2 else 0.5
+        # / sample paths can come back as stacked rows (n_samples rows) OR as a
+        # / single-row df of averages depending on KronosPredictor version. handle both.
+        last_close = float(df_in["close"].iloc[-1])
+        if hasattr(pred_df, "shape") and len(pred_df) >= 2:
+            predicted_closes = pred_df["close"].to_numpy().astype(float)
+            prob_up = float(np.mean(predicted_closes > last_close))
         else:
-            return None
+            # / fall-back: single forecast → deterministic direction, confidence shrinks
+            pred_close = float(pred_df["close"].iloc[0])
+            prob_up = 1.0 if pred_close > last_close else 0.0 if pred_close < last_close else 0.5
+            sample_count = 1
 
+        # / confidence scales with sample disagreement — tight consensus = high confidence
         confidence = float(min(abs(prob_up - 0.5) * 2.0, 1.0))
-        return prob_up, confidence, {"source": "kronos_hf_head"}
+        components = {
+            "source": "kronos_hf_predict",
+            "sample_count": sample_count,
+            "last_close": round(last_close, 4),
+        }
+        return prob_up, confidence, components
     except Exception as exc:
         logger.warning("kronos_hf_inference_failed", error=str(exc)[:200])
         return None
-
-
-def _format_candles_for_kronos(candles: list[list[float]]) -> str:
-    # / kronos expects a structured string of candle tokens. exact format varies
-    # / by release — this is the simplest ascii protocol that most implementations
-    # / accept. update once we validate against the real model card.
-    lines = []
-    for i, (o, h, l, c, v) in enumerate(candles):
-        lines.append(f"t{i}:O{o:.4f}|H{h:.4f}|L{l:.4f}|C{c:.4f}|V{v:.0f}")
-    return " ".join(lines)
 
 
 def predict(symbol: str, ohlcv: pd.DataFrame, lookback: int = 64) -> KronosPrediction:
@@ -257,7 +301,7 @@ def predict(symbol: str, ohlcv: pd.DataFrame, lookback: int = 64) -> KronosPredi
             return KronosPrediction(
                 symbol=symbol, probability=prob, confidence=conf,
                 source="kronos_hf", lookback=lookback,
-                model_version=os.environ.get("KRONOS_MODEL_ID", "shiyu-coder/Kronos-base"),
+                model_version=os.environ.get("KRONOS_MODEL_ID", DEFAULT_MODEL_ID),
                 components=components,
             )
 
@@ -277,7 +321,7 @@ def is_hf_available() -> bool:
     fallback heuristic only.
     """
     _try_load_hf_model()
-    return _model is not None
+    return _predictor is not None
 
 
 def get_load_status() -> dict:
@@ -287,7 +331,7 @@ def get_load_status() -> dict:
     visible signal rather than a silent degradation.
     """
     return {
-        "hf_loaded": _model is not None,
+        "hf_loaded": _predictor is not None,
         "load_attempted": _model_load_attempted,
         "fallback_reason": _model_load_failed_reason,
         "enabled_via_env": os.environ.get("KRONOS_ENABLED", "false").lower() in ("true", "1", "yes"),
