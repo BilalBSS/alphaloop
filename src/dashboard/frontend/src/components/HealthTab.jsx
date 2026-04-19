@@ -308,7 +308,8 @@ function StalenessPanel() {
   )
 }
 
-// / hero — system status aggregate derived from health payload
+// / hero — system status aggregate derived from health payload.
+// / status = degraded if db down OR total source errors > 10, else ok.
 function HealthHero({ health }) {
   const errors = health?.recent_errors || []
   const lastError = errors[0]?.timestamp || null
@@ -317,7 +318,8 @@ function HealthHero({ health }) {
   const sourceErrors = Object.values(sources).reduce((s, v) => s + (v?.errors_24h || 0), 0)
   const status = !dbOk ? 'degraded' : sourceErrors > 10 ? 'degraded' : 'ok'
   const statusClass = status === 'ok' ? 'pnl-positive' : 'text-warning'
-  const uptimeHours = health?.uptime_seconds != null ? (health.uptime_seconds / 3600).toFixed(1) : null
+  const cycles = health?.cycles || {}
+  const lastAnalysis = cycles.last_analysis
 
   return (
     <HeroBanner>
@@ -339,12 +341,10 @@ function HealthHero({ health }) {
           {sourceErrors}
         </span>
       </div>
-      {uptimeHours && (
-        <div className="hero-metric">
-          <span className="hero-metric-label">Uptime</span>
-          <span className="hero-metric-value-sm font-mono">{uptimeHours}h</span>
-        </div>
-      )}
+      <div className="hero-metric">
+        <span className="hero-metric-label">Last analyst pass</span>
+        <span className="hero-metric-value-sm font-mono">{timeAgo(lastAnalysis)}</span>
+      </div>
       <div className="hero-metric">
         <span className="hero-metric-label">Last error</span>
         <span className="hero-metric-value-sm font-mono text-text-primary">

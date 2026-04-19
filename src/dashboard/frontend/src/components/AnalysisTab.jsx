@@ -19,16 +19,18 @@ function timeAgo(ts) {
   return `${days}d ago`
 }
 
-// / hero — last analyst cycle + synthesis top buy/avoid
+// / hero — last analyst cycle + synthesis top buy/avoid.
+// / /api/symbols returns `date` on each row — use max as the last analyst pass.
 function AnalysisHero({ symbols, synthesis }) {
-  // / last analyst cycle: max analyzed_at across symbols
   let lastTs = null
+  let analyzedCount = 0
   if (Array.isArray(symbols)) {
     for (const s of symbols) {
-      const t = s.analyzed_at || s.updated_at || s.created_at
+      const t = s.date || s.analyzed_at || s.updated_at || s.created_at
       if (t) {
+        analyzedCount++
         const ms = new Date(t).getTime()
-        if (!lastTs || ms > lastTs) lastTs = ms
+        if (Number.isFinite(ms) && (!lastTs || ms > lastTs)) lastTs = ms
       }
     }
   }
@@ -36,6 +38,7 @@ function AnalysisHero({ symbols, synthesis }) {
   const topAvoid = synthesis?.top_avoids?.[0]
   const buySym = typeof topBuy === 'object' ? topBuy?.symbol : topBuy
   const avoidSym = typeof topAvoid === 'object' ? topAvoid?.symbol : topAvoid
+  const total = Array.isArray(symbols) ? symbols.length : 0
 
   return (
     <HeroBanner>
@@ -44,8 +47,10 @@ function AnalysisHero({ symbols, synthesis }) {
         <span className="hero-metric-value-sm font-mono">{timeAgo(lastTs ? new Date(lastTs).toISOString() : null)}</span>
       </div>
       <div className="hero-metric">
-        <span className="hero-metric-label">Symbols analyzed</span>
-        <span className="hero-metric-value font-mono">{Array.isArray(symbols) ? symbols.length : '—'}</span>
+        <span className="hero-metric-label">Symbols scored</span>
+        <span className="hero-metric-value font-mono">
+          {analyzedCount}<span className="text-text-muted text-sm font-normal"> / {total || '—'}</span>
+        </span>
       </div>
       <div className="hero-metric">
         <span className="hero-metric-label">Top buy</span>
