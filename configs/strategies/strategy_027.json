@@ -14,22 +14,56 @@
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "zscore_return", "condition": "below", "threshold": -2.0, "period": 30 },
-      { "indicator": "adx", "condition": "below", "threshold": 20, "period": 14 },
-      { "indicator": "atr_percentile", "condition": "below", "threshold": 70, "lookback": 60 }
+      {
+        "indicator": "zscore_return",
+        "condition": "below",
+        "threshold": -2.0,
+        "period": 30
+      },
+      {
+        "indicator": "adx",
+        "condition": "below",
+        "threshold": 20,
+        "period": 14
+      },
+      {
+        "indicator": "atr_percentile",
+        "condition": "below",
+        "threshold": 70,
+        "lookback": 60
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "indicator": "zscore_return", "condition": "above", "threshold": -0.5, "period": 30 },
-    "stop_loss": { "type": "fixed_pct", "pct": 0.035 },
-    "time_exit": { "max_holding_days": 7 }
+    "take_profit": {
+      "indicator": "zscore_return",
+      "condition": "above",
+      "threshold": -0.5,
+      "period": 30
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.035
+    },
+    "time_exit": {
+      "max_holding_days": 7
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.18
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:52:00.420820+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

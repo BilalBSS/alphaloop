@@ -1892,13 +1892,19 @@ async def get_loops():
 async def admin_trigger(service: str, request: Request):
     # / queue a one-shot run of {service} for the orchestrator to pick up
     # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
+    # / secure-by-default: missing ADMIN_TOKEN → 503, not open access
     from src.agents.loop_registry import enqueue_trigger, LOOP_METADATA
     expected = os.environ.get("ADMIN_TOKEN")
-    if expected:
-        auth = request.headers.get("Authorization", "")
-        supplied = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else ""
-        if supplied != expected:
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not expected:
+        return JSONResponse(
+            {"error": "admin_token_not_configured",
+             "hint": "set ADMIN_TOKEN in .env to enable this endpoint"},
+            status_code=503,
+        )
+    auth = request.headers.get("Authorization", "")
+    supplied = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else ""
+    if supplied != expected:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     if service not in LOOP_METADATA:
         return JSONResponse({"error": "unknown_service", "service": service}, status_code=404)
     row_id = await enqueue_trigger(_pool, service)

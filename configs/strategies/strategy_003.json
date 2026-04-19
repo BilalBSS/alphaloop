@@ -11,7 +11,7 @@
     "strict_data": false,
     "pe_ratio_max": 40,
     "revenue_growth_min": 0.02,
-    "fcf_margin_min": 0.10,
+    "fcf_margin_min": 0.1,
     "debt_to_equity_max": 1.5,
     "dcf_upside_min": 0.05
   },
@@ -59,7 +59,13 @@
   },
   "metadata": {
     "generation": 1,
-    "status": "paper_trading"
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:07.381288+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
   },
   "bear_market_overrides": {
     "bypass_consensus": true,

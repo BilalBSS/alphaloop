@@ -7,26 +7,59 @@
   "description": "Swing entry on 3x volume surge with price above 20-day SMA and positive MACD histogram",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 80 },
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 80
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "volume", "condition": "above_average", "multiplier": 3.0, "period": 20 },
-      { "indicator": "sma", "condition": "price_above", "period": 20 },
-      { "indicator": "macd_histogram", "condition": "above", "threshold": 0 }
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 3.0,
+        "period": 20
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 20
+      },
+      {
+        "indicator": "macd_histogram",
+        "condition": "above",
+        "threshold": 0
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.07 },
-    "stop_loss": { "type": "fixed_pct", "pct": 0.03 },
-    "time_exit": { "max_holding_days": 4 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.07
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.03
+    },
+    "time_exit": {
+      "max_holding_days": 4
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.18
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:57.897808+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

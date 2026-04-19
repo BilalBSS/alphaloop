@@ -7,26 +7,62 @@
   "description": "Buy tech names when XLK outperforms SPY over 20-day window and sector regime is risk-on",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 70, "revenue_growth_min": 0.08 },
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 70,
+    "revenue_growth_min": 0.08
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "sector_relative_strength", "condition": "above", "threshold": 0.02, "lookback": 20, "sector_etf": "XLK" },
-      { "indicator": "sma", "condition": "price_above", "period": 50 },
-      { "indicator": "regime", "condition": "is", "value": "bull" }
+      {
+        "indicator": "sector_relative_strength",
+        "condition": "above",
+        "threshold": 0.02,
+        "lookback": 20,
+        "sector_etf": "XLK"
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 50
+      },
+      {
+        "indicator": "regime",
+        "condition": "is",
+        "value": "bull"
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.10 },
-    "stop_loss": { "type": "atr_trailing", "multiplier": 2.0, "period": 14 },
-    "time_exit": { "max_holding_days": 30 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.1
+    },
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 2.0,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 30
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.22
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:58.516925+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": "mega_tech",
   "symbol": null

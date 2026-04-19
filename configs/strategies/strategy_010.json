@@ -40,7 +40,19 @@
   },
   "metadata": {
     "generation": 1,
-    "status": "paper_trading"
+    "status": "paper_trading",
+    "backtest_sharpe": 1.2503,
+    "backtest_sortino": 1.4605,
+    "backtest_calmar": 1.6062,
+    "backtest_max_drawdown": 0.0336,
+    "backtest_win_rate": 0.4829,
+    "backtest_total_return_pct": 0.1589,
+    "backtest_trade_count": 205,
+    "backtest_avg_holding_days": 12.09,
+    "backtest_profit_factor": 1.7867,
+    "backtest_ran_at": "2026-04-19T18:51:53.700130+00:00",
+    "backtest_window_years": 2,
+    "backtest_error": null
   },
   "bear_market_overrides": {
     "bypass_consensus": true

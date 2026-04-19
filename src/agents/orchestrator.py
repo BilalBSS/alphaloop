@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -22,6 +23,7 @@ from src.agents.risk_agent import RiskAgent
 from src.agents.strategy_agent import StrategyAgent
 from src.brokers.broker_factory import BrokerFactory
 from src.data.db import close_db, init_db
+from src.data.streams import AlpacaStream, CoinbaseStream, TickBuffer
 from src.data.symbols import FULL_UNIVERSE, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
 from src.notifications.notifier import notify_system_error
@@ -45,6 +47,9 @@ MONITORING_INTERVAL = 3600         # / 1 hour
 COST_FLUSH_INTERVAL = 3600         # / 1 hour
 DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
+STREAM_AGGREGATOR_INTERVAL = 60    # / drain buffer + upsert latest_prices every minute
+STREAM_FRESH_TICK_S = 90           # / treat stream as healthy if a tick hit within this window
+PRICE_TICK_BROADCAST_MIN_INTERVAL = 1.0  # / cap ws broadcast rate per-symbol at 1 Hz
 ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
 CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
 REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
@@ -76,6 +81,11 @@ class AgentOrchestrator:
         # / phase 2: track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
+        # / phase 7: websocket streams — shared tick buffer + per-vendor handles
+        self._tick_buffer: TickBuffer | None = None
+        self._alpaca_stream: AlpacaStream | None = None
+        self._coinbase_stream: CoinbaseStream | None = None
+        self._last_tick_broadcast: dict[str, float] = {}
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -160,6 +170,11 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
 
+        # / phase 7 tier 1: websocket streams for live prices. alpaca iex for stocks,
+        # / coinbase advanced-trade-ws for crypto. aggregator loop drains → latest_prices.
+        # / _price_refresh_loop stays put as fallback when the stream circuit breaker opens.
+        await self._start_streams()
+
         # / launch all loops
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
@@ -192,6 +207,8 @@ class AgentOrchestrator:
             asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
             # / phase 6 step 10: weekly kelly-weighted capital allocation refresh
             asyncio.create_task(self._capital_allocator_loop(), name="capital_allocator"),
+            # / phase 7 tier 1: drain tick buffer → latest_prices every minute
+            asyncio.create_task(self._stream_aggregator_loop(), name="stream_aggregator"),
         ]
 
         try:
@@ -207,6 +224,14 @@ class AgentOrchestrator:
         # / cancel all tasks
         for task in self._tasks:
             task.cancel()
+
+        # / stop streams first (they sit outside self._tasks)
+        for stream in (self._alpaca_stream, self._coinbase_stream):
+            if stream is not None:
+                try:
+                    await stream.stop()
+                except Exception as exc:
+                    logger.debug("stream_stop_failed", error=str(exc)[:120])
 
         # / wait for tasks to finish (with timeout)
         if self._tasks:
@@ -706,33 +731,135 @@ class AgentOrchestrator:
                 break
 
     async def _price_refresh_loop(self) -> None:
-        # / refresh current prices via yfinance during market hours
-        # / writes to latest_prices table (one row per symbol) — NOT market_data_intraday
-        # / the old pattern polluted intraday with zero-volume snapshots and broke candles
+        # / fallback price refresh. phase 7: websocket streams are primary; this polls
+        # / via yfinance only when streams are unhealthy (stale + circuit open for that
+        # / vendor's asset class). writes to latest_prices.
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "price_refresh"):
-                    if self._is_market_hours():
+                    if not self._is_market_hours():
+                        pass
+                    elif self._streams_healthy_equity() and self._streams_healthy_crypto():
+                        # / streams are delivering — no poll needed this cycle
+                        logger.debug("price_refresh_streams_healthy_skip")
+                    else:
                         from src.data.market_data import fetch_latest_prices, store_latest_prices
                         symbols = self._get_symbols()
-                        prices = await fetch_latest_prices(symbols)
+                        # / only poll the asset classes whose stream is unhealthy
+                        need_equity = not self._streams_healthy_equity()
+                        need_crypto = not self._streams_healthy_crypto()
+                        poll_syms = [
+                            s for s in symbols
+                            if (need_equity and not is_crypto(s))
+                            or (need_crypto and is_crypto(s))
+                        ]
+                        prices = await fetch_latest_prices(poll_syms) if poll_syms else {}
                         if prices:
                             stored = await store_latest_prices(self._pool, prices)
-                            logger.info("price_refresh_complete", symbols=stored)
+                            logger.info("price_refresh_fallback_complete",
+                                        symbols=stored, reason="streams_unhealthy")
                             await tools.log_event(
                                 self._pool, "info", "price_refresh", f"symbols={stored}",
                             )
-                        else:
-                            logger.warning("price_refresh_empty")
-                            await tools.log_event(self._pool, "warning", "price_refresh", "no_prices_fetched")
             except Exception as exc:
                 logger.warning("price_refresh_error", error=str(exc)[:100])
                 notify_system_error(f"price refresh failed: {str(exc)[:80]}", "price_refresh")
                 await tools.log_event(self._pool, "error", "price_refresh", str(exc)[:200])
 
             if await self._wait_or_stop(PRICE_REFRESH_INTERVAL):
+                break
+
+    async def _start_streams(self) -> None:
+        # / split universe → equity (alpaca) + crypto (coinbase); start both streams.
+        symbols = self._get_symbols()
+        equity_syms = [s for s in symbols if not is_crypto(s)]
+        crypto_syms = [s for s in symbols if is_crypto(s)]
+        self._tick_buffer = TickBuffer(max_per_symbol=1000)
+
+        if equity_syms:
+            self._alpaca_stream = AlpacaStream(
+                equity_syms, self._tick_buffer, on_tick=self._on_tick_broadcast,
+            )
+            try:
+                await self._alpaca_stream.start()
+            except Exception as exc:
+                logger.warning("alpaca_stream_start_failed", error=str(exc)[:200])
+        if crypto_syms:
+            self._coinbase_stream = CoinbaseStream(
+                crypto_syms, self._tick_buffer, on_tick=self._on_tick_broadcast,
+            )
+            try:
+                await self._coinbase_stream.start()
+            except Exception as exc:
+                logger.warning("coinbase_stream_start_failed", error=str(exc)[:200])
+
+    def _on_tick_broadcast(self, tick) -> None:
+        # / fan each tick out to dashboard ws clients, rate-limited per symbol.
+        # / fire-and-forget — buffering is already done by _emit before us.
+        import time as _t
+        now = _t.monotonic()
+        last = self._last_tick_broadcast.get(tick.symbol, 0.0)
+        if (now - last) < PRICE_TICK_BROADCAST_MIN_INTERVAL:
+            return
+        self._last_tick_broadcast[tick.symbol] = now
+        try:
+            from src.dashboard.app import broadcast, _ws_clients
+            if _ws_clients:
+                asyncio.create_task(broadcast("price_tick", {
+                    "symbol": tick.symbol,
+                    "price": tick.price,
+                    "timestamp_ms": tick.timestamp_ms,
+                    "vendor": tick.vendor,
+                }))
+        except Exception:
+            pass  # / dashboard not mounted in this process
+
+    def _streams_healthy_equity(self) -> bool:
+        s = self._alpaca_stream
+        if s is None:
+            return False
+        if s.state.circuit_breaker.is_open:
+            return False
+        if s.state.last_tick_at is None:
+            return False
+        idle = time.monotonic() - s.state.last_tick_at
+        return idle < STREAM_FRESH_TICK_S
+
+    def _streams_healthy_crypto(self) -> bool:
+        s = self._coinbase_stream
+        if s is None:
+            return False
+        if s.state.circuit_breaker.is_open:
+            return False
+        if s.state.last_tick_at is None:
+            return False
+        idle = time.monotonic() - s.state.last_tick_at
+        return idle < STREAM_FRESH_TICK_S
+
+    async def _stream_aggregator_loop(self) -> None:
+        # / every 60s, drain the tick buffer and write the newest tick per symbol
+        # / into latest_prices. gives downstream consumers (analyst, risk, dashboard
+        # / refresh) a fresh pointer even between manual refreshes.
+        if self._tick_buffer is None:
+            return
+        from src.data.market_data import store_latest_prices
+        while not self._stop_event.is_set():
+            try:
+                drained = await self._tick_buffer.drain_all()
+                if drained:
+                    latest = {
+                        sym: float(ticks[-1].price)
+                        for sym, ticks in drained.items()
+                        if ticks
+                    }
+                    if latest and self._pool is not None:
+                        await store_latest_prices(self._pool, latest)
+                        logger.debug("stream_aggregator_upserted", n=len(latest))
+            except Exception as exc:
+                logger.warning("stream_aggregator_error", error=str(exc)[:200])
+            if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
     async def _alpaca_sync_loop(self) -> None:
