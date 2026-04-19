@@ -101,7 +101,7 @@ function EnvHealthGrid({ envHealth }) {
 
 function LoopTable({ loops, onTrigger, triggering }) {
   if (!loops || loops.length === 0) {
-    return <EmptyState message="No loops registered yet" />
+    return <EmptyState title="No loops registered yet" />
   }
   return (
     <div className="overflow-x-auto">
@@ -228,7 +228,7 @@ export default function SystemTab() {
 
       <Panel title="Loop activity">
         {loopsLoading && !loops.length ? (
-          <EmptyState message="Loading loops…" />
+          <EmptyState title="Loading loops…" />
         ) : (
           <LoopTable loops={loops} onTrigger={trigger} triggering={triggering} />
         )}

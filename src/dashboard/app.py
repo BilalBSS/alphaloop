@@ -1396,6 +1396,28 @@ async def get_macro_context():
     }
 
 
+@app.get("/api/macro-history")
+async def get_macro_history(days: int = 30):
+    # / per-series timeseries over the last N days for sparkline rendering
+    if _pool is None:
+        return {"series": {}}
+    days = max(7, min(int(days or 30), 365))
+    rows = await _query(
+        """SELECT series_id, date, value FROM macro_data
+        WHERE date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
+        ORDER BY series_id, date ASC""",
+        days,
+    )
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        sid = r["series_id"]
+        out.setdefault(sid, []).append({
+            "date": r["date"].isoformat() if hasattr(r["date"], "isoformat") else r["date"],
+            "value": float(r["value"]) if r["value"] is not None else None,
+        })
+    return {"series": out, "days": days}
+
+
 @app.get("/api/congressional/{symbol}")
 async def get_congressional(symbol: str):
     # / last 20 congressional trades for symbol + computed net_buy_ratio
