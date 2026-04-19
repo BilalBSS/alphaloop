@@ -56,6 +56,23 @@ class StopLossConfig(BaseModel):
     multiplier: float | None = None
     period: int | None = None
 
+    @model_validator(mode="after")
+    def validate_actionable(self) -> "StopLossConfig":
+        # / require_stop_loss from risk_limits.json: every stop_loss must have teeth
+        # / fixed_pct → pct required; atr_trailing / atr_stop → multiplier required
+        t = (self.type or "fixed_pct").lower()
+        if t in ("fixed_pct", "percent", "pct"):
+            if self.pct is None or self.pct <= 0 or self.pct >= 1.0:
+                raise ValueError(
+                    f"stop_loss type={t!r} requires pct in (0, 1), got {self.pct!r}"
+                )
+        elif "atr" in t or t in ("trailing", "chandelier"):
+            if self.multiplier is None or self.multiplier <= 0:
+                raise ValueError(
+                    f"stop_loss type={t!r} requires multiplier > 0, got {self.multiplier!r}"
+                )
+        return self
+
 
 class TakeProfitConfig(BaseModel):
     indicator: str | None = None
@@ -102,6 +119,17 @@ class FundamentalFiltersConfig(BaseModel):
     nvt_max: float | None = None
     funding_rate_max: float | None = None
     news_sentiment_min: float | None = None
+    # / alt-data filters (phase 4)
+    macro_score_min: float | None = None
+    congressional_buy_ratio_min: float | None = None
+    analyst_consensus_min: float | None = None
+    price_target_upside_min: float | None = None
+    earnings_revision_momentum_min: float | None = None
+    short_pct_float_max: float | None = None
+    dark_pool_ratio_max: float | None = None
+    iv_rank_min: float | None = None
+    iv_rank_max: float | None = None
+    put_call_ratio_max: float | None = None
 
 
 class BearMarketOverridesConfig(BaseModel):

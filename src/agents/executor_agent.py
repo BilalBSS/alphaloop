@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -15,6 +17,56 @@ from src.data.symbols import is_crypto
 from src.notifications.notifier import notify_trade_executed, notify_trade_error
 
 logger = structlog.get_logger(__name__)
+
+# / strong refs so event loop doesn't gc background post-mortem tasks
+_POST_MORTEM_TASKS: set = set()
+
+
+def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> bool:
+    # / phase 2: loss > $50 OR loss > 2% of entry notional
+    if pnl is None or pnl >= 0:
+        return False
+    try:
+        pnl_abs = float(os.environ.get("POST_MORTEM_PNL_ABS", "50"))
+    except (TypeError, ValueError):
+        pnl_abs = 50.0
+    try:
+        pnl_pct = float(os.environ.get("POST_MORTEM_PNL_PCT", "0.02"))
+    except (TypeError, ValueError):
+        pnl_pct = 0.02
+    if abs(pnl) > pnl_abs:
+        return True
+    if entry_notional > 0 and abs(pnl) / entry_notional > pnl_pct:
+        return True
+    return False
+
+
+def _spawn_post_mortem(
+    pool, trade_id: int | None, strategy_id: str | None,
+    symbol: str, pnl: float, trigger_type: str,
+) -> None:
+    # / fire-and-forget launcher — cooldown enforced inside write_post_mortem
+    if not strategy_id or pnl is None:
+        return
+    try:
+        from src.knowledge.post_mortem_writer import write_post_mortem
+        task = asyncio.create_task(
+            write_post_mortem(
+                pool=pool,
+                trade_id=trade_id,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                pnl=float(pnl),
+                trigger_type=trigger_type,
+            )
+        )
+        _POST_MORTEM_TASKS.add(task)
+        task.add_done_callback(_POST_MORTEM_TASKS.discard)
+    except RuntimeError:
+        # / no running loop — skip
+        pass
+    except Exception as exc:
+        logger.info("post_mortem_spawn_failed", error=str(exc)[:120])
 
 
 def _strategy_killed_on_disk(strategy_id: str) -> bool:
@@ -167,6 +219,16 @@ class ExecutorAgent:
                 symbol=symbol, side=side,
                 qty=order.filled_qty, price=order.filled_price,
             )
+
+            # / phase 2: trigger post-mortem on loss-close (sell branch only)
+            if side == "sell" and pnl is not None:
+                entry_notional = 0.0
+                if 'entry_price' in locals() and entry_price is not None:
+                    entry_notional = float(entry_price) * float(order.filled_qty)
+                if _should_trigger_post_mortem(pnl, entry_notional):
+                    _spawn_post_mortem(
+                        pool, log_id, strategy_id, symbol, pnl, "loss_threshold",
+                    )
             return {
                 "status": "filled",
                 "log_id": log_id,
@@ -236,6 +298,16 @@ class ExecutorAgent:
                 notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
                 logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
                             symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)
+
+                # / phase 2: trigger post-mortem on loss-close (polled fill)
+                if side == "sell" and pnl is not None:
+                    entry_notional = 0.0
+                    if 'entry_price' in locals() and entry_price is not None:
+                        entry_notional = float(entry_price) * float(order.filled_qty)
+                    if _should_trigger_post_mortem(pnl, entry_notional):
+                        _spawn_post_mortem(
+                            pool, log_id, strategy_id, symbol, pnl, "loss_threshold",
+                        )
                 return {"status": "filled", "log_id": log_id, "order_id": order.order_id,
                         "qty": order.filled_qty, "price": order.filled_price}
 

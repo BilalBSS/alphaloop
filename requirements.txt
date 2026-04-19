@@ -8,6 +8,7 @@ scipy>=1.10.0
 asyncpg>=0.29.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
+aiofiles>=23.0.0
 
 # Logging
 structlog>=24.1.0
@@ -15,19 +16,14 @@ structlog>=24.1.0
 # Market calendar
 exchange_calendars>=4.5.0
 
-# LLM
-anthropic>=0.40.0
-groq>=0.11.0
+# / LLM providers are accessed via httpx (see src/data/llm_client.py) — no SDKs required
 
-# Dashboard (phase 9)
+# Dashboard
 fastapi>=0.100.0
 uvicorn>=0.22.0
-jinja2>=3.1.0
 
-# ML
+# ML (used by src/quant/ml_signals.py for gradient-boosted signal prediction)
 lightgbm>=4.0.0
-hmmlearn>=0.3.0
-arch>=6.0.0
 
 # Testing
 pytest>=7.0.0

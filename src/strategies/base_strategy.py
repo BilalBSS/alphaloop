@@ -6,12 +6,252 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+# / filter handler registry — config key → function
+# / each handler returns (passed, reason). passed=False rejects the strategy entry.
+# / handlers receive the full filters dict so they can check `strict_data` themselves
+FILTER_HANDLERS: dict[str, Callable] = {}
+
+
+def register_filter(config_key: str):
+    # / decorator: register a filter handler keyed by the config field name
+    def decorator(fn):
+        FILTER_HANDLERS[config_key] = fn
+        return fn
+    return decorator
+
+
+def _strict(filters: dict) -> bool:
+    # / strict_data=True (default): reject when the AnalysisData field is None
+    # / strict_data=False: silently skip a filter when its data is missing
+    return filters.get("strict_data", True)
+
+
+@register_filter("pe_ratio_max")
+def _filter_pe_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.pe_ratio is None:
+        if _strict(filters):
+            return False, "pe_ratio data unavailable"
+        return True, ""
+    if analysis.pe_ratio > threshold:
+        return False, f"pe {analysis.pe_ratio:.1f} > max {threshold}"
+    return True, ""
+
+
+@register_filter("pe_vs_sector")
+def _filter_pe_vs_sector(analysis, value, filters) -> tuple[bool, str]:
+    if value != "below_average":
+        return True, ""
+    if analysis.pe_ratio is None or analysis.sector_pe_avg is None:
+        if _strict(filters):
+            return False, "pe or sector_pe data unavailable"
+        return True, ""
+    if analysis.pe_ratio > analysis.sector_pe_avg:
+        return False, f"pe {analysis.pe_ratio:.1f} above sector avg {analysis.sector_pe_avg:.1f}"
+    return True, ""
+
+
+@register_filter("revenue_growth_min")
+def _filter_revenue_growth_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.revenue_growth is None:
+        if _strict(filters):
+            return False, "revenue_growth data unavailable"
+        return True, ""
+    if analysis.revenue_growth < threshold:
+        return False, f"revenue growth {analysis.revenue_growth:.2%} < min {threshold:.2%}"
+    return True, ""
+
+
+@register_filter("fcf_margin_min")
+def _filter_fcf_margin_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.fcf_margin is None:
+        if _strict(filters):
+            return False, "fcf_margin data unavailable"
+        return True, ""
+    if analysis.fcf_margin < threshold:
+        return False, f"fcf margin {analysis.fcf_margin:.2%} < min {threshold:.2%}"
+    return True, ""
+
+
+@register_filter("debt_to_equity_max")
+def _filter_de_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.debt_to_equity is None:
+        if _strict(filters):
+            return False, "debt_to_equity data unavailable"
+        return True, ""
+    if analysis.debt_to_equity > threshold:
+        return False, f"d/e {analysis.debt_to_equity:.2f} > max {threshold}"
+    return True, ""
+
+
+@register_filter("dcf_upside_min")
+def _filter_dcf_upside_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.dcf_upside is None:
+        if _strict(filters):
+            return False, "dcf_upside data unavailable"
+        return True, ""
+    if analysis.dcf_upside < threshold:
+        return False, f"dcf upside {analysis.dcf_upside:.2%} < min {threshold:.2%}"
+    return True, ""
+
+
+@register_filter("insider_buying_recent")
+def _filter_insider_buying_recent(analysis, required, filters) -> tuple[bool, str]:
+    if required is not True:
+        return True, ""
+    if analysis.insider_net_buy_ratio is None:
+        if _strict(filters):
+            return False, "insider_activity data unavailable"
+        return True, ""
+    if analysis.insider_net_buy_ratio <= 0:
+        return False, f"no recent insider buying (ratio={analysis.insider_net_buy_ratio:.2f})"
+    return True, ""
+
+
+@register_filter("nvt_max")
+def _filter_nvt_max(analysis, threshold, filters) -> tuple[bool, str]:
+    # / crypto: nvt filter is None-tolerant — missing data always passes (legacy behaviour)
+    if analysis.nvt_ratio is None:
+        return True, ""
+    if analysis.nvt_ratio > threshold:
+        return False, f"nvt {analysis.nvt_ratio:.1f} > max {threshold}"
+    return True, ""
+
+
+@register_filter("funding_rate_max")
+def _filter_funding_rate_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.funding_rate is None:
+        return True, ""
+    if abs(analysis.funding_rate) > threshold:
+        return False, f"funding rate {analysis.funding_rate:.4f} exceeds max {threshold}"
+    return True, ""
+
+
+@register_filter("news_sentiment_min")
+def _filter_news_sentiment_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.news_sentiment_score is None:
+        return True, ""
+    if analysis.news_sentiment_score < threshold:
+        return False, f"sentiment {analysis.news_sentiment_score:.2f} < min {threshold}"
+    return True, ""
+
+
+# / alt-data filters — newly enforced in phase 4
+@register_filter("macro_score_min")
+def _filter_macro_score_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.macro_score is None:
+        if _strict(filters):
+            return False, "macro_score data unavailable"
+        return True, ""
+    if analysis.macro_score < threshold:
+        return False, f"macro score {analysis.macro_score:.2f} < min {threshold}"
+    return True, ""
+
+
+@register_filter("congressional_buy_ratio_min")
+def _filter_congressional_buy_ratio_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.congressional_buy_ratio is None:
+        if _strict(filters):
+            return False, "congressional_buy_ratio data unavailable"
+        return True, ""
+    if analysis.congressional_buy_ratio < threshold:
+        return False, f"congressional buy ratio {analysis.congressional_buy_ratio:.2f} < min {threshold}"
+    return True, ""
+
+
+@register_filter("analyst_consensus_min")
+def _filter_analyst_consensus_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.analyst_consensus is None:
+        if _strict(filters):
+            return False, "analyst_consensus data unavailable"
+        return True, ""
+    if analysis.analyst_consensus < threshold:
+        return False, f"analyst consensus {analysis.analyst_consensus:.2f} < min {threshold}"
+    return True, ""
+
+
+@register_filter("price_target_upside_min")
+def _filter_price_target_upside_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.price_target_upside is None:
+        if _strict(filters):
+            return False, "price_target_upside data unavailable"
+        return True, ""
+    if analysis.price_target_upside < threshold:
+        return False, f"price target upside {analysis.price_target_upside:.2%} < min {threshold:.2%}"
+    return True, ""
+
+
+@register_filter("earnings_revision_momentum_min")
+def _filter_earnings_revision_momentum_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.earnings_revision_momentum is None:
+        if _strict(filters):
+            return False, "earnings_revision_momentum data unavailable"
+        return True, ""
+    if analysis.earnings_revision_momentum < threshold:
+        return False, f"earnings revision momentum {analysis.earnings_revision_momentum:.2f} < min {threshold}"
+    return True, ""
+
+
+@register_filter("short_pct_float_max")
+def _filter_short_pct_float_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.short_pct_float is None:
+        if _strict(filters):
+            return False, "short_pct_float data unavailable"
+        return True, ""
+    if analysis.short_pct_float > threshold:
+        return False, f"short pct float {analysis.short_pct_float:.2%} > max {threshold:.2%}"
+    return True, ""
+
+
+@register_filter("dark_pool_ratio_max")
+def _filter_dark_pool_ratio_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.dark_pool_ratio is None:
+        if _strict(filters):
+            return False, "dark_pool_ratio data unavailable"
+        return True, ""
+    if analysis.dark_pool_ratio > threshold:
+        return False, f"dark pool ratio {analysis.dark_pool_ratio:.2f} > max {threshold}"
+    return True, ""
+
+
+@register_filter("iv_rank_min")
+def _filter_iv_rank_min(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.iv_rank is None:
+        if _strict(filters):
+            return False, "iv_rank data unavailable"
+        return True, ""
+    if analysis.iv_rank < threshold:
+        return False, f"iv rank {analysis.iv_rank:.2f} < min {threshold}"
+    return True, ""
+
+
+@register_filter("iv_rank_max")
+def _filter_iv_rank_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.iv_rank is None:
+        if _strict(filters):
+            return False, "iv_rank data unavailable"
+        return True, ""
+    if analysis.iv_rank > threshold:
+        return False, f"iv rank {analysis.iv_rank:.2f} > max {threshold}"
+    return True, ""
+
+
+@register_filter("put_call_ratio_max")
+def _filter_put_call_ratio_max(analysis, threshold, filters) -> tuple[bool, str]:
+    if analysis.put_call_ratio is None:
+        if _strict(filters):
+            return False, "put_call_ratio data unavailable"
+        return True, ""
+    if analysis.put_call_ratio > threshold:
+        return False, f"put/call ratio {analysis.put_call_ratio:.2f} > max {threshold}"
+    return True, ""
 
 
 @dataclass
@@ -72,7 +312,6 @@ class AnalysisData:
     intermarket_score: float | None = None
     sector_relative_strength: float | None = None
     hurst: float | None = None
-    liquidation_imbalance: float | None = None
 
 
 class StrategyInterface(ABC):
@@ -327,96 +566,24 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_fundamentals(self, analysis: AnalysisData, filters=None) -> tuple[bool, list[str]]:
         # / evaluate fundamental filters from config against analysis data
-        # / strict_data=true (default): reject if data unavailable
+        # / dispatches each config key to its registered handler via FILTER_HANDLERS
+        # / strict_data=true (default): reject if data unavailable (handled per-filter)
         # / strict_data=false: skip filter when data is missing
         filters = filters or self._fundamental_filters
-        reasons: list[str] = []
-        strict = filters.get("strict_data", True)
 
-        # / pe ratio max
-        pe_max = filters.get("pe_ratio_max")
-        if pe_max is not None:
-            if analysis.pe_ratio is None:
-                if strict:
-                    return False, ["pe_ratio data unavailable"]
-            elif analysis.pe_ratio > pe_max:
-                reasons.append(f"pe {analysis.pe_ratio:.1f} > max {pe_max}")
-                return False, reasons
-
-        # / pe vs sector
-        pe_vs = filters.get("pe_vs_sector")
-        if pe_vs == "below_average":
-            if analysis.pe_ratio is None or analysis.sector_pe_avg is None:
-                if strict:
-                    return False, ["pe or sector_pe data unavailable"]
-            elif analysis.pe_ratio > analysis.sector_pe_avg:
-                reasons.append(f"pe {analysis.pe_ratio:.1f} above sector avg {analysis.sector_pe_avg:.1f}")
-                return False, reasons
-
-        # / revenue growth min
-        rev_min = filters.get("revenue_growth_min")
-        if rev_min is not None:
-            if analysis.revenue_growth is None:
-                if strict:
-                    return False, ["revenue_growth data unavailable"]
-            elif analysis.revenue_growth < rev_min:
-                reasons.append(f"revenue growth {analysis.revenue_growth:.2%} < min {rev_min:.2%}")
-                return False, reasons
-
-        # / fcf margin min
-        fcf_min = filters.get("fcf_margin_min")
-        if fcf_min is not None:
-            if analysis.fcf_margin is None:
-                if strict:
-                    return False, ["fcf_margin data unavailable"]
-            elif analysis.fcf_margin < fcf_min:
-                reasons.append(f"fcf margin {analysis.fcf_margin:.2%} < min {fcf_min:.2%}")
-                return False, reasons
-
-        # / debt to equity max
-        de_max = filters.get("debt_to_equity_max")
-        if de_max is not None:
-            if analysis.debt_to_equity is None:
-                if strict:
-                    return False, ["debt_to_equity data unavailable"]
-            elif analysis.debt_to_equity > de_max:
-                reasons.append(f"d/e {analysis.debt_to_equity:.2f} > max {de_max}")
-                return False, reasons
-
-        # / dcf upside min
-        dcf_min = filters.get("dcf_upside_min")
-        if dcf_min is not None:
-            if analysis.dcf_upside is None:
-                if strict:
-                    return False, ["dcf_upside data unavailable"]
-            elif analysis.dcf_upside < dcf_min:
-                reasons.append(f"dcf upside {analysis.dcf_upside:.2%} < min {dcf_min:.2%}")
-                return False, reasons
-
-        # / insider buying recent
-        insider_req = filters.get("insider_buying_recent")
-        if insider_req is True:
-            if analysis.insider_net_buy_ratio is None:
-                if strict:
-                    return False, ["insider_activity data unavailable"]
-            elif analysis.insider_net_buy_ratio <= 0:
-                return False, [f"no recent insider buying (ratio={analysis.insider_net_buy_ratio:.2f})"]
-
-        # / crypto filters (phase 8)
-        nvt_max = filters.get("nvt_max")
-        if nvt_max is not None and analysis.nvt_ratio is not None:
-            if analysis.nvt_ratio > nvt_max:
-                return False, [f"nvt {analysis.nvt_ratio:.1f} > max {nvt_max}"]
-
-        funding_max = filters.get("funding_rate_max")
-        if funding_max is not None and analysis.funding_rate is not None:
-            if abs(analysis.funding_rate) > funding_max:
-                return False, [f"funding rate {analysis.funding_rate:.4f} exceeds max {funding_max}"]
-
-        sentiment_min = filters.get("news_sentiment_min")
-        if sentiment_min is not None and analysis.news_sentiment_score is not None:
-            if analysis.news_sentiment_score < sentiment_min:
-                return False, [f"sentiment {analysis.news_sentiment_score:.2f} < min {sentiment_min}"]
+        # / strict_data isn't a filter itself — skip it so the for-loop doesn't try to dispatch it
+        for key, threshold in filters.items():
+            if key == "strict_data":
+                continue
+            if threshold is None:
+                continue
+            handler = FILTER_HANDLERS.get(key)
+            if handler is None:
+                # / unknown filter key — skip gracefully (config validation catches truly invalid keys)
+                continue
+            passed, reason = handler(analysis, threshold, filters)
+            if not passed:
+                return False, [reason]
 
         return True, ["fundamentals passed"]
 

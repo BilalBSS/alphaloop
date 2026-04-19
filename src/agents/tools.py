@@ -664,7 +664,6 @@ def dict_to_analysis_data(d: dict) -> AnalysisData:
         intermarket_score=d.get("intermarket_score"),
         sector_relative_strength=d.get("sector_relative_strength"),
         hurst=d.get("hurst"),
-        liquidation_imbalance=d.get("liquidation_imbalance"),
     )
 
 

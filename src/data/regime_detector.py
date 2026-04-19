@@ -2,15 +2,26 @@
 # / rule-based using rolling volatility, sma cross, drawdown
 # / separate classifiers for equity (spy-based) and crypto (btc-based)
 # / graceful: returns insufficient_data when not enough history
+# / phase 5 step 4: per-sector regime on sector composite returns to fix the
+# / "all stocks bull / all crypto bear" uniformity problem
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 import numpy as np
 import structlog
+
+from src.data.symbols import (
+    CRYPTO_UNIVERSE,
+    EQUITY_UNIVERSE,
+    SECTORS,
+    get_sector,
+    is_crypto,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -23,6 +34,14 @@ CRYPTO_HIGH_VOL_MULTIPLIER = 2.0   # same multiplier but crypto baseline is ~3x 
 DRAWDOWN_BEAR_THRESHOLD = 0.15     # > 15% drawdown from high
 DRAWDOWN_BULL_MAX = 0.10           # < 10% drawdown for bull
 VOL_BULL_MULTIPLIER = 1.5          # vol < 1.5x median for bull
+
+# / per-sector regime cache — matches orchestrator REGIME_LOOP_INTERVAL (6h)
+SECTOR_REGIME_CACHE_TTL_SECONDS = 21600
+# / sectors with fewer than this many symbols fall back to market regime
+SECTOR_MIN_SYMBOLS = 3
+
+# / in-memory cache: {sector: (regime, confidence, cached_at_epoch)}
+_sector_regime_cache: dict[str, tuple[str, float, float]] = {}
 
 
 @dataclass
@@ -325,3 +344,265 @@ async def backfill_regimes(
     count = len(classified)
     logger.info("backfilled_regimes", market=market, count=count)
     return count
+
+
+def _sector_market_type(sector: str) -> str:
+    # / crypto sectors are tagged 'crypto' in regime_history, everything else 'equity'
+    symbols = SECTORS.get(sector, [])
+    if not symbols:
+        return "equity"
+    return "crypto" if is_crypto(symbols[0]) else "equity"
+
+
+async def _fetch_sector_composite_closes(
+    pool, sector: str, lookback_days: int = 400,
+) -> tuple[list[date], list[float]]:
+    # / average close across symbols in a sector -> composite price series
+    # / returns (dates, composite_closes) aligned; skips dates where <2 symbols reported
+    symbols = SECTORS.get(sector, [])
+    if len(symbols) < 2:
+        return [], []
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT date, symbol, close
+            FROM market_data
+            WHERE symbol = ANY($1::varchar[])
+              AND close IS NOT NULL
+            ORDER BY date ASC, symbol ASC
+            """,
+            symbols,
+        )
+
+    if not rows:
+        return [], []
+
+    # / pivot: {date: {symbol: close}} then average rebased closes per date
+    by_date: dict[date, dict[str, float]] = {}
+    for r in rows:
+        by_date.setdefault(r["date"], {})[r["symbol"]] = float(r["close"])
+
+    # / rebase each symbol to its first observed close so different price levels
+    # / don't dominate the average (e.g. NVDA at $500 vs AMD at $100)
+    first_close: dict[str, float] = {}
+    for d in sorted(by_date.keys()):
+        for sym, px in by_date[d].items():
+            if sym not in first_close and px > 0:
+                first_close[sym] = px
+
+    dates: list[date] = []
+    composites: list[float] = []
+    for d in sorted(by_date.keys()):
+        rebased = []
+        for sym, px in by_date[d].items():
+            if sym in first_close and first_close[sym] > 0:
+                rebased.append(px / first_close[sym])
+        # / require at least 2 symbols reporting for a valid composite point
+        if len(rebased) >= 2:
+            dates.append(d)
+            composites.append(float(np.mean(rebased)) * 100.0)  # / index level base=100
+
+    # / trim to most recent lookback_days points for classifier
+    if len(dates) > lookback_days:
+        dates = dates[-lookback_days:]
+        composites = composites[-lookback_days:]
+
+    return dates, composites
+
+
+async def detect_market_regime(
+    pool, market: str = "equity",
+) -> tuple[str, float]:
+    # / backward-compat: market-wide regime from regime_history
+    # / returns (regime, confidence); defaults to ("insufficient_data", 0.0) on miss
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT regime, confidence FROM regime_history
+                WHERE market = $1 ORDER BY date DESC LIMIT 1""",
+                market,
+            )
+        if not row:
+            return ("insufficient_data", 0.0)
+        regime = row["regime"]
+        conf = float(row["confidence"]) if row["confidence"] is not None else 0.0
+        return (regime, conf)
+    except Exception as exc:
+        logger.warning("detect_market_regime_failed", market=market, error=str(exc)[:200])
+        return ("insufficient_data", 0.0)
+
+
+async def detect_regime_per_sector(
+    pool, force_refresh: bool = False,
+) -> dict[str, tuple[str, float]]:
+    # / compute regime for every sector from composite returns
+    # / returns {sector_name: (regime, confidence)}
+    # / cached for 6h to match orchestrator regime loop cadence
+    now = time.time()
+
+    if not force_refresh and _sector_regime_cache:
+        first_ts = next(iter(_sector_regime_cache.values()))[2]
+        if now - first_ts < SECTOR_REGIME_CACHE_TTL_SECONDS:
+            return {k: (v[0], v[1]) for k, v in _sector_regime_cache.items()}
+
+    # / fallbacks from market-wide regime in case a sector can't be classified
+    equity_fallback = await detect_market_regime(pool, "equity")
+    crypto_fallback = await detect_market_regime(pool, "crypto")
+
+    out: dict[str, tuple[str, float]] = {}
+    for sector in SECTORS:
+        market = _sector_market_type(sector)
+        fallback = crypto_fallback if market == "crypto" else equity_fallback
+
+        symbols = SECTORS[sector]
+        if len(symbols) < SECTOR_MIN_SYMBOLS:
+            # / too few symbols — use market regime directly
+            out[sector] = fallback
+            continue
+
+        try:
+            dates, closes = await _fetch_sector_composite_closes(pool, sector)
+        except Exception as exc:
+            logger.warning("sector_composite_fetch_failed", sector=sector, error=str(exc)[:200])
+            out[sector] = fallback
+            continue
+
+        if len(closes) < MIN_HISTORY_DAYS:
+            logger.debug(
+                "sector_insufficient_history", sector=sector,
+                have=len(closes), need=MIN_HISTORY_DAYS,
+            )
+            out[sector] = fallback
+            continue
+
+        try:
+            result = classify_single_date(closes, dates[-1], market)
+        except Exception as exc:
+            logger.warning("sector_classify_failed", sector=sector, error=str(exc)[:200])
+            out[sector] = fallback
+            continue
+
+        if result.regime == "insufficient_data":
+            out[sector] = fallback
+        else:
+            out[sector] = (result.regime, result.confidence)
+
+    # / refresh cache with single timestamp so TTL applies to the whole batch
+    ts = time.time()
+    _sector_regime_cache.clear()
+    for sector, (regime, conf) in out.items():
+        _sector_regime_cache[sector] = (regime, conf, ts)
+
+    logger.info(
+        "per_sector_regime_computed",
+        sectors={s: r for s, (r, _) in out.items()},
+    )
+    return out
+
+
+async def detect_regime_for_symbol(
+    symbol: str, pool,
+) -> tuple[str, float]:
+    # / per-symbol regime: dispatches to the symbol's sector regime
+    # / falls back to market-wide when symbol isn't mapped to a sector
+    sector = get_sector(symbol)
+    market = "crypto" if is_crypto(symbol) else "equity"
+
+    if sector is None:
+        return await detect_market_regime(pool, market)
+
+    per_sector = await detect_regime_per_sector(pool)
+    if sector in per_sector:
+        return per_sector[sector]
+
+    # / sector exists in map but not in per_sector result — fall back to market
+    return await detect_market_regime(pool, market)
+
+
+async def backfill_regimes_per_sector(pool) -> dict[str, int]:
+    # / write today's per-sector regime snapshot to regime_history
+    # / one row per sector, keyed on (date, market=sector_name)
+    per_sector = await detect_regime_per_sector(pool, force_refresh=True)
+
+    today = date.today()
+    written: dict[str, int] = {}
+
+    async with pool.acquire() as conn:
+        for sector, (regime, confidence) in per_sector.items():
+            if regime == "insufficient_data":
+                written[sector] = 0
+                continue
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO regime_history (date, market, regime, confidence)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (date, market) DO UPDATE SET
+                        regime = EXCLUDED.regime,
+                        confidence = EXCLUDED.confidence
+                    """,
+                    today, sector, regime,
+                    Decimal(str(round(confidence, 3))),
+                )
+                written[sector] = 1
+            except Exception as exc:
+                logger.warning(
+                    "sector_regime_write_failed",
+                    sector=sector, error=str(exc)[:200],
+                )
+                written[sector] = 0
+
+    total = sum(written.values())
+    logger.info("backfilled_sector_regimes", total=total, per_sector=written)
+    return written
+
+
+def _clear_sector_regime_cache() -> None:
+    # / test helper — not for production call sites
+    _sector_regime_cache.clear()
+
+
+async def snapshot_regime_daily(
+    pool, market: str, current_regime: str | None,
+    confidence: float | None = None,
+) -> bool:
+    # / phase 5 step 3: ensure a regime_history row exists for today even when
+    # / no shift occurred — otherwise the timeline widget only has scattered
+    # / shift-triggered rows and looks empty / uniform.
+    # / returns True if a snapshot row was inserted, False if one already existed or input was invalid.
+    if not market or not current_regime or current_regime == "insufficient_data":
+        return False
+
+    today = date.today()
+    try:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                """
+                SELECT 1 FROM regime_history
+                WHERE market = $1 AND date = $2
+                LIMIT 1
+                """,
+                market, today,
+            )
+            if existing:
+                return False
+
+            await conn.execute(
+                """
+                INSERT INTO regime_history (date, market, regime, confidence, is_snapshot)
+                VALUES ($1, $2, $3, $4, TRUE)
+                ON CONFLICT (date, market) DO NOTHING
+                """,
+                today, market, current_regime,
+                Decimal(str(round(confidence, 3))) if confidence is not None else None,
+            )
+    except Exception as exc:
+        logger.warning(
+            "regime_snapshot_write_failed",
+            market=market, regime=current_regime, error=str(exc)[:200],
+        )
+        return False
+
+    logger.info("regime_snapshot_written", market=market, regime=current_regime)
+    return True

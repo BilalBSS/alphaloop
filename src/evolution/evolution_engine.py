@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +22,13 @@ from src.agents.tools import (
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
+from src.knowledge.db_helpers import (
+    store_evolution_mutation,
+    update_evolution_mutation_by_mutant,
+    update_evolution_mutation_outcome,
+)
+from src.knowledge.strategy_lessons import StrategyLessons
+from src.knowledge.wiki_context import WikiContext
 from src.strategies.backtest import BacktestResult, run_backtest
 from src.strategies.base_strategy import ConfigDrivenStrategy
 from src.strategies.strategy_loader import save_config
@@ -34,26 +42,49 @@ from src.strategies.strategy_pool import (
 
 logger = structlog.get_logger(__name__)
 
+# / default 80% guided / 20% unguided, env override WIKI_GUIDED_RATIO
+DEFAULT_WIKI_GUIDED_RATIO = 0.80
+
 
 class EvolutionEngine:
     def __init__(self, rng: np.random.Generator | None = None, risk_limits: dict | None = None):
         self._rng = rng or np.random.default_rng()
-        evo = (risk_limits or {}).get("evolution", {})
+        rl = risk_limits or {}
+        evo = rl.get("evolution", {})
         self._tier2_spawn_trades = evo.get("tier2_spawn_trades", 20)
         self._tier2_kill_trades = evo.get("tier2_kill_trades", 20)
         self._tier3_graduate_trades = evo.get("tier3_graduate_trades", 100)
         self._tier3_sharpe_delta = evo.get("tier3_sharpe_delta", 0.2)
+        self._tier2_param_freedom = evo.get("tier2_param_freedom", 0.20)
+        # / promotion gates from risk_limits.json (were hardcoded 14/0.8 with no win_rate)
+        self._paper_trade_min_days = int(rl.get("paper_trade_min_days", 14))
+        self._promotion_min_sharpe = float(rl.get("promotion_min_sharpe", 0.8))
+        self._promotion_min_win_rate = float(rl.get("promotion_min_win_rate", 0.45))
+        try:
+            self._wiki_guided_ratio = float(
+                os.environ.get("WIKI_GUIDED_RATIO", DEFAULT_WIKI_GUIDED_RATIO),
+            )
+        except (TypeError, ValueError):
+            self._wiki_guided_ratio = DEFAULT_WIKI_GUIDED_RATIO
+        # / clamp to [0, 1]
+        self._wiki_guided_ratio = max(0.0, min(1.0, self._wiki_guided_ratio))
+        self._current_regime: str | None = None
 
     async def run(
         self,
         pool: Any,
         strategy_pool: StrategyPool,
         market_data: dict | None = None,
+        regime: str | None = None,
     ) -> dict[str, Any]:
         # / main evolution loop
         # / pool = asyncpg connection pool for db operations
         # / strategy_pool = in-memory strategy pool
         # / market_data = historical data for backtesting mutations
+        # / regime = optional current regime hint for wiki context assembly
+
+        self._current_regime = regime
+        self._generation: int = 0
 
         summary: dict[str, Any] = {
             "generation": 0,
@@ -70,6 +101,7 @@ class EvolutionEngine:
 
         # / 1. READ: fetch strategy scores from db
         db_scores, generation = await self._read_scores(pool)
+        self._generation = generation
         summary["generation"] = generation
         logger.info("evolution_start", generation=generation, pool_size=strategy_pool.size)
 
@@ -259,6 +291,14 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.error("evolution_log_kill_failed", strategy_id=sid, error=str(exc))
 
+            # / flag the evolution_mutations row (if any) as not survived
+            try:
+                await update_evolution_mutation_by_mutant(
+                    pool, mutant_strategy_id=sid, survived=False,
+                )
+            except Exception as exc:
+                logger.info("evo_mutation_killed_update_failed", error=str(exc)[:120])
+
         return killed_configs
 
     async def _kill_underperforming_tier2(
@@ -297,6 +337,13 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.error("evolution_log_tier2_kill_failed", error=str(exc))
 
+                try:
+                    await update_evolution_mutation_by_mutant(
+                        pool, mutant_strategy_id=sid, survived=False,
+                    )
+                except Exception as exc:
+                    logger.info("evo_mutation_tier2_killed_update_failed", error=str(exc)[:120])
+
     async def _mutate_killed(
         self, pool: Any, killed_configs: list[dict], strategy_pool: StrategyPool,
         summary: dict,
@@ -305,7 +352,9 @@ class EvolutionEngine:
         top_performers = strategy_pool.top_performers(n=1)
         top_config = top_performers[0].strategy.config if top_performers else {}
 
-        mutation_tasks = []
+        wc = WikiContext(pool)
+        mutation_tasks: list = []
+        mutation_meta: list[dict] = []
         for killed in killed_configs:
             sid = killed["id"]
             try:
@@ -313,22 +362,95 @@ class EvolutionEngine:
             except Exception:
                 trades = []
 
+            # / 80/20 wiki-guided split (env override via WIKI_GUIDED_RATIO)
+            wiki_guided = bool(self._rng.random() < self._wiki_guided_ratio)
+            wiki_ctx: str | None = None
+            if wiki_guided:
+                try:
+                    wiki_ctx = await wc.get_mutation_context(
+                        sid,
+                        killed_config=killed["config"],
+                        top_config=top_config,
+                        regime=self._current_regime,
+                    )
+                except Exception as exc:
+                    logger.info(
+                        "wiki_context_fetch_failed",
+                        strategy_id=sid, error=str(exc)[:120],
+                    )
+                    wiki_ctx = None
+                    wiki_guided = False
+
+            ctx_tokens = len(wiki_ctx or "") // 4
+
+            row_id: int | None = None
+            try:
+                row_id = await store_evolution_mutation(
+                    pool,
+                    generation=self._generation,
+                    parent_strategy_id=sid,
+                    wiki_guided=wiki_guided,
+                    wiki_context_tokens=ctx_tokens,
+                )
+            except Exception as exc:
+                logger.info(
+                    "store_evolution_mutation_failed",
+                    strategy_id=sid, error=str(exc)[:120],
+                )
+
+            # / capture parent sharpe for later delta computation
+            parent_entry = strategy_pool.get(sid)
+            parent_sharpe: float | None = None
+            if parent_entry and parent_entry.score:
+                parent_sharpe = float(parent_entry.score.sharpe_ratio)
+
             mutation_tasks.append(
-                mutate_strategy(killed["config"], top_config, trades, rng=self._rng)
+                mutate_strategy(
+                    killed["config"], top_config, trades,
+                    rng=self._rng, wiki_context=wiki_ctx,
+                )
             )
+            mutation_meta.append({
+                "parent_id": sid,
+                "row_id": row_id,
+                "wiki_guided": wiki_guided,
+                "parent_sharpe": parent_sharpe,
+            })
 
         mutated_configs: list[dict] = []
         if mutation_tasks:
             results = await asyncio.gather(*mutation_tasks, return_exceptions=True)
-            for i, result in enumerate(results):
+            for meta, result in zip(mutation_meta, results):
                 if isinstance(result, Exception):
-                    logger.error("mutation_failed", error=str(result))
+                    logger.error(
+                        "mutation_failed",
+                        parent_id=meta["parent_id"], error=str(result),
+                    )
                     summary["errors"].append(f"mutation failed: {result}")
-                elif isinstance(result, list):
-                    # / dual-model: mutator returns list of configs (1 or 2)
-                    mutated_configs.extend(result)
-                else:
-                    mutated_configs.append(result)
+                    continue
+                configs = result if isinstance(result, list) else [result]
+                # / first child binds to the pre-inserted row; clone tracking row for extras
+                for idx, cfg in enumerate(configs):
+                    if not isinstance(cfg, dict):
+                        continue
+                    cfg["_evo_mutation_row_id"] = meta["row_id"] if idx == 0 else None
+                    cfg["_evo_parent_id"] = meta["parent_id"]
+                    cfg["_evo_parent_sharpe"] = meta["parent_sharpe"]
+                    cfg["_evo_wiki_guided"] = meta["wiki_guided"]
+                    mutated_configs.append(cfg)
+                    if meta["row_id"] is not None and idx == 0:
+                        try:
+                            await update_evolution_mutation_outcome(
+                                pool,
+                                row_id=meta["row_id"],
+                                mutant_strategy_id=cfg.get("id"),
+                                parent_sharpe=meta["parent_sharpe"],
+                            )
+                        except Exception as exc:
+                            logger.info(
+                                "update_evolution_mutation_outcome_failed",
+                                error=str(exc)[:120],
+                            )
 
         return mutated_configs
 
@@ -386,6 +508,7 @@ class EvolutionEngine:
         else:
             median_score = 0.0
 
+        lessons = StrategyLessons(pool)
         for config, bt_result in backtest_results:
             composite = compute_composite_score(
                 sharpe=bt_result.sharpe_ratio,
@@ -398,6 +521,75 @@ class EvolutionEngine:
                 "parent_id": config.get("parent_id", "unknown"),
                 "composite": composite,
             }
+
+            # / patch the evolution_mutations row with mutant sharpe + delta
+            evo_row_id = config.get("_evo_mutation_row_id")
+            parent_sharpe = config.get("_evo_parent_sharpe")
+            mutant_sharpe = float(bt_result.sharpe_ratio)
+            sharpe_delta: float | None = None
+            if parent_sharpe is not None:
+                sharpe_delta = round(mutant_sharpe - float(parent_sharpe), 4)
+            if evo_row_id is not None:
+                try:
+                    await update_evolution_mutation_outcome(
+                        pool,
+                        row_id=int(evo_row_id),
+                        mutant_sharpe=mutant_sharpe,
+                        sharpe_delta=sharpe_delta,
+                        parent_sharpe=parent_sharpe,
+                    )
+                except Exception as exc:
+                    logger.info(
+                        "evo_mutation_score_update_failed",
+                        error=str(exc)[:120],
+                    )
+            else:
+                # / fallback: match by mutant id (second-child case)
+                try:
+                    await update_evolution_mutation_by_mutant(
+                        pool,
+                        mutant_strategy_id=config.get("id", ""),
+                        mutant_sharpe=mutant_sharpe,
+                        sharpe_delta=sharpe_delta,
+                        parent_sharpe=parent_sharpe,
+                    )
+                except Exception as exc:
+                    logger.info(
+                        "evo_mutation_score_update_by_mutant_failed",
+                        error=str(exc)[:120],
+                    )
+
+            # / record a mutation_result lesson on the parent strategy
+            parent_sid = config.get("_evo_parent_id") or config.get("parent_id")
+            if parent_sid:
+                try:
+                    guided = config.get("_evo_wiki_guided", False)
+                    summary_text = (
+                        f"Mutation {config.get('id', '?')} composite={composite:.4f} "
+                        f"sharpe={mutant_sharpe:.3f}"
+                    )
+                    if sharpe_delta is not None:
+                        summary_text += f" delta={sharpe_delta:+.3f}"
+                    summary_text += f" wiki_guided={guided}"
+                    await lessons.record(
+                        parent_sid,
+                        "mutation_result",
+                        summary_text,
+                        context={
+                            "mutant_id": config.get("id"),
+                            "composite": composite,
+                            "mutant_sharpe": mutant_sharpe,
+                            "sharpe_delta": sharpe_delta,
+                            "wiki_guided": guided,
+                        },
+                        trade_count=0,
+                    )
+                except Exception as exc:
+                    logger.info("lesson_record_failed", error=str(exc)[:120])
+
+            # / strip the private _evo_* bookkeeping from the persisted config
+            for _k in ("_evo_mutation_row_id", "_evo_parent_id", "_evo_parent_sharpe", "_evo_wiki_guided"):
+                config.pop(_k, None)
 
             if composite > median_score:
                 # / add to pool as paper_trading
@@ -459,27 +651,45 @@ class EvolutionEngine:
     async def _promote_paper(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> None:
-        # / 8. PROMOTE: paper_trading strategies with 14+ days and sharpe >= 0.8
+        # / 8. PROMOTE: paper_trading strategies must clear ALL risk_limits gates
         paper_strategies = strategy_pool.list_by_status("paper_trading")
         for entry in paper_strategies:
-            # / compute paper_days dynamically from status_changed_at instead of
-            # / static config value which is never incremented
+            # / compute paper_days dynamically from status_changed_at
             paper_days = (datetime.now(timezone.utc) - entry.status_changed_at).days
-            if entry.score and paper_days >= 14 and entry.score.sharpe_ratio >= 0.8:
+            if not entry.score:
+                continue
+            sharpe = entry.score.sharpe_ratio
+            win_rate = entry.score.win_rate
+            if (
+                paper_days >= self._paper_trade_min_days
+                and sharpe >= self._promotion_min_sharpe
+                and win_rate >= self._promotion_min_win_rate
+            ):
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "live")
                 summary["promoted"].append({"id": sid})
-                notify_strategy_promoted(sid, entry.score.sharpe_ratio, paper_days)
-                logger.info("strategy_promoted", strategy_id=sid, sharpe=entry.score.sharpe_ratio, days=paper_days)
+                notify_strategy_promoted(sid, sharpe, paper_days)
+                logger.info(
+                    "strategy_promoted",
+                    strategy_id=sid, sharpe=sharpe, win_rate=win_rate, days=paper_days,
+                )
 
                 try:
                     await store_evolution_log(
                         pool, generation, "promote", sid,
                         entry.strategy.config.get("parent_id"),
-                        f"paper_trading {paper_days}d, sharpe={entry.score.sharpe_ratio:.2f}",
+                        f"paper_trading {paper_days}d, sharpe={sharpe:.2f}, win_rate={win_rate:.2f}",
                     )
                 except Exception as exc:
                     logger.error("evolution_log_promote_failed", error=str(exc))
+
+                # / flag the mutation row as survived
+                try:
+                    await update_evolution_mutation_by_mutant(
+                        pool, mutant_strategy_id=sid, survived=True,
+                    )
+                except Exception as exc:
+                    logger.info("evo_mutation_survived_update_failed", error=str(exc)[:120])
 
     async def _document(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,

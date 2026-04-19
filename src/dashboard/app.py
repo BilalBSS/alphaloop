@@ -199,46 +199,6 @@ async def get_strategy_positions(symbol: str | None = None):
     return _serialize(rows)
 
 
-@app.get("/api/positions")
-async def get_positions():
-    # / pull live positions from alpaca, attach strategy_id via strategy_positions
-    # / bug e: /api/positions used to omit strategy ownership entirely; now joins with sp
-    try:
-        broker = _get_broker()
-        positions = await broker.get_positions()
-        # / bucket strategy_positions by symbol (a symbol can be split across strategies)
-        sp_rows = await _query(
-            """SELECT symbol, strategy_id, qty, avg_entry_price
-            FROM strategy_positions ORDER BY symbol, strategy_id"""
-        )
-        sp_by_symbol: dict[str, list[dict]] = {}
-        for r in sp_rows:
-            sp_by_symbol.setdefault(r["symbol"], []).append(r)
-        result = []
-        for p in positions:
-            d = _serialize_position(p)
-            owners = sp_by_symbol.get(p.symbol, [])
-            # / prefer a real strategy owner over the 'untracked' projection
-            primary = next((o for o in owners if o.get("strategy_id") and o["strategy_id"] != "untracked"), None)
-            untracked = next((o for o in owners if o.get("strategy_id") == "untracked"), None)
-            d["strategy_id"] = primary["strategy_id"] if primary else None
-            d["owned_by_real"] = bool(primary)
-            d["tracked_qty"] = float(primary["qty"]) if primary and primary.get("qty") is not None else (
-                float(untracked["qty"]) if untracked and untracked.get("qty") is not None else None
-            )
-            result.append(d)
-        return result
-    except Exception as exc:
-        logger.debug("positions_alpaca_fallback", error=str(exc))
-        rows = await _query(
-            """SELECT tl.symbol, tl.side, tl.qty, tl.price as entry_price,
-                    tl.strategy_id, tl.created_at
-            FROM trade_log tl WHERE tl.exit_price IS NULL
-            ORDER BY tl.created_at DESC"""
-        )
-        return _serialize(rows)
-
-
 @app.get("/api/trades")
 async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = None):
     limit = max(1, min(limit, 500))
@@ -256,6 +216,40 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = Non
             limit, offset,
         )
     return _serialize(rows)
+
+
+@app.get("/api/trades/{trade_id}/detail")
+async def get_trade_detail(trade_id: int):
+    # / expanded trade view: trade_log row + originating signal + approved_trade + analysis snapshot
+    trade = await _query_one(
+        "SELECT * FROM trade_log WHERE id = $1", trade_id,
+    )
+    if not trade:
+        return JSONResponse({"error": "trade not found"}, status_code=404)
+    signal = None
+    approved = None
+    if trade.get("trade_id") is not None:
+        approved = await _query_one(
+            "SELECT * FROM approved_trades WHERE id = $1", trade["trade_id"],
+        )
+        if approved and approved.get("signal_id") is not None:
+            signal = await _query_one(
+                "SELECT * FROM trade_signals WHERE id = $1", approved["signal_id"],
+            )
+    analysis = await _query_one(
+        """SELECT date, composite_score, fundamental_score, technical_score,
+                regime, regime_confidence, details
+        FROM analysis_scores
+        WHERE symbol = $1 AND date <= $2::date
+        ORDER BY date DESC LIMIT 1""",
+        trade["symbol"], trade.get("created_at"),
+    )
+    return {
+        "trade": _serialize_one(trade),
+        "signal": _serialize_one(signal) if signal else None,
+        "approved": _serialize_one(approved) if approved else None,
+        "analysis": _serialize_one(analysis) if analysis else None,
+    }
 
 
 @app.get("/api/analysis/{symbol}")
@@ -346,6 +340,61 @@ async def get_analysis(symbol: str):
         "insider_trades": _serialize(insider),
         "evolution": _serialize(evolution),
     }
+
+
+@app.get("/api/crypto-fundamentals/{symbol}")
+async def get_crypto_fundamentals(symbol: str):
+    # / phase 5 step 6: crypto alt-data aggregate (nvt, funding, tvl, active addrs,
+    # / exchange flows, hash rate, dex volume, stablecoin supply ratio).
+    # / cache-first via crypto_fundamentals table, falls back to live fetchers.
+    # / single source failures return null for that field — never 500s the request.
+    from src.data.crypto_fundamentals import get_fundamentals
+    from src.data.symbols import is_crypto
+    sym = symbol.upper()
+    if not is_crypto(sym):
+        return JSONResponse({"error": "not a crypto symbol"}, status_code=400)
+    try:
+        return await get_fundamentals(_pool, sym)
+    except Exception as exc:
+        # / last-resort safety net — shape stays consistent so the widget can render
+        logger.warning("crypto_fundamentals_endpoint_failed", symbol=sym, error=str(exc)[:200])
+        from datetime import datetime, timezone
+        return {
+            "nvt_ratio": None,
+            "funding_rate": None,
+            "active_addresses": None,
+            "exchange_inflow_usd": None,
+            "hash_rate": None,
+            "tvl_usd": None,
+            "dex_volume_24h": None,
+            "stablecoin_supply_ratio": None,
+            "sources": [],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@app.get("/api/phase5-metrics")
+async def get_phase5_metrics():
+    # / phase 5 step 9: activation flywheel health — days since last evolution kill,
+    # / brier-populated strategy count, cerebras-vs-groq split, established wiki docs,
+    # / regime diversity per asset class. also surfaces kronos hf-vs-fallback load state.
+    # / each metric degrades independently — a missing table doesn't 500 the endpoint.
+    from src.agents.phase5_metrics import compute_phase5_metrics
+    from src.quant.kronos_signal import get_load_status as kronos_status
+    try:
+        metrics = await compute_phase5_metrics(_pool)
+        return {
+            "metrics": metrics.as_dict(),
+            "success_criteria": metrics.success_criteria(),
+            "all_pass": metrics.all_pass(),
+            "kronos": kronos_status(),
+        }
+    except Exception as exc:
+        logger.warning("phase5_metrics_endpoint_failed", error=str(exc)[:200])
+        return JSONResponse(
+            {"error": "phase5 metrics unavailable", "detail": str(exc)[:200]},
+            status_code=500,
+        )
 
 
 @app.get("/api/symbols")
@@ -489,6 +538,148 @@ async def get_evolution():
         """SELECT * FROM evolution_log
         ORDER BY generation DESC, created_at DESC LIMIT 50"""
     )
+    return _serialize(rows)
+
+
+@app.get("/api/evolution/mutations")
+async def get_evolution_mutations(limit: int = 100):
+    # / wiki-guided A/B feed: recent evolution_mutations with wiki_guided flag + survival outcome
+    limit = max(1, min(int(limit), 500))
+    if _pool is None:
+        return {"mutations": [], "wiki_guided_count": 0, "random_count": 0, "wiki_win_rate": None, "random_win_rate": None}
+    rows = await _query(
+        """SELECT id, generation, parent_strategy_id, mutant_strategy_id,
+                wiki_guided, wiki_context_tokens, parent_sharpe, mutant_sharpe,
+                sharpe_delta, survived, created_at
+        FROM evolution_mutations
+        ORDER BY created_at DESC LIMIT $1""",
+        limit,
+    )
+    mutations = _serialize(rows)
+    wiki_rows = [m for m in mutations if m.get("wiki_guided")]
+    rand_rows = [m for m in mutations if not m.get("wiki_guided")]
+    wiki_survived = [m for m in wiki_rows if m.get("survived") is True]
+    rand_survived = [m for m in rand_rows if m.get("survived") is True]
+    wiki_win = (len(wiki_survived) / len(wiki_rows)) if wiki_rows else None
+    rand_win = (len(rand_survived) / len(rand_rows)) if rand_rows else None
+    return {
+        "mutations": mutations,
+        "wiki_guided_count": len(wiki_rows),
+        "random_count": len(rand_rows),
+        "wiki_win_rate": round(wiki_win, 3) if wiki_win is not None else None,
+        "random_win_rate": round(rand_win, 3) if rand_win is not None else None,
+    }
+
+
+# / phase 2: knowledge base endpoints
+# / wiki_documents rows for sidebar browsing, raw markdown for content pane,
+# / plus dedicated post_mortems + regime_shifts feeds for their own panels
+
+_VALID_WIKI_CATEGORIES = {
+    "regimes", "post-mortems", "strategies", "evolution", "symbols", "meta", "archive",
+}
+
+
+@app.get("/api/wiki/documents")
+async def get_wiki_documents(
+    category: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    limit: int = 200,
+):
+    # / list wiki_documents with optional filters; sidebar uses this to build the tree
+    limit = max(1, min(int(limit), 500))
+    clauses: list[str] = []
+    params: list = []
+    if category:
+        if category not in _VALID_WIKI_CATEGORIES:
+            return JSONResponse({"error": "invalid category"}, status_code=400)
+        params.append(category)
+        clauses.append(f"category = ${len(params)}")
+    if symbol:
+        params.append(symbol.upper())
+        clauses.append(f"${len(params)} = ANY(symbols)")
+    if strategy_id:
+        params.append(strategy_id)
+        clauses.append(f"${len(params)} = ANY(strategy_ids)")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    sql = (
+        f"SELECT id, path, category, title, symbols, strategy_ids, "
+        f"word_count, confidence, created_at, updated_at "
+        f"FROM wiki_documents {where} "
+        f"ORDER BY updated_at DESC LIMIT ${len(params)}"
+    )
+    rows = await _query(sql, *params)
+    return _serialize(rows)
+
+
+@app.get("/api/wiki/document")
+async def get_wiki_document(path: str):
+    # / return raw markdown for a given wiki path; security: must be in wiki_documents table
+    if not path or ".." in path or path.startswith("/"):
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    row = await _query_one(
+        "SELECT path, category, title FROM wiki_documents WHERE path = $1", path,
+    )
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        from src.knowledge.wiki_writer import WikiWriter
+        writer = WikiWriter(pool=_pool)
+        content = await writer.read_document(path)
+    except Exception as exc:
+        logger.warning("wiki_read_failed", path=path, error=str(exc)[:120])
+        return JSONResponse({"error": "read failed"}, status_code=500)
+    if content is None:
+        return JSONResponse({"error": "file missing"}, status_code=404)
+    return {
+        "path": row["path"],
+        "category": row["category"],
+        "title": row["title"],
+        "content": content,
+    }
+
+
+@app.get("/api/post-mortems")
+async def get_post_mortems(strategy_id: str | None = None, limit: int = 50):
+    # / recent post-mortems ordered newest first; optional strategy filter
+    limit = max(1, min(int(limit), 200))
+    if strategy_id:
+        sql = (
+            "SELECT id, strategy_id, symbol, trigger_type, pnl, expected_pnl, "
+            "deviation_sigma, details, wiki_path, created_at FROM post_mortems "
+            "WHERE strategy_id = $1 ORDER BY created_at DESC LIMIT $2"
+        )
+        rows = await _query(sql, strategy_id, limit)
+    else:
+        sql = (
+            "SELECT id, strategy_id, symbol, trigger_type, pnl, expected_pnl, "
+            "deviation_sigma, details, wiki_path, created_at FROM post_mortems "
+            "ORDER BY created_at DESC LIMIT $1"
+        )
+        rows = await _query(sql, limit)
+    return _serialize(rows)
+
+
+@app.get("/api/regime-shifts")
+async def get_regime_shifts(market: str | None = None, limit: int = 50):
+    # / recent regime transitions; optional market (equity|crypto) filter
+    limit = max(1, min(int(limit), 200))
+    if market:
+        if market not in ("equity", "crypto"):
+            return JSONResponse({"error": "invalid market"}, status_code=400)
+        sql = (
+            "SELECT id, old_regime, new_regime, market, confidence, wiki_path, detected_at "
+            "FROM regime_shifts WHERE market = $1 ORDER BY detected_at DESC LIMIT $2"
+        )
+        rows = await _query(sql, market, limit)
+    else:
+        sql = (
+            "SELECT id, old_regime, new_regime, market, confidence, wiki_path, detected_at "
+            "FROM regime_shifts ORDER BY detected_at DESC LIMIT $1"
+        )
+        rows = await _query(sql, limit)
     return _serialize(rows)
 
 
@@ -715,17 +906,6 @@ async def get_insider(symbol: str):
     }
 
 
-@app.get("/api/signals")
-async def get_signals(limit: int = 50):
-    limit = max(1, min(limit, 500))
-    rows = await _query(
-        """SELECT * FROM trade_signals
-        ORDER BY created_at DESC LIMIT $1""",
-        limit,
-    )
-    return _serialize(rows)
-
-
 @app.get("/api/synthesis")
 async def get_synthesis():
     # / latest daily synthesis from 5PM reasoner
@@ -733,17 +913,6 @@ async def get_synthesis():
         "SELECT * FROM daily_synthesis ORDER BY date DESC LIMIT 1"
     )
     return _serialize_one(row)
-
-
-@app.get("/api/synthesis/history")
-async def get_synthesis_history(days: int = 7):
-    days = max(1, min(days, 30))
-    rows = await _query(
-        """SELECT * FROM daily_synthesis
-        ORDER BY date DESC LIMIT $1""",
-        days,
-    )
-    return _serialize(rows)
 
 
 @app.get("/api/indicators/{symbol}")
@@ -793,18 +962,6 @@ def _intraday_cache_put(key: tuple, payload: object) -> None:
 def _intraday_cache_clear() -> None:
     # / test helper
     _INTRADAY_CACHE.clear()
-
-
-@app.get("/api/chart/candles/{symbol}")
-async def get_chart_candles(symbol: str, days: int = 10, timeframe: str = "1Hour"):
-    # / alias for /api/intraday without indicator overlays — bug 3a
-    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators="")
-
-
-@app.get("/api/chart/indicators/{symbol}")
-async def get_chart_indicators(symbol: str, days: int = 10, timeframe: str = "1Hour", indicators: str = ""):
-    # / alias for /api/intraday focused on indicator dispatch — bug 3a
-    return await get_intraday(symbol, days=days, timeframe=timeframe, indicators=indicators)
 
 
 @app.get("/api/intraday/{symbol}")
@@ -1203,6 +1360,335 @@ async def get_strategy_evaluations(limit: int = 20):
         limit,
     )
     return _serialize(rows)
+
+
+# / phase 4: alt-data endpoints — one per source backed by the source_registry
+
+@app.get("/api/macro-context")
+async def get_macro_context():
+    # / latest FRED indicators (DFF, CPI, UNRATE, 10Y, 2Y, yield spread)
+    # / returns normalized values in [-1, 1] + absolute values + timestamp
+    if _pool is None:
+        return {"indicators": [], "yield_curve_spread": None}
+    rows = await _query(
+        """SELECT DISTINCT ON (series_id) series_id, date, value, normalized
+        FROM macro_data
+        ORDER BY series_id, date DESC"""
+    )
+    by_series = {r["series_id"]: r for r in rows}
+    # / derive 10y-2y spread from latest values if both are present
+    spread = None
+    dgs10 = by_series.get("DGS10")
+    dgs2 = by_series.get("DGS2")
+    if dgs10 and dgs2:
+        try:
+            raw = float(dgs10["value"]) - float(dgs2["value"])
+            spread = {
+                "value": round(raw, 3),
+                "normalized": round(max(-1.0, min(1.0, raw / 2.0)), 3),
+                "inverted": raw < 0,
+            }
+        except (TypeError, ValueError):
+            spread = None
+    return {
+        "indicators": _serialize(rows),
+        "yield_curve_spread": spread,
+    }
+
+
+@app.get("/api/congressional/{symbol}")
+async def get_congressional(symbol: str):
+    # / last 20 congressional trades for symbol + computed net_buy_ratio
+    sym = symbol.upper()
+    if _pool is None:
+        return {"trades": [], "net_buy_ratio": 0.0}
+    rows = await _query(
+        """SELECT filing_date, name, transaction_type, amount_range
+        FROM congressional_trades
+        WHERE symbol = $1
+        ORDER BY filing_date DESC LIMIT 20""",
+        sym,
+    )
+    from src.data.congressional_trades import compute_net_buy_ratio
+    ratio = compute_net_buy_ratio(rows) if rows else 0.0
+    return {
+        "trades": _serialize(rows),
+        "net_buy_ratio": round(float(ratio), 3),
+    }
+
+
+@app.get("/api/analyst-ratings/{symbol}")
+async def get_analyst_ratings(symbol: str):
+    # / consensus_score history from analyst_ratings table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": []}
+    rows = await _query(
+        """SELECT date, strong_buy, buy, hold, sell, strong_sell,
+                target_high, target_low, target_mean
+        FROM analyst_ratings
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    # / compute consensus per row (same formula as analyst_ratings.compute_consensus_score)
+    from src.data.analyst_ratings import compute_consensus_score
+    history = []
+    for r in rows:
+        rec = {
+            "strongBuy": r.get("strong_buy") or 0,
+            "buy": r.get("buy") or 0,
+            "hold": r.get("hold") or 0,
+            "sell": r.get("sell") or 0,
+            "strongSell": r.get("strong_sell") or 0,
+        }
+        consensus = compute_consensus_score(rec)
+        serialized = _serialize_one(r)
+        if serialized is not None:
+            serialized["consensus_score"] = round(consensus, 3)
+            history.append(serialized)
+    return {"history": history}
+
+
+@app.get("/api/options/{symbol}")
+async def get_options(symbol: str):
+    # / iv_rank + put_call_ratio + max_pain history from options_data
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT date, iv_current, iv_rank, put_call_ratio, max_pain
+        FROM options_data
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/short/{symbol}")
+async def get_short(symbol: str):
+    # / short_pct_float history from short_interest table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT date, short_volume, total_volume, short_ratio
+        FROM short_interest
+        WHERE symbol = $1
+        ORDER BY date DESC LIMIT 60""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/dark-pool/{symbol}")
+async def get_dark_pool(symbol: str):
+    # / weekly dark_pool rows for symbol
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "latest": None}
+    rows = await _query(
+        """SELECT week_start, ats_volume, total_volume, dark_pool_ratio
+        FROM dark_pool
+        WHERE symbol = $1
+        ORDER BY week_start DESC LIMIT 26""",
+        sym,
+    )
+    serialized = _serialize(rows)
+    latest = serialized[0] if serialized else None
+    return {"history": serialized, "latest": latest}
+
+
+@app.get("/api/earnings-revisions/{symbol}")
+async def get_earnings_revisions(symbol: str):
+    # / recent eps estimate revisions from earnings_revisions table
+    sym = symbol.upper()
+    if _pool is None:
+        return {"history": [], "momentum": 0.0}
+    rows = await _query(
+        """SELECT period, estimate_date, eps_estimate, revenue_estimate
+        FROM earnings_revisions
+        WHERE symbol = $1
+        ORDER BY estimate_date DESC LIMIT 40""",
+        sym,
+    )
+    # / compute revision momentum using the same helper the analyst uses
+    from src.data.earnings_revisions import compute_revision_momentum
+    estimates = [
+        {"eps_avg": float(r["eps_estimate"]) if r.get("eps_estimate") is not None else None}
+        for r in rows
+    ]
+    momentum = compute_revision_momentum(estimates) if estimates else 0.0
+    return {
+        "history": _serialize(rows),
+        "momentum": round(float(momentum), 3),
+    }
+
+
+@app.get("/api/portfolio/correlation")
+async def get_portfolio_correlation():
+    # / pairwise correlation matrix of held positions via correlation_monitor
+    # / returns matrix + symbol labels + avg correlation + concentration flag
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+    except Exception as exc:
+        logger.debug("portfolio_correlation_broker_failed", error=str(exc))
+        return {"symbols": [], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+    if _pool is None or len(positions) < 2:
+        return {"symbols": [s.symbol for s in positions], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+    try:
+        from src.quant.correlation_monitor import check_portfolio_correlation
+        # / rebuild the matrix here because check_portfolio_correlation only returns summary stats
+        import numpy as np
+        symbols = [p.symbol for p in positions]
+        returns_map: dict[str, list[float]] = {}
+        async with _pool.acquire() as conn:
+            for sym in symbols:
+                rows = await conn.fetch(
+                    """SELECT close FROM market_data
+                    WHERE symbol = $1 ORDER BY date DESC LIMIT 21""",
+                    sym,
+                )
+                if len(rows) >= 10:
+                    prices = [float(r["close"]) for r in reversed(rows)]
+                    rets = np.diff(prices) / np.array(prices[:-1])
+                    returns_map[sym] = rets.tolist()
+        if len(returns_map) < 2:
+            return {"symbols": symbols, "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+        min_len = min(len(r) for r in returns_map.values())
+        aligned_syms = list(returns_map.keys())
+        aligned = np.array([returns_map[s][-min_len:] for s in aligned_syms])
+        matrix = np.corrcoef(aligned).tolist()
+        alert = await check_portfolio_correlation(_pool, positions)
+        return {
+            "symbols": aligned_syms,
+            "matrix": [[round(float(v), 3) for v in row] for row in matrix],
+            "avg_correlation": round(alert.avg_correlation, 3) if alert else 0.0,
+            "max_pair": list(alert.max_pair) if alert else [],
+            "max_correlation": round(alert.max_correlation, 3) if alert else 0.0,
+            "is_concentrated": alert.is_concentrated if alert else False,
+        }
+    except Exception as exc:
+        logger.debug("portfolio_correlation_compute_failed", error=str(exc))
+        return {"symbols": [], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
+
+
+@app.get("/api/portfolio/sectors")
+async def get_portfolio_sectors():
+    # / sector concentration derived from strategy_positions + fundamentals sector mapping
+    # / returns per-sector dollar exposure + percent of portfolio
+    from src.data.symbols import get_sector
+    if _pool is None:
+        return {"sectors": [], "total_value": 0.0}
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+        total_value = sum(float(p.market_value or 0) for p in positions)
+        by_sector: dict[str, float] = {}
+        for p in positions:
+            sec = get_sector(p.symbol) or "unknown"
+            by_sector[sec] = by_sector.get(sec, 0.0) + float(p.market_value or 0)
+        sectors = [
+            {
+                "sector": sec,
+                "value": round(val, 2),
+                "pct_of_portfolio": round(val / total_value, 4) if total_value > 0 else 0.0,
+            }
+            for sec, val in sorted(by_sector.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+        return {"sectors": sectors, "total_value": round(total_value, 2)}
+    except Exception as exc:
+        logger.debug("portfolio_sectors_failed", error=str(exc))
+        return {"sectors": [], "total_value": 0.0}
+
+
+@app.get("/api/portfolio/tail-dependence")
+async def get_portfolio_tail_dependence():
+    # / aggregated t-copula lambda_lower across current positions — computed fresh
+    # / uses the same math as risk_agent._check_tail_dependence but portfolio-wide
+    if _pool is None:
+        return {"lambda_lower": None, "positions_count": 0, "status": "pool_unavailable"}
+    try:
+        broker = _get_broker()
+        positions = await broker.get_positions()
+        if len(positions) < 2:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_positions"}
+        import numpy as np
+        from scipy.stats import rankdata
+        from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
+
+        position_symbols = [p.symbol for p in positions]
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT symbol, date, close FROM market_data
+                WHERE symbol = ANY($1)
+                ORDER BY date DESC LIMIT $2""",
+                position_symbols, 252 * len(position_symbols),
+            )
+        if not rows:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "no_data"}
+        import pandas as pd
+        df = pd.DataFrame([dict(r) for r in rows])
+        pivot = df.pivot_table(index="date", columns="symbol", values="close")
+        if pivot.shape[0] < 10 or pivot.shape[1] < 2:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_history"}
+        returns = pivot.pct_change().dropna()
+        if returns.shape[0] < 10:
+            return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_returns"}
+        u_data = np.column_stack([
+            rankdata(returns.iloc[:, j]) / (returns.shape[0] + 1)
+            for j in range(returns.shape[1])
+        ])
+        nu, corr = student_t_copula_fit(u_data)
+        td = tail_dependence_coefficient("student_t", (nu, corr))
+        lam = td.get("lambda_lower", 0.0)
+        return {
+            "lambda_lower": round(float(lam), 4),
+            "positions_count": len(positions),
+            "status": "ok",
+            "nu": round(float(nu), 2),
+            "threshold": 0.30,
+            "is_concentrated": lam > 0.30,
+        }
+    except Exception as exc:
+        logger.debug("tail_dependence_compute_failed", error=str(exc))
+        return {"lambda_lower": None, "positions_count": 0, "status": "compute_failed"}
+
+
+@app.get("/api/regime-timeline")
+async def get_regime_timeline(market: str = "equity", days: int = 180):
+    # / daily regime_history rows for a market, plus regime_shifts events inside the window
+    if market not in ("equity", "crypto"):
+        return JSONResponse({"error": "invalid market"}, status_code=400)
+    days = max(1, min(days, 3650))
+    if _pool is None:
+        return {"market": market, "days": days, "history": [], "shifts": []}
+    history = await _query(
+        """SELECT date, regime, confidence, volatility_20d, trend_sma50_above_200, drawdown_from_high
+        FROM regime_history
+        WHERE market = $1 AND date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
+        ORDER BY date ASC""",
+        market, str(days),
+    )
+    shifts = await _query(
+        """SELECT id, old_regime, new_regime, confidence, wiki_path, detected_at
+        FROM regime_shifts
+        WHERE market = $1 AND detected_at >= NOW() - ($2 || ' days')::INTERVAL
+        ORDER BY detected_at ASC""",
+        market, str(days),
+    )
+    return {
+        "market": market,
+        "days": days,
+        "history": _serialize(history),
+        "shifts": _serialize(shifts),
+    }
 
 
 @app.get("/api/costs")

@@ -22,12 +22,13 @@ from .ratio_analysis import RatioScore
 logger = structlog.get_logger(__name__)
 
 # / groq free tier: separate rate limit pools per model
+# / chain: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b -> structured fallback
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
-FAST_MODEL = "llama-3.1-8b-instant"
-FALLBACK_MODEL = "llama-3.1-8b-instant"
+FALLBACK_MODEL = "openai/gpt-oss-120b"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-CEREBRAS_MODEL = "gpt-oss-120b"
+CEREBRAS_FAST_MODEL = "llama-3.3-70b"  # / same-model swap when groq 70b rate-limits
+CEREBRAS_MODEL = "gpt-oss-120b"         # / final escalation after groq 120b
 MAX_TOKENS = 1200
 
 
@@ -544,7 +545,9 @@ def _dispatch_prompt(
 ) -> tuple[str, str]:
     # / build prompt + system message, dispatching crypto vs equity
     if crypto_data is not None:
-        prompt = _build_crypto_prompt(**crypto_data, positions=positions)
+        prompt = _build_crypto_prompt(
+            **crypto_data, positions=positions,
+        )
         sys_msg = _CRYPTO_SYSTEM_MSG
     else:
         prompt = _build_prompt(symbol, ratio, dcf, earnings, insider, regime,
@@ -672,7 +675,10 @@ async def _call_llm(
     return None
 
 
-async def _call_cerebras(prompt: str, symbol: str, system_message: str) -> AnalysisSummary | None:
+async def _call_cerebras(
+    prompt: str, symbol: str, system_message: str,
+    model: str = CEREBRAS_MODEL,
+) -> AnalysisSummary | None:
     # / cerebras fallback via llm_client — free tier, openai-compatible
     try:
         from src.data.llm_client import llm_call
@@ -681,17 +687,17 @@ async def _call_cerebras(prompt: str, symbol: str, system_message: str) -> Analy
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
             ],
-            model=CEREBRAS_MODEL, max_tokens=MAX_TOKENS, temperature=0.3,
+            model=model, max_tokens=MAX_TOKENS, temperature=0.3,
         )
         text = data["choices"][0]["message"]["content"].strip()
         signal, confidence = _extract_signal(text)
-        logger.info("cerebras_summary_generated", symbol=symbol)
+        logger.info("cerebras_summary_generated", symbol=symbol, model=model)
         return AnalysisSummary(
             symbol=symbol, date=date.today(), summary=text,
-            model_used=CEREBRAS_MODEL, signal=signal, confidence=confidence,
+            model_used=model, signal=signal, confidence=confidence,
         )
     except Exception as exc:
-        logger.info("cerebras_failed", symbol=symbol, error=str(exc)[:100])
+        logger.info("cerebras_failed", symbol=symbol, model=model, error=str(exc)[:100])
         return None
 
 
@@ -718,19 +724,24 @@ async def generate_summary(
         logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
         return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
-    # / try models in order: 120b → default → fallback 20b
-    # / _call_llm retries 429 internally; if still limited, try next model
-    models = ["openai/gpt-oss-120b", DEFAULT_MODEL, FALLBACK_MODEL]
-    for model in models:
+    # / chain: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b -> structured fallback
+    # / _call_llm retries 429 internally (4s/8s backoff); _RateLimited falls through to next
+    # / cerebras calls are single-shot (no retries) — if they fail, move on
+    # / primary provider is weighted by LLM_PROVIDER_SPLIT; cerebras-primary reverses the pairs
+    from src.data.llm_client import build_fallback_chain
+    attempts: list[tuple[str, str]] = build_fallback_chain(
+        groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
+        groq_slow=FALLBACK_MODEL, cerebras_slow=CEREBRAS_MODEL,
+    )
+    for provider, model in attempts:
         try:
-            result = await _call_llm(api_key, model, prompt, symbol, system_message=sys_msg)
+            if provider == "groq":
+                result = await _call_llm(api_key, model, prompt, symbol, system_message=sys_msg)
+            else:
+                result = await _call_cerebras(prompt, symbol, sys_msg, model=model)
             if result:
                 return result
         except _RateLimited:
-            # / instant swap to cerebras on rate limit
-            cerebras_result = await _call_cerebras(prompt, symbol, sys_msg)
-            if cerebras_result:
-                return cerebras_result
             continue
 
     logger.warning("all_llm_models_failed_using_fallback", symbol=symbol)

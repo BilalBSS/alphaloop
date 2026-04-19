@@ -1,10 +1,12 @@
 import { useState } from 'react'
 
+// / consistent card surface — title header (12px uppercase tracked, muted) + body.
+// / 16px internal padding, matches other cards via `.surface-card` tokens.
 export default function Panel({ title, children, className = '', error = null, collapsible = false, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <div className={`bg-bg-surface border border-border p-4 ${className}`}>
+    <div className={`bg-bg-surface border border-border rounded-md p-4 ${className}`}>
       {title && (
         <h3
           className={`text-[11px] uppercase tracking-wider text-text-secondary font-semibold flex items-center justify-between ${collapsible ? 'cursor-pointer select-none' : ''} ${open || !collapsible ? 'mb-3' : ''}`}
@@ -20,7 +22,7 @@ export default function Panel({ title, children, className = '', error = null, c
       )}
       {(!collapsible || open) && (
         error ? (
-          <div className="text-loss text-sm border-l-2 border-loss pl-3 py-2">
+          <div className="pnl-negative text-sm border-l-2 border-loss pl-3 py-2">
             {error}
           </div>
         ) : children

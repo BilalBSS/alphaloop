@@ -1,4 +1,4 @@
-# / claude haiku strategy mutation
+# / deepseek v3 strategy mutation
 # / takes a killed strategy config and top performer, proposes a new config
 # / falls back to random parameter tweak if llm fails
 
@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 import structlog
+
+from src.data.llm_client import llm_call
 
 logger = structlog.get_logger(__name__)
 
@@ -32,8 +34,9 @@ async def mutate_strategy(
     top_config: dict,
     recent_trades: list[dict],
     rng: np.random.Generator | None = None,
+    wiki_context: str | None = None,
 ) -> list[dict]:
-    # / propose mutated strategy configs using haiku + deepseek reasoner critique
+    # / propose mutated strategy configs using deepseek v3 + deepseek reasoner critique
     # / returns list[dict]: usually 1, sometimes 2 on disagreement
     # / falls back to random tweak if llm unavailable or fails
     rng = rng or np.random.default_rng()
@@ -43,32 +46,38 @@ async def mutate_strategy(
         logger.info("no_llm_key_using_random_tweak")
         return [_random_tweak(killed_config, rng)]
 
-    # / 1. deepseek v3 proposes (replaced haiku)
-    haiku_config = await _haiku_propose(api_key, killed_config, top_config, recent_trades, rng)
+    # / 1. deepseek v3 proposes
+    mutator_config = await _llm_propose(
+        api_key, killed_config, top_config, recent_trades, rng,
+        wiki_context=wiki_context,
+    )
 
     # / 2. deepseek reasoner critiques
-    critique = await _reasoner_critique(haiku_config, killed_config, top_config, recent_trades)
+    critique = await _reasoner_critique(mutator_config, killed_config, top_config, recent_trades)
 
     if critique["decision"] == "approve":
-        logger.info("reasoner_approved", strategy_id=haiku_config.get("id"))
-        return [haiku_config]
+        logger.info("reasoner_approved", strategy_id=mutator_config.get("id"))
+        return [mutator_config]
     elif critique["decision"] == "reject" and critique.get("alternative"):
-        logger.info("reasoner_disagreed", strategy_id=haiku_config.get("id"))
-        return [haiku_config, critique["alternative"]]
+        logger.info("reasoner_disagreed", strategy_id=mutator_config.get("id"))
+        return [mutator_config, critique["alternative"]]
     else:
         # / reject without alternative, or error/timeout
-        return [haiku_config]
+        return [mutator_config]
 
 
-async def _haiku_propose(
+async def _llm_propose(
     api_key: str,
     killed_config: dict,
     top_config: dict,
     recent_trades: list[dict],
     rng: np.random.Generator,
+    wiki_context: str | None = None,
 ) -> dict:
-    # / haiku mutation with 3-retry loop (existing logic extracted)
-    prompt = _build_mutation_prompt(killed_config, top_config, recent_trades)
+    # / deepseek v3 mutation with 3-retry loop
+    prompt = _build_mutation_prompt(
+        killed_config, top_config, recent_trades, wiki_context=wiki_context,
+    )
 
     for attempt in range(3):
         try:
@@ -93,25 +102,25 @@ async def _haiku_propose(
                 if field in killed_config:
                     config[field] = killed_config[field]
 
-            logger.info("haiku_mutation_success", new_id=config["id"], parent=config["parent_id"])
+            logger.info("mutation_success", new_id=config["id"], parent=config["parent_id"])
             return config
 
         except Exception as exc:
-            logger.warning("haiku_attempt_failed", attempt=attempt + 1, error=str(exc))
+            logger.warning("mutation_attempt_failed", attempt=attempt + 1, error=str(exc))
             if attempt < 2:
                 prompt += f"\n\nPrevious attempt failed: {exc}. Fix the JSON and try again."
 
-    logger.warning("haiku_all_attempts_failed_using_random_tweak")
+    logger.warning("mutation_all_attempts_failed_using_random_tweak")
     return _random_tweak(killed_config, rng)
 
 
 async def _reasoner_critique(
-    haiku_config: dict,
+    mutator_config: dict,
     killed_config: dict,
     top_config: dict,
     recent_trades: list[dict],
 ) -> dict:
-    # / deepseek reasoner reviews haiku's proposal
+    # / deepseek reasoner reviews the proposed mutation
     # / returns {decision: "approve"|"reject", reason: str, alternative: dict|None}
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
     if not deepseek_key:
@@ -119,8 +128,6 @@ async def _reasoner_critique(
         return {"decision": "approve", "reason": "no api key"}
 
     try:
-        from src.data.llm_client import llm_call
-
         trades_summary = ""
         for t in recent_trades[:5]:
             trades_summary += f"  - {t.get('symbol', '?')} {t.get('side', '?')}: pnl={t.get('pnl', '?')}\n"
@@ -131,7 +138,7 @@ KILLED STRATEGY (was performing poorly):
 {json.dumps(killed_config, indent=2)}
 
 PROPOSED MUTATION:
-{json.dumps(haiku_config, indent=2)}
+{json.dumps(mutator_config, indent=2)}
 
 TOP PERFORMER (reference):
 {json.dumps(top_config, indent=2)}
@@ -184,7 +191,7 @@ Output ONLY valid JSON:
 
 
 async def _call_deepseek_v3(prompt: str) -> str:
-    # / call deepseek v3 via shared llm client (replaced haiku)
+    # / call deepseek v3 via shared llm client
     data = await llm_call(
         "deepseek",
         messages=[{"role": "user", "content": prompt}],
@@ -196,12 +203,19 @@ async def _call_deepseek_v3(prompt: str) -> str:
 
 
 def _build_mutation_prompt(
-    killed_config: dict, top_config: dict, recent_trades: list[dict],
+    killed_config: dict,
+    top_config: dict,
+    recent_trades: list[dict],
+    wiki_context: str | None = None,
 ) -> str:
     # / construct the llm mutation prompt
     trades_summary = ""
     for t in recent_trades[:5]:
         trades_summary += f"  - {t.get('symbol', '?')} {t.get('side', '?')}: pnl={t.get('pnl', '?')}\n"
+
+    wiki_block = ""
+    if wiki_context:
+        wiki_block = f"\n## RELEVANT WIKI CONTEXT\n{wiki_context}\n"
 
     return f"""You are a quantitative strategy optimizer. A trading strategy was killed for poor performance. Your job is to propose a new, improved strategy config.
 
@@ -217,7 +231,7 @@ TOP PERFORMING STRATEGY (reference for what works):
 
 RECENT TRADES FROM KILLED STRATEGY:
 {trades_summary or "  No recent trades."}
-
+{wiki_block}
 RULES:
 - Output ONLY valid JSON. No explanation, no markdown fences, just the JSON object.
 - The config must have: id, name, version, asset_class, universe, entry_conditions (with operator AND/OR and signals array), exit_conditions (with stop_loss), position_sizing.

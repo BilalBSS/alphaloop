@@ -55,6 +55,7 @@ class RiskAgent:
         self._consecutive_loss_seconds = rl.get("consecutive_loss_pause_seconds", 3600)
         self._max_sector_pct = rl.get("max_sector_concentration_pct", 0.30)
         self._max_liquidity_pct = rl.get("max_liquidity_pct", 0.01)
+        self._max_single_trade_loss_pct = float(rl.get("max_single_trade_loss_pct", 0.02))
         self._regime_multipliers = rl.get("regime_sizing_multipliers", {
             "bull": 1.0, "sideways": 0.75, "bear": 0.5, "high_vol": 0.5, "insufficient_data": 0.5,
         })
@@ -80,8 +81,12 @@ class RiskAgent:
             logger.error("risk_process_signal_error", signal_id=signal_id, error=str(exc))
             try:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "error")
-            except Exception:
-                pass
+            except Exception as inner:
+                # / db write failure: signal stuck pending, will retry next loop
+                logger.warning(
+                    "risk_signal_status_update_failed",
+                    signal_id=signal_id, error=str(inner)[:120],
+                )
             return {"status": "error", "reason": str(exc)}
 
     async def _process_signal_inner(
@@ -257,8 +262,9 @@ class RiskAgent:
                 regime_label = regime.get("regime", "insufficient_data") if regime else "insufficient_data"
                 regime_mult = self._regime_multipliers.get(regime_label, 0.5)
                 qty = int(qty * regime_mult)
-            except Exception:
-                pass
+            except Exception as exc:
+                # / regime lookup failed — proceed at full size (conservative default)
+                logger.debug("regime_sizing_skipped", symbol=symbol, error=str(exc)[:100])
 
         # / beta-adjusted sizing (buys only)
         if side == "buy":
@@ -267,12 +273,32 @@ class RiskAgent:
                 if beta is not None and beta > 1.5:
                     qty = max(1, int(qty * (1.0 / beta)))
                     logger.info("beta_adjusted", symbol=symbol, beta=beta, qty=qty)
-            except Exception:
-                pass
+            except Exception as exc:
+                # / beta lookup failed — proceed without adjustment
+                logger.debug("beta_sizing_skipped", symbol=symbol, error=str(exc)[:100])
 
         if qty <= 0:
             await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
             return {"status": "rejected", "reason": "qty_zero"}
+
+        # / single-trade loss cap (buys only): size down so worst-case stop loss
+        # / does not exceed max_single_trade_loss_pct of equity
+        if side == "buy" and strategy_pool is not None and balance.equity > 0:
+            stop_distance = self._infer_stop_distance(strategy_pool, signal.get("strategy_id"))
+            if stop_distance and stop_distance > 0:
+                max_loss_value = balance.equity * self._max_single_trade_loss_pct
+                max_qty_by_loss = int(max_loss_value / (price * stop_distance))
+                if max_qty_by_loss < qty:
+                    logger.info(
+                        "single_trade_loss_cap",
+                        symbol=symbol,
+                        stop_distance=round(stop_distance, 4),
+                        original_qty=qty, capped_qty=max_qty_by_loss,
+                    )
+                    qty = max(0, max_qty_by_loss)
+                    if qty <= 0:
+                        await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                        return {"status": "rejected", "reason": "single_trade_loss_cap"}
 
         # / check total portfolio exposure (buys only — sells reduce exposure)
         if side == "buy":
@@ -326,6 +352,30 @@ class RiskAgent:
             "qty": qty,
             "side": side,
         }
+
+    def _infer_stop_distance(self, strategy_pool, strategy_id) -> float | None:
+        # / returns stop distance as a fraction of entry price (e.g. 0.05 for 5%)
+        # / uses strategy's exit_conditions.stop_loss:
+        # /   fixed_pct → pct directly
+        # /   atr-based → 2 * atr/price ≈ 2% (conservative default without live ATR)
+        if not strategy_id:
+            return None
+        try:
+            entry = strategy_pool.get(strategy_id)
+            if not entry:
+                return None
+            cfg = entry.strategy.config
+            sl = cfg.get("exit_conditions", {}).get("stop_loss", {}) or {}
+            t = (sl.get("type") or "fixed_pct").lower()
+            if t in ("fixed_pct", "percent", "pct"):
+                pct = sl.get("pct")
+                return float(pct) if pct else None
+            if "atr" in t or t in ("trailing", "chandelier"):
+                # / use a conservative 2% as the atr-equivalent worst case
+                return 0.02
+        except Exception as exc:
+            logger.debug("stop_distance_infer_failed", strategy_id=strategy_id, error=str(exc)[:100])
+        return None
 
     async def _check_tail_dependence(
         self, pool, symbol: str, positions: list,

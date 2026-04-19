@@ -47,6 +47,11 @@ PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
 ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
 CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
 REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
+KNOWLEDGE_HYDRATION_INTERVAL = 86400  # / 24 hours — daily wiki enrichment pass
+KNOWLEDGE_HYDRATION_STARTUP_DELAY = 900  # / 15 min offset so we don't stack LLM calls at startup
+KNOWLEDGE_HYDRATION_DEFAULT_CAP = 5  # / hard cap on symbols enriched per day (free-tier LLM budget)
+WIKI_STUB_WORD_THRESHOLD = 150    # / docs below this word count count as seed stubs
+WIKI_MIN_ANALYSIS_ROWS = 5        # / need N recent analyses before we have enough signal to enrich
 
 
 class AgentOrchestrator:
@@ -56,14 +61,32 @@ class AgentOrchestrator:
         self._pool = None
         self._broker_factory: BrokerFactory | None = None
         self._strategy_pool = StrategyPool()
+        # / load risk_limits once and pass to agents that enforce them
+        rl = self._load_risk_limits()
         self._analyst = AnalystAgent()
         self._strategy = StrategyAgent()
-        self._risk = RiskAgent()
+        self._risk = RiskAgent(risk_limits=rl)
         self._executor = ExecutorAgent()
-        self._evolution = EvolutionEngine()
+        self._evolution = EvolutionEngine(risk_limits=rl)
+        self._risk_limits = rl
         self._tasks: list[asyncio.Task] = []
         self._last_drift: dict[str, float] = {}
         self._alert_prev_prices: dict[str, float] = {}
+        # / phase 2: track last known regime per market to fire on_regime_shift on transitions
+        self._last_equity_regime: str | None = None
+        self._last_crypto_regime: str | None = None
+
+    @staticmethod
+    def _load_risk_limits() -> dict:
+        # / load configs/risk_limits.json once at startup; shared by all agents
+        from pathlib import Path
+        path = Path(__file__).parent.parent.parent / "configs" / "risk_limits.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception as exc:
+                logger.warning("risk_limits_load_failed", error=str(exc)[:120])
+        return {}
 
     async def start(self) -> None:
         # / initialize resources and start all agent loops
@@ -72,14 +95,17 @@ class AgentOrchestrator:
         # / init db
         self._pool = await init_db()
 
-        # / prune old system events (keep 30 days)
+        # / prune old system events (keep 30 days). table may not exist on first run.
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM system_events WHERE timestamp < NOW() - INTERVAL '30 days'"
                 )
-        except Exception:
-            pass  # / table may not exist yet on first run
+        except Exception as exc:
+            # / explicitly tolerate UndefinedTable on bootstrap; log anything else
+            msg = str(exc).lower()
+            if "does not exist" not in msg and "undefined" not in msg:
+                logger.warning("system_events_prune_failed", error=str(exc)[:120])
 
         # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
         try:
@@ -147,6 +173,11 @@ class AgentOrchestrator:
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
             asyncio.create_task(self._alert_loop(), name="alert"),
             asyncio.create_task(self._regime_loop(), name="regime_backfill"),
+            # / phase 2: knowledge base upkeep
+            asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
+            asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
+            # / phase 5 step 3: daily symbol wiki hydration (writes stubs back as playbooks)
+            asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
         ]
 
         try:
@@ -175,8 +206,8 @@ class AgentOrchestrator:
             await close_http_client()
             await close_llm_clients()
             await close_alpaca_client()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("http_client_shutdown_failed", error=str(exc)[:100])
 
         # / close db
         await close_db()
@@ -251,13 +282,13 @@ class AgentOrchestrator:
             try:
                 symbols = self._get_symbols()
                 await self._analyst.run(self._pool, symbols, run_deepseek=False)
-                # / broadcast analysis update (fire-and-forget)
+                # / broadcast analysis update (fire-and-forget); dashboard may not be running
                 try:
                     from src.dashboard.app import broadcast, _ws_clients
                     if _ws_clients:
                         asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
-                except Exception:
-                    pass  # dashboard may not be running
+                except Exception as exc:
+                    logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -327,13 +358,13 @@ class AgentOrchestrator:
                 await self._strategy.run(
                     self._pool, self._strategy_pool, broker,
                 )
-                # / broadcast strategy evaluation (fire-and-forget)
+                # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
                 try:
                     from src.dashboard.app import broadcast, _ws_clients
                     if _ws_clients:
                         asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("broadcast_strategy_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("strategy_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_loop")
@@ -368,8 +399,12 @@ class AgentOrchestrator:
                             await tools.update_trade_status(
                                 self._pool, "trade_signals", signal["id"], "error",
                             )
-                        except Exception:
-                            pass
+                        except Exception as inner:
+                            # / db write failure: signal stuck pending, will retry next poll
+                            logger.warning(
+                                "risk_poll_status_update_failed",
+                                signal_id=signal["id"], error=str(inner)[:120],
+                            )
             except Exception:
                 logger.error("risk_poll_error", exc_info=True)
 
@@ -410,7 +445,12 @@ class AgentOrchestrator:
 
                 # / fetch market data for backtesting mutations
                 market_data = await self._fetch_evolution_market_data()
-                await self._evolution.run(self._pool, self._strategy_pool, market_data=market_data)
+                # / phase 2: pass current equity regime so wiki context loads regime-matched notes
+                current_regime = await tools.fetch_latest_regime(self._pool, "equity")
+                await self._evolution.run(
+                    self._pool, self._strategy_pool,
+                    market_data=market_data, regime=current_regime,
+                )
             except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
                 notify_system_error(str(exc), "evolution_loop")
@@ -514,17 +554,44 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.regime_detector import backfill_regimes
+                from src.data.regime_detector import (
+                    backfill_regimes,
+                    backfill_regimes_per_sector,
+                    snapshot_regime_daily,
+                )
                 equity_count = await backfill_regimes(self._pool, "SPY", "equity")
                 crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
+                # / phase 5 step 4: per-sector regimes so strategies can see sector-specific nuance
+                try:
+                    sector_counts = await backfill_regimes_per_sector(self._pool)
+                    sector_total = sum(sector_counts.values())
+                except Exception as exc:
+                    logger.warning("sector_regime_backfill_failed", error=str(exc)[:200])
+                    sector_total = 0
                 logger.info(
                     "regime_backfill_complete",
-                    equity_rows=equity_count, crypto_rows=crypto_count,
+                    equity_rows=equity_count,
+                    crypto_rows=crypto_count,
+                    sector_rows=sector_total,
                 )
                 await tools.log_event(
                     self._pool, "info", "regime_backfill",
-                    f"equity={equity_count} crypto={crypto_count}",
+                    f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
                 )
+                # / phase 2: detect regime transitions and write wiki note + regime_shifts row
+                await self._check_regime_shift("equity")
+                await self._check_regime_shift("crypto")
+                # / phase 5 step 3: write daily snapshot rows so the timeline widget has
+                # / data points on non-shift days (otherwise it only populates on transitions)
+                try:
+                    equity_regime = await tools.fetch_latest_regime(self._pool, "equity")
+                    crypto_regime = await tools.fetch_latest_regime(self._pool, "crypto")
+                    if equity_regime:
+                        await snapshot_regime_daily(self._pool, "equity", equity_regime)
+                    if crypto_regime:
+                        await snapshot_regime_daily(self._pool, "crypto", crypto_regime)
+                except Exception as exc:
+                    logger.warning("regime_snapshot_failed", error=str(exc)[:200])
             except Exception as exc:
                 logger.error("regime_loop_error", exc_info=True)
                 notify_system_error(str(exc), "regime_loop")
@@ -532,6 +599,31 @@ class AgentOrchestrator:
 
             if await self._wait_or_stop(REGIME_LOOP_INTERVAL):
                 break
+
+    async def _check_regime_shift(self, market: str) -> None:
+        # / compare latest regime against last-known; on change, call on_regime_shift
+        try:
+            latest = await tools.fetch_latest_regime(self._pool, market)
+        except Exception:
+            return
+        if latest is None:
+            return
+        attr = "_last_equity_regime" if market == "equity" else "_last_crypto_regime"
+        previous = getattr(self, attr)
+        if previous is None:
+            # / first observation — seed without firing
+            setattr(self, attr, latest)
+            return
+        if latest == previous:
+            return
+        # / transition detected
+        setattr(self, attr, latest)
+        logger.info("regime_shift_detected", market=market, old=previous, new=latest)
+        try:
+            from src.knowledge.regime_wiki import on_regime_shift
+            await on_regime_shift(self._pool, previous, latest, None, market)
+        except Exception as exc:
+            logger.warning("regime_shift_write_failed", market=market, error=str(exc)[:200])
 
     async def _intraday_backfill_loop(self) -> None:
         # / fetch 1h intraday bars for all symbols, then aggregate 1h into 2h bars
@@ -734,62 +826,126 @@ class AgentOrchestrator:
             if await self._wait_or_stop(ALERT_CHECK_INTERVAL):
                 break
 
-    async def _alternative_data_loop(self) -> None:
+    async def _alternative_data_loop(self, use_registry: bool = True) -> None:
         # / backfill alternative data: analyst ratings, short interest, options, etc
+        # / use_registry=True (default): drive the cycle from src.data.source_registry.
+        # / use_registry=False: legacy per-source code path (kept as fallback for the one
+        # / cycle of transition; remove once registry has proven itself in prod)
         if await self._wait_or_stop(300):
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
-                from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
-                from src.data.short_interest import fetch_short_interest, store_short_interest
-                from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
-                from src.data.options_data import fetch_options_data, store_options_data
-                from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
-                from src.data.symbols import get_sector
-
-                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
-                for symbol in symbols:
-                    is_etf = get_sector(symbol) == "etfs"
-                    try:
-                        if not is_etf:
-                            # / analyst ratings
-                            ratings = await fetch_analyst_ratings(symbol)
-                            if ratings:
-                                await store_analyst_ratings(self._pool, symbol, ratings)
-                            # / earnings revisions
-                            estimates = await fetch_earnings_estimates(symbol)
-                            if estimates:
-                                await store_earnings_estimates(self._pool, estimates)
-                            # / congressional trades
-                            trades = await fetch_congressional_trades(symbol)
-                            if trades:
-                                await store_congressional_trades(self._pool, trades)
-                            # / options
-                            options = await fetch_options_data(symbol)
-                            if options:
-                                await store_options_data(self._pool, options)
-                        # / short interest (works for etfs too)
-                        si = await fetch_short_interest(symbol)
-                        if si:
-                            await store_short_interest(self._pool, si)
-                        # / dark pool
-                        dp = await fetch_dark_pool_data(symbol)
-                        if dp:
-                            await store_dark_pool(self._pool, dp)
-                    except Exception as exc:
-                        logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
-                    await asyncio.sleep(2)  # / throttle api calls
-                logger.info("alternative_data_backfill_complete", count=len(symbols))
-                await tools.log_event(
-                    self._pool, "info", "alternative_data", f"symbols={len(symbols)}",
-                )
+                if use_registry:
+                    await self._run_alternative_data_registry_cycle()
+                else:
+                    await self._run_alternative_data_legacy_cycle()
             except Exception as exc:
                 logger.error("alternative_data_error", exc_info=True)
                 notify_system_error(str(exc), "alternative_data")
                 await tools.log_event(self._pool, "error", "alternative_data", str(exc)[:200])
             if await self._wait_or_stop(ALTERNATIVE_DATA_INTERVAL):
                 break
+
+    async def _run_alternative_data_registry_cycle(self) -> None:
+        # / canonical path — iterate registered alt-data sources
+        from src.data.source_registry import all_sources
+        from src.data.symbols import get_sector
+
+        sources = all_sources()
+        # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
+        # / (for two fields) but we only want to hit yfinance once per symbol
+        by_name_deduped: dict[str, "AltDataSource"] = {}  # noqa: F821
+        for src in sources:
+            by_name_deduped.setdefault(src.name, src)
+
+        # / global sources first (macro) — one fetch, no symbol iteration
+        for src in by_name_deduped.values():
+            if not src.is_global:
+                continue
+            try:
+                await src.fetch(self._pool)
+            except Exception as exc:
+                logger.warning("alt_data_global_fetch_failed", source=src.name, error=str(exc)[:120])
+
+        # / per-symbol sources
+        symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+        per_symbol_sources = [s for s in by_name_deduped.values() if not s.is_global]
+
+        for symbol in symbols:
+            is_etf = get_sector(symbol) == "etfs"
+            for src in per_symbol_sources:
+                if is_etf and src.skip_etfs:
+                    continue
+                try:
+                    # / dark_pool accepts (symbol, pool=...) — detect via kwarg name
+                    if src.name == "dark_pool":
+                        data = await src.fetch(symbol, pool=self._pool)
+                    else:
+                        data = await src.fetch(symbol)
+                    if not data:
+                        continue
+                    if src.store_needs_symbol:
+                        await src.store(self._pool, symbol, data)
+                    else:
+                        await src.store(self._pool, data)
+                except Exception as exc:
+                    logger.warning(
+                        "alt_data_source_error",
+                        source=src.name, symbol=symbol, error=str(exc)[:120],
+                    )
+            await asyncio.sleep(2)  # / throttle api calls
+        logger.info("alternative_data_backfill_complete", count=len(symbols), via="registry")
+        await tools.log_event(
+            self._pool, "info", "alternative_data", f"symbols={len(symbols)} via=registry",
+        )
+
+    async def _run_alternative_data_legacy_cycle(self) -> None:
+        # / legacy per-source hardcoded code path — kept as fallback during the transition
+        # / deprecated path
+        from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
+        from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
+        from src.data.short_interest import fetch_short_interest, store_short_interest
+        from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
+        from src.data.options_data import fetch_options_data, store_options_data
+        from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
+        from src.data.symbols import get_sector
+
+        symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+        for symbol in symbols:
+            is_etf = get_sector(symbol) == "etfs"
+            try:
+                if not is_etf:
+                    # / analyst ratings
+                    ratings = await fetch_analyst_ratings(symbol)
+                    if ratings:
+                        await store_analyst_ratings(self._pool, symbol, ratings)
+                    # / earnings revisions
+                    estimates = await fetch_earnings_estimates(symbol)
+                    if estimates:
+                        await store_earnings_estimates(self._pool, estimates)
+                    # / congressional trades
+                    trades = await fetch_congressional_trades(symbol)
+                    if trades:
+                        await store_congressional_trades(self._pool, trades)
+                    # / options
+                    options = await fetch_options_data(symbol)
+                    if options:
+                        await store_options_data(self._pool, options)
+                # / short interest (works for etfs too)
+                si = await fetch_short_interest(symbol)
+                if si:
+                    await store_short_interest(self._pool, si)
+                # / dark pool — pass pool so ratio is computed + stored in one call
+                dp = await fetch_dark_pool_data(symbol, pool=self._pool)
+                if dp:
+                    await store_dark_pool(self._pool, dp)
+            except Exception as exc:
+                logger.warning("alt_data_symbol_error", symbol=symbol, error=str(exc))
+            await asyncio.sleep(2)  # / throttle api calls
+        logger.info("alternative_data_backfill_complete", count=len(symbols), via="legacy")
+        await tools.log_event(
+            self._pool, "info", "alternative_data", f"symbols={len(symbols)} via=legacy",
+        )
 
     async def _monitoring_loop(self) -> None:
         # / run monitoring checks: staleness, strategy decay, correlation
@@ -914,3 +1070,205 @@ class AgentOrchestrator:
         from src.analysis.live_strategy_metrics import compute_live_strategy_metrics
         updated = await compute_live_strategy_metrics(self._pool)
         logger.info("strategy_metrics_computed", strategies=updated)
+
+    # / ---- phase 2: knowledge base loops ----
+
+    async def _wiki_embedding_loop(self) -> None:
+        # / backfill missing wiki_embeddings every 6h via ollama nomic-embed-text
+        if await self._wait_or_stop(300):
+            return
+        try:
+            from src.knowledge.loops import wiki_embedding_backfill_loop
+            await wiki_embedding_backfill_loop(self._pool)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
+            notify_system_error(str(exc), "wiki_embedding_loop")
+
+    async def _wiki_archive_loop(self) -> None:
+        # / daily archive of wiki docs older than 180 days
+        if await self._wait_or_stop(600):
+            return
+        try:
+            from src.knowledge.loops import wiki_archive_loop
+            await wiki_archive_loop(self._pool)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("wiki_archive_loop_error", error=str(exc)[:200])
+            notify_system_error(str(exc), "wiki_archive_loop")
+
+    # / ---- phase 5 step 3: daily symbol wiki hydration ----
+
+    def _hydration_daily_cap(self) -> int:
+        # / configurable via env; defaults to 5 to stay in free-tier llm budget
+        raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP")
+        if not raw:
+            return KNOWLEDGE_HYDRATION_DEFAULT_CAP
+        try:
+            cap = int(raw)
+        except ValueError:
+            logger.warning("wiki_hydration_cap_parse_failed", raw=raw)
+            return KNOWLEDGE_HYDRATION_DEFAULT_CAP
+        return max(0, cap)
+
+    async def _fetch_hydration_candidates(self, cap: int) -> list[str]:
+        # / pick up to `cap` symbols whose wiki entry is a seed stub AND have
+        # / accumulated enough recent analyses to support a useful rewrite.
+        # / round-robin order by wiki_documents.updated_at ASC so stale docs rotate through.
+        if cap <= 0 or self._pool is None:
+            return []
+        symbols = self._get_symbols()
+        if not symbols:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                # / find stub docs first (seed confidence or below word threshold)
+                stub_rows = await conn.fetch(
+                    """
+                    SELECT unnest(symbols) AS symbol, updated_at
+                    FROM wiki_documents
+                    WHERE category = 'symbols'
+                      AND (confidence = 'seed' OR word_count < $1)
+                    ORDER BY updated_at ASC
+                    """,
+                    WIKI_STUB_WORD_THRESHOLD,
+                )
+                stub_symbols = [r["symbol"] for r in stub_rows if r["symbol"] in symbols]
+                # / symbols in the universe without any wiki doc are also stubs — add them last
+                have_docs = {r["symbol"] for r in stub_rows}
+                for sym in symbols:
+                    if sym not in have_docs and sym not in stub_symbols:
+                        stub_symbols.append(sym)
+
+                # / filter down to those with >= WIKI_MIN_ANALYSIS_ROWS recent analyses
+                if not stub_symbols:
+                    return []
+                analysis_rows = await conn.fetch(
+                    """
+                    SELECT symbol, COUNT(*) AS n
+                    FROM analysis_scores
+                    WHERE symbol = ANY($1::varchar[])
+                      AND date >= CURRENT_DATE - INTERVAL '7 days'
+                    GROUP BY symbol
+                    """,
+                    stub_symbols,
+                )
+                eligible = {r["symbol"] for r in analysis_rows if r["n"] >= WIKI_MIN_ANALYSIS_ROWS}
+        except Exception as exc:
+            logger.warning("wiki_hydration_candidate_fetch_failed", error=str(exc)[:200])
+            return []
+
+        # / preserve stub ordering (oldest-updated first) when picking the first `cap`
+        picks: list[str] = []
+        for sym in stub_symbols:
+            if sym in eligible and sym not in picks:
+                picks.append(sym)
+                if len(picks) >= cap:
+                    break
+        return picks
+
+    async def _load_hydration_bundle(
+        self, symbol: str,
+    ) -> tuple[list[dict], dict | None, list[dict]]:
+        # / fetch last 30 days of analysis_scores + latest fundamentals + last 90 days insider
+        analysis_rows: list[dict] = []
+        fundamentals: dict | None = None
+        insider: list[dict] = []
+        async with self._pool.acquire() as conn:
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT date, fundamental_score, technical_score, composite_score,
+                           regime, regime_confidence
+                    FROM analysis_scores
+                    WHERE symbol = $1
+                      AND date >= CURRENT_DATE - INTERVAL '30 days'
+                    ORDER BY date DESC
+                    """,
+                    symbol,
+                )
+                analysis_rows = [dict(r) for r in rows]
+            except Exception as exc:
+                logger.info("wiki_hydration_analysis_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+            try:
+                frow = await conn.fetchrow(
+                    """
+                    SELECT pe_ratio, pe_forward, ps_ratio, peg_ratio,
+                           revenue_growth_1y, revenue_growth_3y, fcf_margin,
+                           debt_to_equity, sector, sector_pe_avg
+                    FROM fundamentals
+                    WHERE symbol = $1
+                    ORDER BY date DESC LIMIT 1
+                    """,
+                    symbol,
+                )
+                fundamentals = dict(frow) if frow else None
+            except Exception as exc:
+                logger.info("wiki_hydration_fundamentals_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+            try:
+                irows = await conn.fetch(
+                    """
+                    SELECT filing_date, insider_name, insider_title, transaction_type,
+                           shares, price_per_share, total_value
+                    FROM insider_trades
+                    WHERE symbol = $1
+                      AND filing_date >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY filing_date DESC
+                    """,
+                    symbol,
+                )
+                insider = [dict(r) for r in irows]
+            except Exception as exc:
+                logger.info("wiki_hydration_insider_fetch_failed",
+                            symbol=symbol, error=str(exc)[:120])
+
+        return analysis_rows, fundamentals, insider
+
+    async def _knowledge_hydration_loop(self) -> None:
+        # / phase 5 step 3: daily enrichment of seed-stub symbol wiki docs
+        # / offset from other loops so llm calls don't stack at cold start
+        if await self._wait_or_stop(KNOWLEDGE_HYDRATION_STARTUP_DELAY):
+            return
+        while not self._stop_event.is_set():
+            try:
+                cap = self._hydration_daily_cap()
+                picks = await self._fetch_hydration_candidates(cap)
+                if not picks:
+                    logger.info("wiki_hydration_no_candidates", cap=cap)
+                else:
+                    from src.knowledge.wiki_writer import enrich_symbol_doc
+                    enriched = 0
+                    for symbol in picks:
+                        try:
+                            bundle = await self._load_hydration_bundle(symbol)
+                            analysis_rows, fundamentals, insider = bundle
+                            doc_id, _ = await enrich_symbol_doc(
+                                self._pool, symbol, analysis_rows, fundamentals, insider,
+                            )
+                            if doc_id is not None:
+                                enriched += 1
+                        except Exception as exc:
+                            logger.warning(
+                                "wiki_hydration_symbol_failed",
+                                symbol=symbol, error=str(exc)[:200],
+                            )
+                    logger.info(
+                        "wiki_hydration_cycle_complete",
+                        candidates=len(picks), enriched=enriched, cap=cap,
+                    )
+                    await tools.log_event(
+                        self._pool, "info", "knowledge_hydration",
+                        f"candidates={len(picks)} enriched={enriched} cap={cap}",
+                    )
+            except Exception as exc:
+                logger.error("knowledge_hydration_loop_error", exc_info=True)
+                notify_system_error(str(exc), "knowledge_hydration_loop")
+
+            if await self._wait_or_stop(KNOWLEDGE_HYDRATION_INTERVAL):
+                break

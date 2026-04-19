@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useApi } from '../../hooks/useApi'
+import { useWebSocketContext } from '../../contexts/WebSocketContext'
 import Panel from '../Panel'
 import { SkeletonChart } from '../Skeleton'
 import { fmtLargeNum, fmtCount, fmtVal, scoreColor, consensusBadge, regimeBadge } from './formatters'
@@ -14,6 +15,16 @@ import VolumeProfileToggle from '../chart/tools/VolumeProfileToggle'
 import ChartErrorBoundary from '../chart/ChartErrorBoundary'
 import { useChartState } from '../chart/useChartState'
 import { ChartToolsProvider, useChartTools } from '../chart/useDrawings'
+import {
+  MacroRegimeCard,
+  AnalystConsensusCard,
+  OptionsFlowCard,
+  DarkPoolCard,
+  CongressionalCard,
+  ShortSqueezeCard,
+  EarningsRevisionsCard,
+} from './AltDataPanels'
+import CryptoFundamentalsCard from './CryptoFundamentalsCard'
 
 // / score overview badges + composite breakdown
 function ScoreOverview({ score }) {
@@ -812,7 +823,7 @@ function AiAnalysisPanel({ score }) {
       <div className="space-y-3">
         <div className="bg-bg-primary p-4 border border-border">
           <div className="text-[11px] uppercase text-text-secondary mb-2">
-            Groq ({groqModel || 'llama-3.1-8b-instant'})
+            Groq ({groqModel || 'llama-3.3-70b-versatile'})
             {groqSignal && <span className={`ml-2 font-semibold ${signalColor(groqSignal)}`}>{groqSignal}</span>}
           </div>
           {groqText
@@ -992,7 +1003,19 @@ function SignalsPanel({ signals }) {
 // / detail view: fetches its own data, keyed on symbol for clean remount
 export default function SymbolDetail({ symbol, onBack }) {
   const [tf, setTf] = useState('daily')
-  const { data, loading, error } = useApi(`/api/analysis/${symbol}`, 30000)
+  const { data, loading, error, refetch } = useApi(`/api/analysis/${symbol}`, 30000)
+  const { subscribe } = useWebSocketContext()
+  const isCrypto = symbol.includes('-USD') || symbol.includes('/')
+
+  // / refetch on signal_generated for this symbol only (avoid churn from unrelated symbols)
+  useEffect(() => {
+    const unsub = subscribe('signal_generated', (msg) => {
+      const d = msg?.data || msg
+      if (!d) return
+      if (d.symbol && d.symbol === symbol) refetch()
+    })
+    return unsub
+  }, [subscribe, symbol, refetch])
 
   if (loading && !data) {
     return (
@@ -1025,6 +1048,11 @@ export default function SymbolDetail({ symbol, onBack }) {
         <ScoreOverview score={d.score} />
       </Panel>
 
+      {/* row 1b: macro regime context — applies to all symbols */}
+      <Panel title="Macro Regime" collapsible defaultOpen={!isCrypto}>
+        <MacroRegimeCard />
+      </Panel>
+
       {/* row 2: price chart with timeframe toggle */}
       <PricePanel symbol={symbol} priceHistory={d.price_history} tf={tf} setTf={setTf} />
 
@@ -1034,18 +1062,50 @@ export default function SymbolDetail({ symbol, onBack }) {
           <IndicatorsPanel symbol={symbol} tf={tf} />
         </Panel>
         <Panel title="Fundamentals">
-          <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />
+          {isCrypto
+            ? <CryptoFundamentalsCard symbol={symbol} />
+            : <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />}
         </Panel>
         <Panel title="DCF Valuation">
           <DcfPanel dcf={d.dcf} />
         </Panel>
       </div>
 
+      {/* row 3b: analyst consensus + options flow + dark pool (stocks only — less meaningful for crypto) */}
+      {!isCrypto && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <Panel title="Analyst Consensus">
+            <AnalystConsensusCard symbol={symbol} />
+          </Panel>
+          <Panel title="Options Flow">
+            <OptionsFlowCard symbol={symbol} />
+          </Panel>
+          <Panel title="Dark Pool">
+            <DarkPoolCard symbol={symbol} />
+          </Panel>
+        </div>
+      )}
+
+      {/* row 3c: congressional + short squeeze + earnings revisions (stocks only) */}
+      {!isCrypto && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <Panel title="Congressional Activity">
+            <CongressionalCard symbol={symbol} />
+          </Panel>
+          <Panel title="Short Squeeze Risk">
+            <ShortSqueezeCard symbol={symbol} />
+          </Panel>
+          <Panel title="Earnings Revisions">
+            <EarningsRevisionsCard symbol={symbol} />
+          </Panel>
+        </div>
+      )}
+
       {/* row 4: sentiment + insider */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <Panel title="Sentiment">
           <SentimentPanel sentiment={d.sentiment} socialSentiment={d.social_sentiment}
-            isCrypto={symbol.includes('-USD') || symbol.includes('/')} score={d.score} />
+            isCrypto={isCrypto} score={d.score} />
         </Panel>
         <Panel title="Insider Activity">
           <InsiderPanel insiderTrades={d.insider_trades} score={d.score} symbol={symbol} />

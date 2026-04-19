@@ -16,6 +16,7 @@ _COST_RATES: dict[str, tuple[float, float]] = {
     "cerebras": (0.0, 0.0),
     "deepseek-chat": (0.14, 0.28),
     "deepseek-reasoner": (0.55, 2.19),
+    "ollama-nomic-embed-text": (0.0, 0.0),
 }
 
 # / in-memory accumulator: {(date, source): {call_count, tokens_in, tokens_out, cost}}
@@ -76,3 +77,5 @@ async def flush_to_db(pool) -> int:
                 logger.warning("cost_tracker_flush_failed", source=source, error=str(exc))
     _daily_costs.clear()
     return written
+
+
