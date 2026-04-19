@@ -1396,6 +1396,46 @@ async def get_macro_context():
     }
 
 
+@app.get("/api/hydration-status")
+async def get_hydration_status():
+    # / wiki symbol-doc hydration progress: today's count, daily cap, next fire
+    from src.agents.loop_registry import describe_loops
+    cap_raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP", "5")
+    try:
+        cap = max(0, int(cap_raw))
+    except ValueError:
+        cap = 5
+
+    hydrated_today = 0
+    last_event_ts = None
+    if _pool is not None:
+        try:
+            row = await _query_one(
+                """SELECT COUNT(*) as n, MAX(timestamp) as last_ts
+                FROM system_events
+                WHERE source='knowledge_hydration'
+                AND level='info'
+                AND timestamp >= CURRENT_DATE"""
+            )
+            if row:
+                hydrated_today = int(row.get("n") or 0)
+                last_event_ts = row.get("last_ts")
+        except Exception:
+            pass
+
+    loops = await describe_loops(_pool)
+    hydration = next((l for l in loops if l["name"] == "knowledge_hydration"), None)
+    return {
+        "daily_cap": cap,
+        "hydrated_today": hydrated_today,
+        "last_event_ts": last_event_ts.isoformat() if hasattr(last_event_ts, "isoformat") else last_event_ts,
+        "next_fire_ts": hydration.get("next_fire_ts").isoformat()
+            if hydration and hasattr(hydration.get("next_fire_ts"), "isoformat")
+            else (hydration and hydration.get("next_fire_ts")),
+        "last_status": hydration.get("last_status") if hydration else None,
+    }
+
+
 @app.get("/api/macro-history")
 async def get_macro_history(days: int = 30):
     # / per-series timeseries over the last N days for sparkline rendering
