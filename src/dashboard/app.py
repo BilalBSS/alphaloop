@@ -342,6 +342,37 @@ async def get_analysis(symbol: str):
     }
 
 
+@app.get("/api/crypto-fundamentals/{symbol}")
+async def get_crypto_fundamentals(symbol: str):
+    # / phase 5 step 6: crypto alt-data aggregate (nvt, funding, tvl, active addrs,
+    # / exchange flows, hash rate, dex volume, stablecoin supply ratio).
+    # / cache-first via crypto_fundamentals table, falls back to live fetchers.
+    # / single source failures return null for that field — never 500s the request.
+    from src.data.crypto_fundamentals import get_fundamentals
+    from src.data.symbols import is_crypto
+    sym = symbol.upper()
+    if not is_crypto(sym):
+        return JSONResponse({"error": "not a crypto symbol"}, status_code=400)
+    try:
+        return await get_fundamentals(_pool, sym)
+    except Exception as exc:
+        # / last-resort safety net — shape stays consistent so the widget can render
+        logger.warning("crypto_fundamentals_endpoint_failed", symbol=sym, error=str(exc)[:200])
+        from datetime import datetime, timezone
+        return {
+            "nvt_ratio": None,
+            "funding_rate": None,
+            "active_addresses": None,
+            "exchange_inflow_usd": None,
+            "hash_rate": None,
+            "tvl_usd": None,
+            "dex_volume_24h": None,
+            "stablecoin_supply_ratio": None,
+            "sources": [],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
 @app.get("/api/symbols")
 async def get_symbols():
     # / list ALL universe symbols with latest score if any — bug 5a: un-analyzed symbols

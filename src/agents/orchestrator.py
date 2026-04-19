@@ -46,6 +46,7 @@ DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
 ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
 CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
+CRYPTO_FUNDAMENTALS_INTERVAL = 21600  # / 6 hours — cache refresh for nvt/funding/tvl/etc
 REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
 
 
@@ -157,6 +158,7 @@ class AgentOrchestrator:
             asyncio.create_task(self._insider_backfill_loop(), name="insider_backfill"),
             asyncio.create_task(self._fundamentals_backfill_loop(), name="fundamentals_backfill"),
             asyncio.create_task(self._crypto_backfill_loop(), name="crypto_backfill"),
+            asyncio.create_task(self._crypto_fundamentals_loop(), name="crypto_fundamentals"),
             asyncio.create_task(self._intraday_backfill_loop(), name="intraday_backfill"),
             asyncio.create_task(self._daily_bar_backfill_loop(), name="daily_bar_backfill"),
             asyncio.create_task(self._price_refresh_loop(), name="price_refresh"),
@@ -539,6 +541,46 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "crypto_backfill")
 
             if await self._wait_or_stop(CRYPTO_BACKFILL_INTERVAL):
+                break
+
+    async def _crypto_fundamentals_loop(self) -> None:
+        # / refresh crypto fundamentals cache every 6h for CRYPTO_UNIVERSE.
+        # / each symbol is isolated — one failure doesn't stop the rest.
+        # / silently skips symbols where every source is null (keys missing etc).
+        if await self._wait_or_stop(240):
+            return
+        from src.data.crypto_fundamentals import (
+            fetch_live_fundamentals,
+            upsert_fundamentals,
+        )
+        from src.data.symbols import CRYPTO_UNIVERSE
+        while not self._stop_event.is_set():
+            refreshed = 0
+            for symbol in CRYPTO_UNIVERSE:
+                try:
+                    data = await fetch_live_fundamentals(symbol)
+                    if any(data.get(k) is not None for k in (
+                        "nvt_ratio", "funding_rate", "active_addresses",
+                        "exchange_inflow_usd", "hash_rate", "tvl_usd",
+                        "dex_volume_24h", "stablecoin_supply_ratio",
+                    )):
+                        await upsert_fundamentals(self._pool, symbol, data)
+                        refreshed += 1
+                except Exception as exc:
+                    logger.warning(
+                        "crypto_fundamentals_symbol_failed",
+                        symbol=symbol, error=str(exc)[:200],
+                    )
+            if refreshed:
+                logger.info("crypto_fundamentals_refreshed", count=refreshed)
+                try:
+                    await tools.log_event(
+                        self._pool, "info", "crypto_fundamentals",
+                        f"refreshed={refreshed}/{len(CRYPTO_UNIVERSE)}",
+                    )
+                except Exception:
+                    pass
+            if await self._wait_or_stop(CRYPTO_FUNDAMENTALS_INTERVAL):
                 break
 
     async def _regime_loop(self) -> None:

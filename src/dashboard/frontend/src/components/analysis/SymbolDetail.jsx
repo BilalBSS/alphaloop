@@ -24,6 +24,7 @@ import {
   ShortSqueezeCard,
   EarningsRevisionsCard,
 } from './AltDataPanels'
+import CryptoFundamentalsCard from './CryptoFundamentalsCard'
 
 // / score overview badges + composite breakdown
 function ScoreOverview({ score }) {
@@ -1061,7 +1062,9 @@ export default function SymbolDetail({ symbol, onBack }) {
           <IndicatorsPanel symbol={symbol} tf={tf} />
         </Panel>
         <Panel title="Fundamentals">
-          <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />
+          {isCrypto
+            ? <CryptoFundamentalsCard symbol={symbol} />
+            : <FundamentalsPanel fundamentals={d.fundamentals} score={d.score} />}
         </Panel>
         <Panel title="DCF Valuation">
           <DcfPanel dcf={d.dcf} />
