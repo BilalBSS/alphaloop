@@ -51,6 +51,21 @@ _model_load_attempted = False
 _model_load_failed_reason: str | None = None
 
 
+def _available_memory_mb() -> float | None:
+    # / used by the memory guard — returns None when psutil is unavailable
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    try:
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except Exception:
+        return None
+
+
+KRONOS_MIN_MEMORY_MB = 1500  # / skip load if the box has less than ~1.5 GB free
+
+
 def _try_load_hf_model() -> bool:
     # / attempt to lazy-load the real Kronos HF model. returns True on success.
     # / caches result so we don't retry on every call.
@@ -62,6 +77,16 @@ def _try_load_hf_model() -> bool:
 
     if os.environ.get("KRONOS_ENABLED", "false").lower() not in ("true", "1", "yes"):
         _model_load_failed_reason = "disabled_via_env"
+        return False
+
+    # / memory guard — refuse to load on a box that's already under pressure.
+    # / a single-cycle skip is far better than taking the orchestrator down.
+    avail_mb = _available_memory_mb()
+    if avail_mb is not None and avail_mb < KRONOS_MIN_MEMORY_MB:
+        _model_load_failed_reason = f"memory_guard_triggered: {avail_mb:.0f}MB < {KRONOS_MIN_MEMORY_MB}MB"
+        logger.warning("kronos_mem_guard_triggered", available_mb=round(avail_mb))
+        # / don't latch — let a future call retry once memory frees up
+        _model_load_attempted = False
         return False
 
     try:
