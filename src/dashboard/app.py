@@ -13,7 +13,7 @@ from pathlib import Path
 import asyncpg
 import structlog
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1753,6 +1753,56 @@ async def get_strategy_decay():
         return {"signals": signals}
     except Exception:
         return {"signals": []}
+
+
+# / phase 6 step 1: loop introspection + admin trigger + env health
+
+@app.get("/api/loops")
+async def get_loops():
+    # / one row per known orchestrator loop with cadence, last fire, next fire, status
+    from src.agents.loop_registry import describe_loops
+    rows = await describe_loops(_pool)
+    return {"loops": _serialize(rows)}
+
+
+@app.post("/api/admin/trigger/{service}")
+async def admin_trigger(service: str, request: Request):
+    # / queue a one-shot run of {service} for the orchestrator to pick up
+    # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
+    from src.agents.loop_registry import enqueue_trigger, LOOP_METADATA
+    expected = os.environ.get("ADMIN_TOKEN")
+    if expected:
+        auth = request.headers.get("Authorization", "")
+        supplied = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else ""
+        if supplied != expected:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if service not in LOOP_METADATA:
+        return JSONResponse({"error": "unknown_service", "service": service}, status_code=404)
+    row_id = await enqueue_trigger(_pool, service)
+    if row_id is None:
+        return JSONResponse({"error": "enqueue_failed"}, status_code=500)
+    return JSONResponse({"trigger_id": row_id, "service": service, "status": "queued"}, status_code=202)
+
+
+@app.get("/api/env-health")
+async def get_env_health():
+    # / presence check only — never returns values
+    required = [
+        "DATABASE_URL", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+        "GROQ_API_KEY", "DEEPSEEK_API_KEY", "CEREBRAS_API_KEY",
+        "FRED_API_KEY", "FINNHUB_API_KEY", "SEC_EDGAR_USER_AGENT",
+        "OLLAMA_BASE_URL", "TRADE_SYMBOLS",
+    ]
+    optional = [
+        "DUNE_API_KEY", "DISCORD_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+        "TELEGRAM_BOT_TOKEN", "ADMIN_TOKEN", "KRONOS_ENABLED",
+        "WIKI_HYDRATION_DAILY_CAP", "MAX_POSITION_PCT", "CONSENSUS_MODE",
+        "ML_FEATURE_SET",
+    ]
+    return {
+        "required": {k: bool(os.environ.get(k)) for k in required},
+        "optional": {k: bool(os.environ.get(k)) for k in optional},
+    }
 
 
 # / websocket for live updates

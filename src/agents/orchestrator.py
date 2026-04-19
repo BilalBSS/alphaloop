@@ -14,6 +14,7 @@ import structlog
 import pandas as pd
 
 from src.agents import tools
+from src.agents import loop_registry
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent
@@ -178,6 +179,8 @@ class AgentOrchestrator:
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
             # / phase 5 step 3: daily symbol wiki hydration (writes stubs back as playbooks)
             asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
+            # / phase 6 step 1: pull trigger_requests rows posted by dashboard /api/admin/trigger
+            asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
         ]
 
         try:
@@ -280,15 +283,16 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
             try:
-                symbols = self._get_symbols()
-                await self._analyst.run(self._pool, symbols, run_deepseek=False)
-                # / broadcast analysis update (fire-and-forget); dashboard may not be running
-                try:
-                    from src.dashboard.app import broadcast, _ws_clients
-                    if _ws_clients:
-                        asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
-                except Exception as exc:
-                    logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
+                async with loop_registry.track(self._pool, "analyst"):
+                    symbols = self._get_symbols()
+                    await self._analyst.run(self._pool, symbols, run_deepseek=False)
+                    # / broadcast analysis update (fire-and-forget); dashboard may not be running
+                    try:
+                        from src.dashboard.app import broadcast, _ws_clients
+                        if _ws_clients:
+                            asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
+                    except Exception as exc:
+                        logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -306,9 +310,10 @@ class AgentOrchestrator:
             if await self._wait_or_stop(wait):
                 break
             try:
-                symbols = self._get_symbols()
-                await self._analyst.run(self._pool, symbols, run_deepseek=True)
-                logger.info("deepseek_cycle_complete")
+                async with loop_registry.track(self._pool, "deepseek"):
+                    symbols = self._get_symbols()
+                    await self._analyst.run(self._pool, symbols, run_deepseek=True)
+                    logger.info("deepseek_cycle_complete")
             except Exception as exc:
                 logger.error("deepseek_loop_error", exc_info=True)
                 notify_system_error(str(exc), "deepseek_loop")
@@ -326,25 +331,26 @@ class AgentOrchestrator:
                 break
 
             try:
-                symbols = self._get_symbols()
-                result = await generate_daily_synthesis(self._pool, symbols)
-                if result:
-                    # / fetch portfolio stats for merged synthesis message
-                    portfolio = None
-                    try:
-                        broker = self._broker_factory.get_broker()
-                        account = await broker.get_account_balance()
-                        positions = await broker.get_positions()
-                        portfolio = {
-                            "value": account.get("portfolio_value", 0),
-                            "daily_pnl": account.get("daily_pnl", 0),
-                            "positions": len(positions),
-                            "strategies": self._strategy_pool.size,
-                        }
-                    except Exception as exc:
-                        logger.warning("portfolio_fetch_for_synthesis_failed", error=str(exc))
-                    notify_daily_synthesis(result, portfolio=portfolio)
-                logger.info("reasoner_synthesis_complete")
+                async with loop_registry.track(self._pool, "reasoner"):
+                    symbols = self._get_symbols()
+                    result = await generate_daily_synthesis(self._pool, symbols)
+                    if result:
+                        # / fetch portfolio stats for merged synthesis message
+                        portfolio = None
+                        try:
+                            broker = self._broker_factory.get_broker()
+                            account = await broker.get_account_balance()
+                            positions = await broker.get_positions()
+                            portfolio = {
+                                "value": account.get("portfolio_value", 0),
+                                "daily_pnl": account.get("daily_pnl", 0),
+                                "positions": len(positions),
+                                "strategies": self._strategy_pool.size,
+                            }
+                        except Exception as exc:
+                            logger.warning("portfolio_fetch_for_synthesis_failed", error=str(exc))
+                        notify_daily_synthesis(result, portfolio=portfolio)
+                    logger.info("reasoner_synthesis_complete")
             except Exception as exc:
                 logger.error("reasoner_loop_error", exc_info=True)
                 notify_system_error(str(exc), "reasoner_loop")
@@ -354,17 +360,18 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             interval = STRATEGY_MARKET_HOURS if self._is_market_hours() else STRATEGY_OFF_HOURS
             try:
-                broker = self._broker_factory.get_broker()
-                await self._strategy.run(
-                    self._pool, self._strategy_pool, broker,
-                )
-                # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
-                try:
-                    from src.dashboard.app import broadcast, _ws_clients
-                    if _ws_clients:
-                        asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
-                except Exception as exc:
-                    logger.debug("broadcast_strategy_failed", error=str(exc)[:100])
+                async with loop_registry.track(self._pool, "strategy"):
+                    broker = self._broker_factory.get_broker()
+                    await self._strategy.run(
+                        self._pool, self._strategy_pool, broker,
+                    )
+                    # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
+                    try:
+                        from src.dashboard.app import broadcast, _ws_clients
+                        if _ws_clients:
+                            asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
+                    except Exception as exc:
+                        logger.debug("broadcast_strategy_failed", error=str(exc)[:100])
             except Exception as exc:
                 logger.error("strategy_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_loop")
@@ -376,35 +383,36 @@ class AgentOrchestrator:
         # / poll for pending trade signals, process each independently
         while not self._stop_event.is_set():
             try:
-                pending = await tools.fetch_pending_signals(self._pool)
-                for signal in pending:
-                    try:
-                        broker = self._broker_factory.get_broker()
-                        result = await self._risk.process_signal(
-                            self._pool, signal["id"], broker,
-                            strategy_pool=self._strategy_pool,
-                        )
-                        if result.get("status") not in ("approved", "skipped"):
-                            logger.info(
-                                "risk_signal_result",
-                                signal_id=signal["id"],
-                                symbol=signal.get("symbol"),
-                                result=result.get("status"),
-                                reason=result.get("reason"),
-                            )
-                    except Exception as exc:
-                        # / mark signal as error to prevent infinite retry
-                        logger.error("risk_signal_error", signal_id=signal["id"], error=str(exc))
+                async with loop_registry.track(self._pool, "risk"):
+                    pending = await tools.fetch_pending_signals(self._pool)
+                    for signal in pending:
                         try:
-                            await tools.update_trade_status(
-                                self._pool, "trade_signals", signal["id"], "error",
+                            broker = self._broker_factory.get_broker()
+                            result = await self._risk.process_signal(
+                                self._pool, signal["id"], broker,
+                                strategy_pool=self._strategy_pool,
                             )
-                        except Exception as inner:
-                            # / db write failure: signal stuck pending, will retry next poll
-                            logger.warning(
-                                "risk_poll_status_update_failed",
-                                signal_id=signal["id"], error=str(inner)[:120],
-                            )
+                            if result.get("status") not in ("approved", "skipped"):
+                                logger.info(
+                                    "risk_signal_result",
+                                    signal_id=signal["id"],
+                                    symbol=signal.get("symbol"),
+                                    result=result.get("status"),
+                                    reason=result.get("reason"),
+                                )
+                        except Exception as exc:
+                            # / mark signal as error to prevent infinite retry
+                            logger.error("risk_signal_error", signal_id=signal["id"], error=str(exc))
+                            try:
+                                await tools.update_trade_status(
+                                    self._pool, "trade_signals", signal["id"], "error",
+                                )
+                            except Exception as inner:
+                                # / db write failure: signal stuck pending, will retry next poll
+                                logger.warning(
+                                    "risk_poll_status_update_failed",
+                                    signal_id=signal["id"], error=str(inner)[:120],
+                                )
             except Exception:
                 logger.error("risk_poll_error", exc_info=True)
 
@@ -415,12 +423,13 @@ class AgentOrchestrator:
         # / poll for pending approved trades
         while not self._stop_event.is_set():
             try:
-                pending = await tools.fetch_pending_trades(self._pool)
-                for trade in pending:
-                    broker = self._broker_factory.get_broker()
-                    await self._executor.execute_trade(
-                        self._pool, trade["id"], broker, strategy_pool=self._strategy_pool,
-                    )
+                async with loop_registry.track(self._pool, "executor"):
+                    pending = await tools.fetch_pending_trades(self._pool)
+                    for trade in pending:
+                        broker = self._broker_factory.get_broker()
+                        await self._executor.execute_trade(
+                            self._pool, trade["id"], broker, strategy_pool=self._strategy_pool,
+                        )
             except Exception:
                 logger.error("executor_poll_error", exc_info=True)
 
@@ -438,19 +447,19 @@ class AgentOrchestrator:
                 break
 
             try:
-                # / gate: evolve if pool has 3+ strategies loaded
-                if self._strategy_pool.size < 3:
-                    logger.info("evolution_skipped_small_pool", pool_size=self._strategy_pool.size)
-                    continue
-
-                # / fetch market data for backtesting mutations
-                market_data = await self._fetch_evolution_market_data()
-                # / phase 2: pass current equity regime so wiki context loads regime-matched notes
-                current_regime = await tools.fetch_latest_regime(self._pool, "equity")
-                await self._evolution.run(
-                    self._pool, self._strategy_pool,
-                    market_data=market_data, regime=current_regime,
-                )
+                async with loop_registry.track(self._pool, "evolution"):
+                    # / gate: evolve if pool has 3+ strategies loaded
+                    if self._strategy_pool.size < 3:
+                        logger.info("evolution_skipped_small_pool", pool_size=self._strategy_pool.size)
+                    else:
+                        # / fetch market data for backtesting mutations
+                        market_data = await self._fetch_evolution_market_data()
+                        # / phase 2: pass current equity regime so wiki context loads regime-matched notes
+                        current_regime = await tools.fetch_latest_regime(self._pool, "equity")
+                        await self._evolution.run(
+                            self._pool, self._strategy_pool,
+                            market_data=market_data, regime=current_regime,
+                        )
             except Exception as exc:
                 logger.error("evolution_loop_error", exc_info=True)
                 notify_system_error(str(exc), "evolution_loop")
@@ -466,22 +475,23 @@ class AgentOrchestrator:
                 break
 
             try:
-                from src.data.sec_filings import fetch_insider_trades, store_insider_trades
-                from src.data.symbols import get_sector
-                symbols = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
-                total_trades = 0
-                for symbol in symbols:
-                    try:
-                        trades = await fetch_insider_trades(symbol)
-                        if trades:
-                            await store_insider_trades(self._pool, trades)
-                            total_trades += len(trades)
-                    except Exception as exc:
-                        logger.warning("insider_backfill_symbol_error", symbol=symbol, error=str(exc))
-                await tools.log_event(
-                    self._pool, "info", "insider_backfill",
-                    f"symbols={len(symbols)} trades={total_trades}",
-                )
+                async with loop_registry.track(self._pool, "insider_backfill"):
+                    from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+                    from src.data.symbols import get_sector
+                    symbols = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
+                    total_trades = 0
+                    for symbol in symbols:
+                        try:
+                            trades = await fetch_insider_trades(symbol)
+                            if trades:
+                                await store_insider_trades(self._pool, trades)
+                                total_trades += len(trades)
+                        except Exception as exc:
+                            logger.warning("insider_backfill_symbol_error", symbol=symbol, error=str(exc))
+                    await tools.log_event(
+                        self._pool, "info", "insider_backfill",
+                        f"symbols={len(symbols)} trades={total_trades}",
+                    )
             except Exception as exc:
                 logger.error("insider_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "insider_backfill")
@@ -498,16 +508,17 @@ class AgentOrchestrator:
                 break
 
             try:
-                from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
-                symbols = [s for s in self._get_symbols() if not is_crypto(s)]
-                data = await fetch_all_fundamentals(symbols)
-                if data:
-                    await store_fundamentals(self._pool, data)
-                    logger.info("fundamentals_backfill_complete", count=len(data))
-                await tools.log_event(
-                    self._pool, "info", "fundamentals_backfill",
-                    f"symbols={len(symbols)} updated={len(data) if data else 0}",
-                )
+                async with loop_registry.track(self._pool, "fundamentals_backfill"):
+                    from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+                    symbols = [s for s in self._get_symbols() if not is_crypto(s)]
+                    data = await fetch_all_fundamentals(symbols)
+                    if data:
+                        await store_fundamentals(self._pool, data)
+                        logger.info("fundamentals_backfill_complete", count=len(data))
+                    await tools.log_event(
+                        self._pool, "info", "fundamentals_backfill",
+                        f"symbols={len(symbols)} updated={len(data) if data else 0}",
+                    )
             except Exception as exc:
                 logger.error("fundamentals_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "fundamentals_backfill")
@@ -520,27 +531,28 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.market_data import backfill
-                from src.data.crypto_data import fetch_coin_data
-                crypto_symbols = [s for s in self._get_symbols() if is_crypto(s)]
-                if crypto_symbols:
-                    # / alpaca v1beta3/crypto path writes real ohlcv into market_data
-                    results = await backfill(self._pool, crypto_symbols, years=1)
-                    total = sum(results.values())
-                    if total:
-                        logger.info("crypto_bar_backfill_complete", symbols=len(crypto_symbols), bars=total)
-                    # / side-channel: coingecko metadata (market cap, total volume)
-                    for symbol in crypto_symbols:
-                        try:
-                            data = await fetch_coin_data(symbol)
-                            if data and self._pool:
-                                await tools.log_event(
-                                    self._pool, "info", "crypto_backfill",
-                                    f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
-                                    symbol=symbol,
-                                )
-                        except Exception as exc:
-                            logger.warning("crypto_metadata_error", symbol=symbol, error=str(exc))
+                async with loop_registry.track(self._pool, "crypto_backfill"):
+                    from src.data.market_data import backfill
+                    from src.data.crypto_data import fetch_coin_data
+                    crypto_symbols = [s for s in self._get_symbols() if is_crypto(s)]
+                    if crypto_symbols:
+                        # / alpaca v1beta3/crypto path writes real ohlcv into market_data
+                        results = await backfill(self._pool, crypto_symbols, years=1)
+                        total = sum(results.values())
+                        if total:
+                            logger.info("crypto_bar_backfill_complete", symbols=len(crypto_symbols), bars=total)
+                        # / side-channel: coingecko metadata (market cap, total volume)
+                        for symbol in crypto_symbols:
+                            try:
+                                data = await fetch_coin_data(symbol)
+                                if data and self._pool:
+                                    await tools.log_event(
+                                        self._pool, "info", "crypto_backfill",
+                                        f"mcap={data.get('market_cap')}, vol={data.get('total_volume')}",
+                                        symbol=symbol,
+                                    )
+                            except Exception as exc:
+                                logger.warning("crypto_metadata_error", symbol=symbol, error=str(exc))
             except Exception as exc:
                 logger.error("crypto_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "crypto_backfill")
@@ -554,44 +566,45 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.regime_detector import (
-                    backfill_regimes,
-                    backfill_regimes_per_sector,
-                    snapshot_regime_daily,
-                )
-                equity_count = await backfill_regimes(self._pool, "SPY", "equity")
-                crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
-                # / phase 5 step 4: per-sector regimes so strategies can see sector-specific nuance
-                try:
-                    sector_counts = await backfill_regimes_per_sector(self._pool)
-                    sector_total = sum(sector_counts.values())
-                except Exception as exc:
-                    logger.warning("sector_regime_backfill_failed", error=str(exc)[:200])
-                    sector_total = 0
-                logger.info(
-                    "regime_backfill_complete",
-                    equity_rows=equity_count,
-                    crypto_rows=crypto_count,
-                    sector_rows=sector_total,
-                )
-                await tools.log_event(
-                    self._pool, "info", "regime_backfill",
-                    f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
-                )
-                # / phase 2: detect regime transitions and write wiki note + regime_shifts row
-                await self._check_regime_shift("equity")
-                await self._check_regime_shift("crypto")
-                # / phase 5 step 3: write daily snapshot rows so the timeline widget has
-                # / data points on non-shift days (otherwise it only populates on transitions)
-                try:
-                    equity_regime = await tools.fetch_latest_regime(self._pool, "equity")
-                    crypto_regime = await tools.fetch_latest_regime(self._pool, "crypto")
-                    if equity_regime:
-                        await snapshot_regime_daily(self._pool, "equity", equity_regime)
-                    if crypto_regime:
-                        await snapshot_regime_daily(self._pool, "crypto", crypto_regime)
-                except Exception as exc:
-                    logger.warning("regime_snapshot_failed", error=str(exc)[:200])
+                async with loop_registry.track(self._pool, "regime_backfill"):
+                    from src.data.regime_detector import (
+                        backfill_regimes,
+                        backfill_regimes_per_sector,
+                        snapshot_regime_daily,
+                    )
+                    equity_count = await backfill_regimes(self._pool, "SPY", "equity")
+                    crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
+                    # / phase 5 step 4: per-sector regimes so strategies can see sector-specific nuance
+                    try:
+                        sector_counts = await backfill_regimes_per_sector(self._pool)
+                        sector_total = sum(sector_counts.values())
+                    except Exception as exc:
+                        logger.warning("sector_regime_backfill_failed", error=str(exc)[:200])
+                        sector_total = 0
+                    logger.info(
+                        "regime_backfill_complete",
+                        equity_rows=equity_count,
+                        crypto_rows=crypto_count,
+                        sector_rows=sector_total,
+                    )
+                    await tools.log_event(
+                        self._pool, "info", "regime_backfill",
+                        f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
+                    )
+                    # / phase 2: detect regime transitions and write wiki note + regime_shifts row
+                    await self._check_regime_shift("equity")
+                    await self._check_regime_shift("crypto")
+                    # / phase 5 step 3: write daily snapshot rows so the timeline widget has
+                    # / data points on non-shift days (otherwise it only populates on transitions)
+                    try:
+                        equity_regime = await tools.fetch_latest_regime(self._pool, "equity")
+                        crypto_regime = await tools.fetch_latest_regime(self._pool, "crypto")
+                        if equity_regime:
+                            await snapshot_regime_daily(self._pool, "equity", equity_regime)
+                        if crypto_regime:
+                            await snapshot_regime_daily(self._pool, "crypto", crypto_regime)
+                    except Exception as exc:
+                        logger.warning("regime_snapshot_failed", error=str(exc)[:200])
             except Exception as exc:
                 logger.error("regime_loop_error", exc_info=True)
                 notify_system_error(str(exc), "regime_loop")
@@ -631,23 +644,24 @@ class AgentOrchestrator:
         # / also emits cycle_ok events so /api/health surfaces this loop
         while not self._stop_event.is_set():
             try:
-                from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
-                symbols = self._get_symbols()
-                results_1h = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
-                total_1h = sum(results_1h.values())
-                results_2h = await aggregate_intraday_to_2h(self._pool, symbols, days=10)
-                total_2h = sum(results_2h.values())
-                missing = [s for s, n in results_1h.items() if n == 0]
-                if missing:
-                    logger.warning("intraday_backfill_symbol_empty", count=len(missing), sample=missing[:10])
-                logger.info(
-                    "intraday_backfill_complete",
-                    symbols=len(symbols), bars_1h=total_1h, bars_2h=total_2h,
-                )
-                await tools.log_event(
-                    self._pool, "info", "intraday_backfill",
-                    f"1h={total_1h} 2h={total_2h} empty={len(missing)}",
-                )
+                async with loop_registry.track(self._pool, "intraday_backfill"):
+                    from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
+                    symbols = self._get_symbols()
+                    results_1h = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
+                    total_1h = sum(results_1h.values())
+                    results_2h = await aggregate_intraday_to_2h(self._pool, symbols, days=10)
+                    total_2h = sum(results_2h.values())
+                    missing = [s for s, n in results_1h.items() if n == 0]
+                    if missing:
+                        logger.warning("intraday_backfill_symbol_empty", count=len(missing), sample=missing[:10])
+                    logger.info(
+                        "intraday_backfill_complete",
+                        symbols=len(symbols), bars_1h=total_1h, bars_2h=total_2h,
+                    )
+                    await tools.log_event(
+                        self._pool, "info", "intraday_backfill",
+                        f"1h={total_1h} 2h={total_2h} empty={len(missing)}",
+                    )
             except Exception as exc:
                 logger.error("intraday_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "intraday_backfill")
@@ -662,15 +676,16 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.market_data import backfill
-                symbols = self._get_symbols()
-                results = await backfill(self._pool, symbols, years=1)
-                total = sum(results.values())
-                if total:
-                    logger.info("daily_bar_backfill_complete", symbols=len(symbols), bars=total)
-                await tools.log_event(
-                    self._pool, "info", "daily_bar_backfill", f"symbols={len(symbols)} bars={total}",
-                )
+                async with loop_registry.track(self._pool, "daily_bar_backfill"):
+                    from src.data.market_data import backfill
+                    symbols = self._get_symbols()
+                    results = await backfill(self._pool, symbols, years=1)
+                    total = sum(results.values())
+                    if total:
+                        logger.info("daily_bar_backfill_complete", symbols=len(symbols), bars=total)
+                    await tools.log_event(
+                        self._pool, "info", "daily_bar_backfill", f"symbols={len(symbols)} bars={total}",
+                    )
             except Exception as exc:
                 logger.error("daily_bar_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "daily_bar_backfill")
@@ -687,19 +702,20 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                if self._is_market_hours():
-                    from src.data.market_data import fetch_latest_prices, store_latest_prices
-                    symbols = self._get_symbols()
-                    prices = await fetch_latest_prices(symbols)
-                    if prices:
-                        stored = await store_latest_prices(self._pool, prices)
-                        logger.info("price_refresh_complete", symbols=stored)
-                        await tools.log_event(
-                            self._pool, "info", "price_refresh", f"symbols={stored}",
-                        )
-                    else:
-                        logger.warning("price_refresh_empty")
-                        await tools.log_event(self._pool, "warning", "price_refresh", "no_prices_fetched")
+                async with loop_registry.track(self._pool, "price_refresh"):
+                    if self._is_market_hours():
+                        from src.data.market_data import fetch_latest_prices, store_latest_prices
+                        symbols = self._get_symbols()
+                        prices = await fetch_latest_prices(symbols)
+                        if prices:
+                            stored = await store_latest_prices(self._pool, prices)
+                            logger.info("price_refresh_complete", symbols=stored)
+                            await tools.log_event(
+                                self._pool, "info", "price_refresh", f"symbols={stored}",
+                            )
+                        else:
+                            logger.warning("price_refresh_empty")
+                            await tools.log_event(self._pool, "warning", "price_refresh", "no_prices_fetched")
             except Exception as exc:
                 logger.warning("price_refresh_error", error=str(exc)[:100])
                 notify_system_error(f"price refresh failed: {str(exc)[:80]}", "price_refresh")
@@ -711,70 +727,74 @@ class AgentOrchestrator:
     async def _alpaca_sync_loop(self) -> None:
         # / periodically sync filled orders from alpaca into trade_log + reconcile positions
         while not self._stop_event.is_set():
-            try:
-                synced = await tools.sync_trades_from_alpaca(self._pool)
-                if synced:
-                    logger.info("alpaca_periodic_sync", trades_synced=synced)
-            except Exception:
-                logger.debug("alpaca_sync_error", exc_info=True)
+            async with loop_registry.track(self._pool, "alpaca_sync"):
+                try:
+                    synced = await tools.sync_trades_from_alpaca(self._pool)
+                    if synced:
+                        logger.info("alpaca_periodic_sync", trades_synced=synced)
+                except Exception:
+                    logger.debug("alpaca_sync_error", exc_info=True)
 
-            # / reconcile strategy_positions vs alpaca positions
-            try:
-                # / aggregate tracked qty per symbol from db
-                all_positions = await tools.get_strategy_positions(self._pool)
-                tracked: dict[str, float] = {}
-                for p in all_positions:
-                    tracked[p["symbol"]] = tracked.get(p["symbol"], 0) + p["qty"]
-
-                # / get alpaca positions (source of truth)
-                broker = self._broker_factory.get_broker()
-                alpaca_positions = await broker.get_positions()
-                alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
-                # / bug e: carry avg_entry_price for untracked projection so cost basis isn't zero
-                alpaca_prices: dict[str, float] = {
-                    p.symbol: float(p.avg_entry_price or 0) for p in alpaca_positions
-                }
-
-                drift_found = False
-                current_drift: dict[str, float] = {}
-
-                # / check each alpaca position against tracked
-                for symbol, alpaca_qty in alpaca_map.items():
-                    tracked_qty = tracked.pop(symbol, 0)
-                    if abs(tracked_qty - alpaca_qty) > 0.0001:
-                        current_drift[symbol] = alpaca_qty
-                        logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
-                        # / only alert on new drift, not every cycle
-                        if symbol not in self._last_drift:
-                            notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
-                        drift_found = True
-
-                # / check tracked symbols no longer in alpaca (sold externally)
-                for symbol, tracked_qty in tracked.items():
-                    if tracked_qty > 0.0001:
-                        current_drift[symbol] = 0
-                        logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=0)
-                        if symbol not in self._last_drift:
-                            notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
-                        drift_found = True
-
-                self._last_drift = current_drift
-
-                # / auto-fix: update drifted positions without destroying attribution
-                if drift_found:
-                    # / bug c: full_sync=true bypasses empty-alpaca guard after confirmed drift
-                    await tools.reconcile_strategy_positions(
-                        self._pool, alpaca_map, full_sync=True, price_map=alpaca_prices,
-                    )
-                    logger.info("position_reconciliation_auto_fixed")
-                else:
-                    logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
-            except Exception:
-                logger.warning("position_reconciliation_error", exc_info=True)
+                await self._alpaca_reconcile_positions()
 
             # / sync every 5 minutes
             if await self._wait_or_stop(300):
                 break
+
+    async def _alpaca_reconcile_positions(self) -> None:
+        # / reconcile strategy_positions vs alpaca positions
+        try:
+            # / aggregate tracked qty per symbol from db
+            all_positions = await tools.get_strategy_positions(self._pool)
+            tracked: dict[str, float] = {}
+            for p in all_positions:
+                tracked[p["symbol"]] = tracked.get(p["symbol"], 0) + p["qty"]
+
+            # / get alpaca positions (source of truth)
+            broker = self._broker_factory.get_broker()
+            alpaca_positions = await broker.get_positions()
+            alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
+            # / bug e: carry avg_entry_price for untracked projection so cost basis isn't zero
+            alpaca_prices: dict[str, float] = {
+                p.symbol: float(p.avg_entry_price or 0) for p in alpaca_positions
+            }
+
+            drift_found = False
+            current_drift: dict[str, float] = {}
+
+            # / check each alpaca position against tracked
+            for symbol, alpaca_qty in alpaca_map.items():
+                tracked_qty = tracked.pop(symbol, 0)
+                if abs(tracked_qty - alpaca_qty) > 0.0001:
+                    current_drift[symbol] = alpaca_qty
+                    logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
+                    # / only alert on new drift, not every cycle
+                    if symbol not in self._last_drift:
+                        notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
+                    drift_found = True
+
+            # / check tracked symbols no longer in alpaca (sold externally)
+            for symbol, tracked_qty in tracked.items():
+                if tracked_qty > 0.0001:
+                    current_drift[symbol] = 0
+                    logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=0)
+                    if symbol not in self._last_drift:
+                        notify_system_error(f"position closed externally: {symbol} (was {tracked_qty})", "reconciliation")
+                    drift_found = True
+
+            self._last_drift = current_drift
+
+            # / auto-fix: update drifted positions without destroying attribution
+            if drift_found:
+                # / bug c: full_sync=true bypasses empty-alpaca guard after confirmed drift
+                await tools.reconcile_strategy_positions(
+                    self._pool, alpaca_map, full_sync=True, price_map=alpaca_prices,
+                )
+                logger.info("position_reconciliation_auto_fixed")
+            else:
+                logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
+        except Exception:
+            logger.warning("position_reconciliation_error", exc_info=True)
 
     async def _macro_backfill_loop(self) -> None:
         # / refresh fred macro data daily at 9am et
@@ -784,14 +804,15 @@ class AgentOrchestrator:
             if stopped:
                 break
             try:
-                from src.data.fred_macro import fetch_macro_indicators
-                indicators = await fetch_macro_indicators(self._pool)
-                if indicators:
-                    logger.info("macro_backfill_complete", indicators=len(indicators))
-                await tools.log_event(
-                    self._pool, "info", "macro_backfill",
-                    f"indicators={len(indicators) if indicators else 0}",
-                )
+                async with loop_registry.track(self._pool, "macro_backfill"):
+                    from src.data.fred_macro import fetch_macro_indicators
+                    indicators = await fetch_macro_indicators(self._pool)
+                    if indicators:
+                        logger.info("macro_backfill_complete", indicators=len(indicators))
+                    await tools.log_event(
+                        self._pool, "info", "macro_backfill",
+                        f"indicators={len(indicators) if indicators else 0}",
+                    )
             except Exception as exc:
                 logger.error("macro_backfill_error", exc_info=True)
                 notify_system_error(str(exc), "macro_backfill")
@@ -803,21 +824,22 @@ class AgentOrchestrator:
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
         while not self._stop_event.is_set():
             try:
-                broker = self._broker_factory.get_broker() if self._broker_factory else None
-                if broker is not None:
-                    # / late-bind ws broadcast so tests that don't mount the dashboard still pass
-                    ws_broadcast = None
-                    try:
-                        from src.dashboard.app import broadcast as ws_broadcast_fn, _ws_clients
-                        if _ws_clients:
-                            ws_broadcast = ws_broadcast_fn
-                    except Exception:
+                async with loop_registry.track(self._pool, "alert"):
+                    broker = self._broker_factory.get_broker() if self._broker_factory else None
+                    if broker is not None:
+                        # / late-bind ws broadcast so tests that don't mount the dashboard still pass
                         ws_broadcast = None
-                    await alert_check_and_fire(
-                        self._pool, broker, ws_broadcast, webhook_url,
-                        self._alert_prev_prices,
-                    )
-                    await tools.log_event(self._pool, "info", "alert", "cycle_ok")
+                        try:
+                            from src.dashboard.app import broadcast as ws_broadcast_fn, _ws_clients
+                            if _ws_clients:
+                                ws_broadcast = ws_broadcast_fn
+                        except Exception:
+                            ws_broadcast = None
+                        await alert_check_and_fire(
+                            self._pool, broker, ws_broadcast, webhook_url,
+                            self._alert_prev_prices,
+                        )
+                        await tools.log_event(self._pool, "info", "alert", "cycle_ok")
             except Exception as exc:
                 logger.error("alert_loop_error", exc_info=True)
                 notify_system_error(str(exc), "alert_loop")
@@ -835,10 +857,11 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                if use_registry:
-                    await self._run_alternative_data_registry_cycle()
-                else:
-                    await self._run_alternative_data_legacy_cycle()
+                async with loop_registry.track(self._pool, "alternative_data"):
+                    if use_registry:
+                        await self._run_alternative_data_registry_cycle()
+                    else:
+                        await self._run_alternative_data_legacy_cycle()
             except Exception as exc:
                 logger.error("alternative_data_error", exc_info=True)
                 notify_system_error(str(exc), "alternative_data")
@@ -952,54 +975,55 @@ class AgentOrchestrator:
         if await self._wait_or_stop(600):
             return
         while not self._stop_event.is_set():
-            # / data staleness check
-            try:
-                from src.data.staleness_monitor import check_all_freshness
-                stale = await check_all_freshness(self._pool)
-                stale_sources = [s for s in stale if s.is_stale]
-                if stale_sources:
-                    msg = ", ".join(f"{s.source} ({s.staleness_hours:.0f}h)" for s in stale_sources)
-                    logger.warning("stale_data_sources", sources=msg)
-                    notify_system_error(f"stale data: {msg}", "staleness_monitor")
-            except Exception as exc:
-                logger.warning("staleness_check_error", error=str(exc))
+            async with loop_registry.track(self._pool, "monitoring"):
+                # / data staleness check
+                try:
+                    from src.data.staleness_monitor import check_all_freshness
+                    stale = await check_all_freshness(self._pool)
+                    stale_sources = [s for s in stale if s.is_stale]
+                    if stale_sources:
+                        msg = ", ".join(f"{s.source} ({s.staleness_hours:.0f}h)" for s in stale_sources)
+                        logger.warning("stale_data_sources", sources=msg)
+                        notify_system_error(f"stale data: {msg}", "staleness_monitor")
+                except Exception as exc:
+                    logger.warning("staleness_check_error", error=str(exc))
 
-            # / strategy decay check
-            try:
-                from src.analysis.strategy_decay import check_all_strategies
-                decay_signals = await check_all_strategies(self._pool, self._strategy_pool)
-                for ds in decay_signals:
-                    logger.warning("strategy_decay_detected",
-                        strategy_id=ds.strategy_id,
-                        recommendation=ds.recommendation,
-                        rolling_sharpe=ds.rolling_sharpe,
-                    )
-                    if ds.recommendation == "kill":
-                        notify_system_error(
-                            f"strategy {ds.strategy_id} decay: kill recommended (sharpe={ds.rolling_sharpe:.2f})",
-                            "strategy_decay",
+                # / strategy decay check
+                try:
+                    from src.analysis.strategy_decay import check_all_strategies
+                    decay_signals = await check_all_strategies(self._pool, self._strategy_pool)
+                    for ds in decay_signals:
+                        logger.warning("strategy_decay_detected",
+                            strategy_id=ds.strategy_id,
+                            recommendation=ds.recommendation,
+                            rolling_sharpe=ds.rolling_sharpe,
                         )
-            except Exception as exc:
-                logger.warning("decay_check_error", error=str(exc))
+                        if ds.recommendation == "kill":
+                            notify_system_error(
+                                f"strategy {ds.strategy_id} decay: kill recommended (sharpe={ds.rolling_sharpe:.2f})",
+                                "strategy_decay",
+                            )
+                except Exception as exc:
+                    logger.warning("decay_check_error", error=str(exc))
 
-            # / portfolio correlation check
-            try:
-                from src.quant.correlation_monitor import check_portfolio_correlation
-                broker = self._broker_factory.get_broker()
-                positions = await broker.get_positions()
-                if len(positions) >= 2:
-                    alert = await check_portfolio_correlation(self._pool, positions)
-                    if alert and alert.is_concentrated:
-                        logger.warning("portfolio_concentrated",
-                            avg_corr=alert.avg_correlation,
-                            max_pair=alert.max_pair,
-                        )
-                        notify_system_error(
-                            f"portfolio concentrated: avg_corr={alert.avg_correlation:.2f}",
-                            "correlation_monitor",
-                        )
-            except Exception as exc:
-                logger.warning("correlation_check_error", error=str(exc))
+                # / portfolio correlation check
+                try:
+                    from src.quant.correlation_monitor import check_portfolio_correlation
+                    broker = self._broker_factory.get_broker()
+                    positions = await broker.get_positions()
+                    if len(positions) >= 2:
+                        alert = await check_portfolio_correlation(self._pool, positions)
+                        if alert and alert.is_concentrated:
+                            logger.warning("portfolio_concentrated",
+                                avg_corr=alert.avg_correlation,
+                                max_pair=alert.max_pair,
+                            )
+                            notify_system_error(
+                                f"portfolio concentrated: avg_corr={alert.avg_correlation:.2f}",
+                                "correlation_monitor",
+                            )
+                except Exception as exc:
+                    logger.warning("correlation_check_error", error=str(exc))
 
             if await self._wait_or_stop(MONITORING_INTERVAL):
                 break
@@ -1010,10 +1034,11 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.cost_tracker import flush_to_db
-                flushed = await flush_to_db(self._pool)
-                if flushed:
-                    logger.info("cost_tracker_flushed", rows=flushed)
+                async with loop_registry.track(self._pool, "cost_flush"):
+                    from src.data.cost_tracker import flush_to_db
+                    flushed = await flush_to_db(self._pool)
+                    if flushed:
+                        logger.info("cost_tracker_flushed", rows=flushed)
             except Exception as exc:
                 logger.warning("cost_flush_error", error=str(exc))
             if await self._wait_or_stop(COST_FLUSH_INTERVAL):
@@ -1057,7 +1082,8 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                await self._compute_strategy_metrics()
+                async with loop_registry.track(self._pool, "strategy_metrics"):
+                    await self._compute_strategy_metrics()
             except Exception as exc:
                 logger.error("strategy_metrics_loop_error", exc_info=True)
                 notify_system_error(str(exc), "strategy_metrics_loop")
@@ -1078,8 +1104,9 @@ class AgentOrchestrator:
         if await self._wait_or_stop(300):
             return
         try:
-            from src.knowledge.loops import wiki_embedding_backfill_loop
-            await wiki_embedding_backfill_loop(self._pool)
+            async with loop_registry.track(self._pool, "wiki_embedding"):
+                from src.knowledge.loops import wiki_embedding_backfill_loop
+                await wiki_embedding_backfill_loop(self._pool)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1091,8 +1118,9 @@ class AgentOrchestrator:
         if await self._wait_or_stop(600):
             return
         try:
-            from src.knowledge.loops import wiki_archive_loop
-            await wiki_archive_loop(self._pool)
+            async with loop_registry.track(self._pool, "wiki_archive"):
+                from src.knowledge.loops import wiki_archive_loop
+                await wiki_archive_loop(self._pool)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1237,38 +1265,165 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                cap = self._hydration_daily_cap()
-                picks = await self._fetch_hydration_candidates(cap)
-                if not picks:
-                    logger.info("wiki_hydration_no_candidates", cap=cap)
-                else:
-                    from src.knowledge.wiki_writer import enrich_symbol_doc
-                    enriched = 0
-                    for symbol in picks:
-                        try:
-                            bundle = await self._load_hydration_bundle(symbol)
-                            analysis_rows, fundamentals, insider = bundle
-                            doc_id, _ = await enrich_symbol_doc(
-                                self._pool, symbol, analysis_rows, fundamentals, insider,
-                            )
-                            if doc_id is not None:
-                                enriched += 1
-                        except Exception as exc:
-                            logger.warning(
-                                "wiki_hydration_symbol_failed",
-                                symbol=symbol, error=str(exc)[:200],
-                            )
-                    logger.info(
-                        "wiki_hydration_cycle_complete",
-                        candidates=len(picks), enriched=enriched, cap=cap,
-                    )
-                    await tools.log_event(
-                        self._pool, "info", "knowledge_hydration",
-                        f"candidates={len(picks)} enriched={enriched} cap={cap}",
-                    )
+                async with loop_registry.track(self._pool, "knowledge_hydration"):
+                    cap = self._hydration_daily_cap()
+                    picks = await self._fetch_hydration_candidates(cap)
+                    if not picks:
+                        logger.info("wiki_hydration_no_candidates", cap=cap)
+                    else:
+                        from src.knowledge.wiki_writer import enrich_symbol_doc
+                        enriched = 0
+                        for symbol in picks:
+                            try:
+                                bundle = await self._load_hydration_bundle(symbol)
+                                analysis_rows, fundamentals, insider = bundle
+                                doc_id, _ = await enrich_symbol_doc(
+                                    self._pool, symbol, analysis_rows, fundamentals, insider,
+                                )
+                                if doc_id is not None:
+                                    enriched += 1
+                            except Exception as exc:
+                                logger.warning(
+                                    "wiki_hydration_symbol_failed",
+                                    symbol=symbol, error=str(exc)[:200],
+                                )
+                        logger.info(
+                            "wiki_hydration_cycle_complete",
+                            candidates=len(picks), enriched=enriched, cap=cap,
+                        )
+                        await tools.log_event(
+                            self._pool, "info", "knowledge_hydration",
+                            f"candidates={len(picks)} enriched={enriched} cap={cap}",
+                        )
             except Exception as exc:
                 logger.error("knowledge_hydration_loop_error", exc_info=True)
                 notify_system_error(str(exc), "knowledge_hydration_loop")
 
             if await self._wait_or_stop(KNOWLEDGE_HYDRATION_INTERVAL):
                 break
+
+    # / ---- phase 6 step 1: dashboard-posted manual triggers ----
+
+    async def _trigger_poll_loop(self) -> None:
+        # / poll trigger_requests every 5s and run the matching one-shot work
+        # / wait briefly so the db migration has run before we start polling
+        if await self._wait_or_stop(10):
+            return
+        while not self._stop_event.is_set():
+            try:
+                claimed = await loop_registry.claim_pending_triggers(self._pool)
+                for trigger_id, service in claimed:
+                    asyncio.create_task(self._run_trigger(trigger_id, service))
+            except Exception as exc:
+                logger.warning("trigger_poll_error", error=str(exc)[:120])
+            if await self._wait_or_stop(5):
+                break
+
+    async def _run_trigger(self, trigger_id: int, service: str) -> None:
+        # / execute one cycle of the named service in the background
+        logger.info("trigger_received", service=service, trigger_id=trigger_id)
+        try:
+            async with loop_registry.track(self._pool, service):
+                await self._run_service_once(service)
+            await loop_registry.complete_trigger(self._pool, trigger_id, "done")
+        except Exception as exc:
+            logger.error("trigger_run_failed", service=service, error=str(exc)[:200])
+            await loop_registry.complete_trigger(self._pool, trigger_id, "error", str(exc))
+
+    async def _run_service_once(self, service: str) -> None:
+        # / dispatch a service name to its one-shot work (same work as the loop body)
+        from src.data.symbols import is_crypto as _is_crypto, get_sector as _get_sector
+        symbols = self._get_symbols()
+        if service == "macro_backfill":
+            from src.data.fred_macro import fetch_macro_indicators
+            await fetch_macro_indicators(self._pool)
+        elif service == "fundamentals_backfill":
+            from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+            syms = [s for s in symbols if not _is_crypto(s)]
+            data = await fetch_all_fundamentals(syms)
+            if data:
+                await store_fundamentals(self._pool, data)
+        elif service == "insider_backfill":
+            from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+            syms = [s for s in symbols if not _is_crypto(s) and _get_sector(s) != "etfs"]
+            for sym in syms:
+                try:
+                    trades = await fetch_insider_trades(sym)
+                    if trades:
+                        await store_insider_trades(self._pool, trades)
+                except Exception as exc:
+                    logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
+        elif service == "regime_backfill":
+            from src.data.regime_detector import (
+                backfill_regimes, backfill_regimes_per_sector, snapshot_regime_daily,
+            )
+            await backfill_regimes(self._pool, "SPY", "equity")
+            await backfill_regimes(self._pool, "BTC-USD", "crypto")
+            try:
+                await backfill_regimes_per_sector(self._pool)
+            except Exception as exc:
+                logger.warning("trigger_sector_regime_failed", error=str(exc)[:120])
+            try:
+                eq = await tools.fetch_latest_regime(self._pool, "equity")
+                cr = await tools.fetch_latest_regime(self._pool, "crypto")
+                if eq:
+                    await snapshot_regime_daily(self._pool, "equity", eq)
+                if cr:
+                    await snapshot_regime_daily(self._pool, "crypto", cr)
+            except Exception as exc:
+                logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
+        elif service == "daily_bar_backfill":
+            from src.data.market_data import backfill
+            await backfill(self._pool, symbols, years=1)
+        elif service == "intraday_backfill":
+            from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
+            await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
+            await aggregate_intraday_to_2h(self._pool, symbols, days=10)
+        elif service == "crypto_backfill":
+            from src.data.market_data import backfill
+            crypto = [s for s in symbols if _is_crypto(s)]
+            if crypto:
+                await backfill(self._pool, crypto, years=1)
+        elif service == "price_refresh":
+            from src.data.market_data import fetch_latest_prices, store_latest_prices
+            prices = await fetch_latest_prices(symbols)
+            if prices:
+                await store_latest_prices(self._pool, prices)
+        elif service == "alternative_data":
+            await self._run_alternative_data_registry_cycle()
+        elif service == "analyst":
+            await self._analyst.run(self._pool, symbols, run_deepseek=False)
+        elif service == "deepseek":
+            await self._analyst.run(self._pool, symbols, run_deepseek=True)
+        elif service == "strategy":
+            broker = self._broker_factory.get_broker()
+            await self._strategy.run(self._pool, self._strategy_pool, broker)
+        elif service == "strategy_metrics":
+            await self._compute_strategy_metrics()
+        elif service == "wiki_embedding":
+            from src.knowledge.loops import _embed_backfill_once
+            await _embed_backfill_once(self._pool)
+        elif service == "knowledge_hydration":
+            cap = self._hydration_daily_cap()
+            picks = await self._fetch_hydration_candidates(cap)
+            if picks:
+                from src.knowledge.wiki_writer import enrich_symbol_doc
+                for sym in picks:
+                    try:
+                        bundle = await self._load_hydration_bundle(sym)
+                        await enrich_symbol_doc(self._pool, sym, *bundle)
+                    except Exception as exc:
+                        logger.warning("trigger_hydration_symbol_failed", symbol=sym, error=str(exc)[:120])
+        elif service == "evolution":
+            if self._strategy_pool.size >= 3:
+                market_data = await self._fetch_evolution_market_data()
+                regime = await tools.fetch_latest_regime(self._pool, "equity")
+                await self._evolution.run(
+                    self._pool, self._strategy_pool,
+                    market_data=market_data, regime=regime,
+                )
+        elif service == "cost_flush":
+            from src.data.cost_tracker import flush_to_db
+            await flush_to_db(self._pool)
+        else:
+            raise ValueError(f"service not triggerable: {service}")
