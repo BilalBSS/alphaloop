@@ -373,6 +373,30 @@ async def get_crypto_fundamentals(symbol: str):
         }
 
 
+@app.get("/api/phase5-metrics")
+async def get_phase5_metrics():
+    # / phase 5 step 9: activation flywheel health — days since last evolution kill,
+    # / brier-populated strategy count, cerebras-vs-groq split, established wiki docs,
+    # / regime diversity per asset class. also surfaces kronos hf-vs-fallback load state.
+    # / each metric degrades independently — a missing table doesn't 500 the endpoint.
+    from src.agents.phase5_metrics import compute_phase5_metrics
+    from src.quant.kronos_signal import get_load_status as kronos_status
+    try:
+        metrics = await compute_phase5_metrics(_pool)
+        return {
+            "metrics": metrics.as_dict(),
+            "success_criteria": metrics.success_criteria(),
+            "all_pass": metrics.all_pass(),
+            "kronos": kronos_status(),
+        }
+    except Exception as exc:
+        logger.warning("phase5_metrics_endpoint_failed", error=str(exc)[:200])
+        return JSONResponse(
+            {"error": "phase5 metrics unavailable", "detail": str(exc)[:200]},
+            status_code=500,
+        )
+
+
 @app.get("/api/symbols")
 async def get_symbols():
     # / list ALL universe symbols with latest score if any — bug 5a: un-analyzed symbols

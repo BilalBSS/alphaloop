@@ -1,6 +1,10 @@
 /* design tokens — single source of truth for spacing/type/color/radius/shadow
-   / dark theme (light-on-dark). keep tailwind's @theme for tailwind-class users
-   / but prefer these vars so components stay framework-agnostic. */
+   / dark theme, light-on-dark. warm neutrals (not bloomberg cool-blue).
+   / serif reserved for hero display; geist + tabular-nums for all data.
+   / green/red are P&L only — amber is the system "pay attention" accent.
+   / no gradients, no blobs, no pulse animations. instrument panel, not product pitch.
+   / keep tailwind's @theme for tailwind-class users but prefer these vars
+   / so components stay framework-agnostic. */
 
 :root {
   /* spacing scale (4px base) */
