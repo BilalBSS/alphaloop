@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useApi } from '../../hooks/useApi'
 import { useWebSocketContext } from '../../contexts/WebSocketContext'
+import EmptyState from '../EmptyState'
 
 const MARKETS = ['all', 'equity', 'crypto']
 
@@ -138,7 +139,10 @@ export default function RegimeShiftList() {
 
       {loading && <div className="text-text-muted text-sm py-8">loading…</div>}
       {!loading && (!data || data.length === 0) && (
-        <div className="text-text-muted text-sm py-8">No regime shifts recorded yet.</div>
+        <EmptyState
+          title="No regime shifts recorded"
+          hint="Regime detector writes a row on each classification change. Market has been stable or the detector hasn't run yet."
+        />
       )}
       {!loading && data && data.length > 0 && (
         <div className="overflow-x-auto">

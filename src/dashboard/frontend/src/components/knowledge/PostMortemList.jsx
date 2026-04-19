@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useApi } from '../../hooks/useApi'
+import EmptyState from '../EmptyState'
 
 export default function PostMortemList() {
   const { data, loading } = useApi('/api/post-mortems?limit=100', 60000)
@@ -7,14 +8,19 @@ export default function PostMortemList() {
 
   if (loading) return <div className="text-text-muted text-sm py-8">loading…</div>
   if (!data || data.length === 0) {
-    return <div className="text-text-muted text-sm py-8">No post-mortems yet. They trigger on closed losses &gt; $50 or &gt; 2%.</div>
+    return (
+      <EmptyState
+        title="No post-mortems yet"
+        hint="Writes on first closed loss > $50 or > 2% — an automatic retrospective of what went wrong."
+      />
+    )
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto table-scroll-fade">
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-text-secondary text-[11px] uppercase">
+          <tr className="text-text-secondary text-[11px] uppercase sticky top-0 bg-bg-surface">
             <th className="text-left px-2 py-1">When</th>
             <th className="text-left px-2 py-1">Strategy</th>
             <th className="text-left px-2 py-1">Symbol</th>
@@ -27,12 +33,11 @@ export default function PostMortemList() {
         <tbody>
           {data.map((pm) => {
             const pnl = pm.pnl != null ? Number(pm.pnl) : null
-            const pnlColor = pnl == null ? 'text-text-muted' : pnl < 0 ? 'text-loss' : 'text-profit'
+            const pnlColor = pnl == null ? 'text-text-muted' : pnl < 0 ? 'pnl-negative' : 'pnl-positive'
             const open = expandedId === pm.id
             return (
-              <>
+              <Fragment key={pm.id}>
                 <tr
-                  key={pm.id}
                   onClick={() => setExpandedId(open ? null : pm.id)}
                   className="border-b border-border/50 hover:bg-bg-primary/50 cursor-pointer"
                 >
@@ -53,7 +58,7 @@ export default function PostMortemList() {
                   </td>
                 </tr>
                 {open && pm.details && (
-                  <tr key={`${pm.id}-detail`} className="bg-bg-primary/70">
+                  <tr className="bg-bg-primary/70">
                     <td colSpan={7} className="px-3 py-2">
                       <pre className="text-[11px] text-text-secondary whitespace-pre-wrap">
                         {typeof pm.details === 'string' ? pm.details : JSON.stringify(pm.details, null, 2)}
@@ -61,7 +66,7 @@ export default function PostMortemList() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             )
           })}
         </tbody>
