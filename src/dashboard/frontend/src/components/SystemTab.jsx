@@ -56,6 +56,10 @@ function statusPill(status) {
   if (status === 'error') {
     return <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-loss/20 pnl-negative font-semibold">error</span>
   }
+  if (status === 'cancelled') {
+    // / normal interruption when orchestrator restarts mid-cycle — not an error
+    return <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-bg-primary text-text-muted font-semibold">cancelled</span>
+  }
   return <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-bg-primary text-text-muted font-semibold">pending</span>
 }
 
@@ -305,7 +309,8 @@ export default function SystemTab() {
   const loops = loopsData?.loops || []
   const okCount = loops.filter((l) => l.last_status === 'ok').length
   const errorCount = loops.filter((l) => l.last_status === 'error').length
-  const pendingCount = loops.filter((l) => !l.last_status).length
+  // / 'cancelled' (restart mid-cycle) and no status yet both count as "not yet fired"
+  const pendingCount = loops.filter((l) => !l.last_status || l.last_status === 'cancelled').length
 
   return (
     <div className="space-y-4">

@@ -250,11 +250,19 @@ class _LoopTracker:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
+        import asyncio as _asyncio
         import time
         duration_ms = int((time.monotonic() - self._started) * 1000)
-        status = "ok" if exc is None else "error"
-        err_msg = None
-        if exc is not None:
+        # / CancelledError is a normal shutdown signal (orchestrator.stop), not a bug.
+        # / marking it as "error" pollutes the System tab's error count on every restart.
+        if exc is None:
+            status = "ok"
+            err_msg = None
+        elif exc_type is not None and issubclass(exc_type, _asyncio.CancelledError):
+            status = "cancelled"
+            err_msg = None
+        else:
+            status = "error"
             err_msg = f"{exc_type.__name__ if exc_type else 'Exception'}: {exc}"
         await record_fire_end(self._pool, self._name, status, duration_ms, err_msg)
         return False  # / don't swallow exceptions

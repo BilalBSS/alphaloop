@@ -99,11 +99,13 @@ def _try_load_hf_model() -> bool:
         return False
 
     try:
-        # / these imports depend on trust_remote_code pulling the Kronos classes from HF
-        from transformers import AutoModel, AutoTokenizer  # type: ignore  # noqa: F401
-    except ImportError:
-        _model_load_failed_reason = "transformers_not_installed"
-        logger.info("kronos_transformers_missing_using_fallback")
+        # / vendored from github.com/shiyu-coder/Kronos (see src/quant/vendor/kronos/)
+        # / the HF repo only ships weights + config; loading classes aren't in HF auto-map
+        # / so we need the upstream KronosTokenizer/Kronos/KronosPredictor classes locally.
+        from src.quant.vendor.kronos import Kronos, KronosTokenizer, KronosPredictor
+    except ImportError as exc:
+        _model_load_failed_reason = f"kronos_import_failed: {str(exc)[:180]}"
+        logger.warning("kronos_vendor_import_failed", error=str(exc)[:200])
         return False
 
     tokenizer_id = os.environ.get("KRONOS_TOKENIZER_ID", DEFAULT_TOKENIZER_ID)
@@ -111,27 +113,11 @@ def _try_load_hf_model() -> bool:
     device = os.environ.get("KRONOS_DEVICE", "cpu")
     max_context = int(os.environ.get("KRONOS_MAX_CONTEXT", "512"))
     try:
-        # / the `Kronos`, `KronosTokenizer`, `KronosPredictor` classes live in the HF
-        # / repo's modeling code. loading with trust_remote_code=True registers them
-        # / under their real names; AutoModel.from_pretrained picks the custom class.
-        _tokenizer = AutoModel.from_pretrained(tokenizer_id, trust_remote_code=True)
-        _model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
-        # / KronosPredictor is a custom wrapper class that ships with the model. we
-        # / look it up on the loaded module rather than importing a top-level name
-        # / so we don't have to care which file the HF repo puts it in.
-        predictor_cls = None
-        for mod in (_model.__class__.__module__, _tokenizer.__class__.__module__):
-            try:
-                import importlib
-                m = importlib.import_module(mod)
-                predictor_cls = getattr(m, "KronosPredictor", None)
-                if predictor_cls is not None:
-                    break
-            except Exception:
-                continue
-        if predictor_cls is None:
-            raise RuntimeError("KronosPredictor class not found in loaded module")
-        _predictor = predictor_cls(_model, _tokenizer, device=device, max_context=max_context)
+        # / KronosTokenizer and Kronos both inherit PyTorchModelHubMixin so
+        # / .from_pretrained downloads weights from HF hub on first call
+        _tokenizer = KronosTokenizer.from_pretrained(tokenizer_id)
+        _model = Kronos.from_pretrained(model_id)
+        _predictor = KronosPredictor(_model, _tokenizer, device=device, max_context=max_context)
         logger.info("kronos_hf_model_loaded", model_id=model_id, tokenizer_id=tokenizer_id, device=device)
         return True
     except Exception as exc:
