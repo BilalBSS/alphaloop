@@ -27,6 +27,20 @@ def _alpaca_headers() -> dict[str, str]:
     return alpaca_headers()
 
 
+def _default_equity_feed() -> str | None:
+    # / paper base urls include "paper-api.alpaca.markets"; force iex for those.
+    # / returning None means no feed param (caller chooses via ALPACA_DATA_FEED env).
+    base = os.environ.get("ALPACA_BASE_URL", "").lower()
+    if "paper" in base:
+        return "iex"
+    return None
+
+
+def _should_skip_alpaca_equity() -> bool:
+    # / escape hatch for debugging: SKIP_ALPACA_EQUITY_BARS=true → straight to yfinance
+    return os.environ.get("SKIP_ALPACA_EQUITY_BARS", "").lower() in ("1", "true", "yes")
+
+
 @with_retry(source="alpaca_bars", max_retries=3, base_delay=1.0)
 async def fetch_bars_alpaca(
     symbol: str,
@@ -56,6 +70,11 @@ async def fetch_bars_alpaca(
             "limit": 10000,
             "adjustment": "all",
         }
+        # / paper accounts only have iex feed access — requesting sip returns 403.
+        # / override via ALPACA_DATA_FEED for live-tier accounts with sip entitlement.
+        feed = os.environ.get("ALPACA_DATA_FEED") or _default_equity_feed()
+        if feed:
+            params["feed"] = feed
 
     all_bars: list[dict[str, Any]] = []
 
@@ -142,13 +161,22 @@ async def fetch_bars(
     end: date,
 ) -> list[dict[str, Any]]:
     # / try alpaca first, fall back to yfinance
+    if not is_crypto(symbol) and _should_skip_alpaca_equity():
+        logger.info("alpaca_equity_skipped", symbol=symbol, reason="SKIP_ALPACA_EQUITY_BARS")
+        return await fetch_bars_yfinance(symbol, start, end)
     try:
         bars = await fetch_bars_alpaca(symbol, start, end)
         if bars:
             return bars
         logger.warning("alpaca_returned_empty", symbol=symbol)
     except Exception as exc:
-        logger.warning("alpaca_fetch_failed", symbol=symbol, error=str(exc))
+        msg = str(exc)
+        # / paper keys return 403 on sip; we already force feed=iex, but log the downgrade
+        # / so System tab's last_error makes the root cause visible to the user.
+        if "403" in msg:
+            logger.warning("alpaca_feed_downgrade", symbol=symbol, error=msg[:120])
+        else:
+            logger.warning("alpaca_fetch_failed", symbol=symbol, error=msg)
 
     # / fallback
     logger.info("falling_back_to_yfinance", symbol=symbol)
@@ -167,6 +195,9 @@ async def fetch_latest_quote(symbol: str) -> dict[str, Any] | None:
     else:
         url = f"{ALPACA_DATA_URL}/v2/stocks/{alpaca_sym}/trades/latest"
         params = {}
+        feed = os.environ.get("ALPACA_DATA_FEED") or _default_equity_feed()
+        if feed:
+            params["feed"] = feed
 
     client = await get_alpaca_client()
     resp = await client.get(url, headers=_alpaca_headers(), params=params, timeout=10.0)
