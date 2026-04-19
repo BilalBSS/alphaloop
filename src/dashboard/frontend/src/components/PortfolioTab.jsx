@@ -187,7 +187,10 @@ function StrategyCard({ strategy, decay }) {
           <div className="text-text-muted">
             <span className="font-mono text-text-secondary">{trades != null ? trades : '—'}</span> trades
           </div>
-          <div className="text-text-muted">
+          <div
+            className="text-text-muted"
+            title={brier == null ? 'Brier score computes after 3 closed trades — this strategy has no sells yet' : undefined}
+          >
             Brier <span className={`font-mono ${brier == null ? 'text-text-muted' : brier < 0.1 ? 'pnl-positive' : brier < 0.2 ? 'text-text-primary' : brier < 0.3 ? 'text-warning' : 'pnl-negative'}`}>
               {brier == null ? '—' : brier.toFixed(3)}
             </span>

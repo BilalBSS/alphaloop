@@ -53,14 +53,14 @@ function AppInner() {
       <Header portfolio={portfolio.data} wsStatus={wsStatus} />
 
       {/* tab navigation */}
-      <nav className="bg-bg-surface border-b border-border flex px-4 overflow-x-auto shrink-0">
+      <nav className="bg-bg-surface border-b border-border flex px-6 gap-1 overflow-x-auto shrink-0">
         {TABS.map((tab, i) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2.5 text-sm transition-colors whitespace-nowrap
+            className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap -mb-px
               ${activeTab === tab
-                ? 'text-accent border-b-2 border-accent'
+                ? 'text-text-primary border-b-2 border-accent'
                 : 'text-text-secondary hover:text-text-primary border-b-2 border-transparent'
               }`}
             aria-label={`${tab} tab (press ${i + 1})`}
