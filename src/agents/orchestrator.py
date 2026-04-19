@@ -547,16 +547,28 @@ class AgentOrchestrator:
             return
         while not self._stop_event.is_set():
             try:
-                from src.data.regime_detector import backfill_regimes
+                from src.data.regime_detector import (
+                    backfill_regimes,
+                    backfill_regimes_per_sector,
+                )
                 equity_count = await backfill_regimes(self._pool, "SPY", "equity")
                 crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
+                # / phase 5 step 4: per-sector regimes so strategies can see sector-specific nuance
+                try:
+                    sector_counts = await backfill_regimes_per_sector(self._pool)
+                    sector_total = sum(sector_counts.values())
+                except Exception as exc:
+                    logger.warning("sector_regime_backfill_failed", error=str(exc)[:200])
+                    sector_total = 0
                 logger.info(
                     "regime_backfill_complete",
-                    equity_rows=equity_count, crypto_rows=crypto_count,
+                    equity_rows=equity_count,
+                    crypto_rows=crypto_count,
+                    sector_rows=sector_total,
                 )
                 await tools.log_event(
                     self._pool, "info", "regime_backfill",
-                    f"equity={equity_count} crypto={crypto_count}",
+                    f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
                 )
                 # / phase 2: detect regime transitions and write wiki note + regime_shifts row
                 await self._check_regime_shift("equity")
