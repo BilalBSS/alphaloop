@@ -22,6 +22,64 @@ function timeAgo(ts) {
   return `${days}d ago`
 }
 
+function timeUntil(ts) {
+  if (!ts) return '—'
+  const diff = new Date(ts).getTime() - Date.now()
+  if (diff < 0) return 'due'
+  const h = Math.floor(diff / 3600000)
+  const m = Math.floor((diff % 3600000) / 60000)
+  if (h < 24) return `${h}h ${m}m`
+  const d = Math.floor(h / 24)
+  return `${d}d ${h % 24}h`
+}
+
+function HydrationPanel() {
+  const { data } = useApi('/api/hydration-status', 60000)
+  if (!data) return null
+  const { daily_cap = 5, hydrated_today = 0, next_fire_ts, last_event_ts, last_status } = data
+  const pct = daily_cap > 0 ? Math.min(100, (hydrated_today / daily_cap) * 100) : 0
+  const barColor = pct >= 100 ? 'bg-profit' : pct > 0 ? 'bg-accent' : 'bg-border'
+  return (
+    <Panel title="Symbol wiki hydration">
+      <div className="space-y-3">
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-sm font-mono text-text-primary">
+              {hydrated_today} / {daily_cap}
+              <span className="text-xs text-text-muted ml-1">hydrated today</span>
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              next run in {timeUntil(next_fire_ts)}
+            </span>
+          </div>
+          <div className="w-full bg-bg-primary rounded-full h-1.5 overflow-hidden">
+            <div
+              className={`h-full ${barColor} transition-all`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-[11px] text-text-muted">
+          <div>
+            last fire: <span className="text-text-secondary">{timeAgo(last_event_ts)}</span>
+          </div>
+          <div>
+            status: <span className={
+              last_status === 'ok' ? 'pnl-positive'
+              : last_status === 'error' ? 'pnl-negative'
+              : 'text-text-secondary'
+            }>{last_status || 'pending'}</span>
+          </div>
+        </div>
+        <div className="text-[11px] text-text-muted">
+          Cap is env-configurable via <span className="font-mono">WIKI_HYDRATION_DAILY_CAP</span> (default 5).
+          Bump to 25 for faster first-day fills.
+        </div>
+      </div>
+    </Panel>
+  )
+}
+
 function confidenceRank(raw) {
   if (!raw) return 0
   const s = String(raw).toLowerCase()
@@ -77,6 +135,7 @@ export default function KnowledgeTab() {
   return (
     <div className="space-y-6">
       <KnowledgeHero />
+      <HydrationPanel />
       <Panel title="Knowledge Base">
         <div className="flex gap-2 mb-4 text-xs">
           {SUB_TABS.map((t) => (

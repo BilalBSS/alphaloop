@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -252,6 +253,12 @@ class StrategyAgent:
         _signal_kept = True
         _reason_code = "passthrough"
         _blocked_return = False
+        # / phase 6 step 12: consensus mode — strict (default) vs loose.
+        # / strict blocks bearish-consensus when symbol_trend != "up".
+        # / loose softens bearish to 0.4x but never blocks, giving the evolution
+        # / engine more data points to measure brier impact. revert by unset.
+        consensus_mode = os.environ.get("CONSENSUS_MODE", "strict").strip().lower()
+        is_loose = consensus_mode == "loose"
         if consensus == "bearish" and not bypass_consensus:
             if symbol_trend == "up":
                 # / stock bucking the bearish market, allow through with penalty
@@ -268,8 +275,18 @@ class StrategyAgent:
                     symbol=symbol, symbol_trend=symbol_trend,
                     adjusted_strength=entry_signal.strength,
                 )
+            elif is_loose:
+                # / loose mode: never block on bearish consensus, just size way down
+                entry_signal = EntrySignal(
+                    should_enter=True,
+                    strength=entry_signal.strength * 0.4,
+                    reasons=entry_signal.reasons + [
+                        "ai_consensus: bearish, loose mode 0.4x",
+                    ],
+                )
+                _reason_code = "kept_bearish_loose_mode"
             else:
-                # / symbol_trend is down or unknown, block as before
+                # / strict mode: block as before
                 _signal_kept = False
                 _reason_code = "rejected_bearish_consensus"
                 _blocked_return = True
@@ -600,6 +617,52 @@ class StrategyAgent:
 
         return signals
 
+    def _eval_partial_exit(
+        self, strategy, sp: dict, df: pd.DataFrame,
+        override_strategy_id: str | None = None,
+    ) -> dict | None:
+        # / phase 6 step 12: evaluate the first partial_exits tier.
+        # / strategy JSON shape:
+        # /   exit_conditions.partial_exits: [{"trigger": "take_profit_pct", "threshold": 0.05, "fraction": 0.5}]
+        # / returns None when no tier triggers or the position already consumed a tier.
+        try:
+            if sp.get("partial_exit_fired"):
+                return None
+            cfg = strategy.config if hasattr(strategy, "config") else {}
+            tiers = (cfg.get("exit_conditions", {}) or {}).get("partial_exits") or []
+            if not tiers:
+                return None
+            tier = tiers[0]  # / only first tier for now; future tiers can fire on re-entry
+            trigger = (tier.get("trigger") or "").lower()
+            threshold = float(tier.get("threshold") or 0)
+            fraction = float(tier.get("fraction") or 0.5)
+            if not (0.0 < fraction < 1.0) or threshold <= 0:
+                return None
+            entry_price = float(sp.get("avg_entry_price") or 0)
+            last_close = float(df["close"].iloc[-1]) if len(df) > 0 else 0.0
+            if entry_price <= 0 or last_close <= 0:
+                return None
+            gain_pct = (last_close - entry_price) / entry_price
+            fires = False
+            if trigger in ("take_profit_pct", "take_profit"):
+                fires = gain_pct >= threshold
+            # / future triggers: "take_profit_1r" with stop distance input, etc.
+            if not fires:
+                return None
+            full_qty = float(sp.get("qty") or 0)
+            partial_qty = int(full_qty * fraction)
+            if partial_qty <= 0:
+                return None
+            return {
+                "strategy_id": override_strategy_id or strategy.strategy_id,
+                "qty": partial_qty,
+                "fraction": round(fraction, 3),
+                "exit_reason": f"partial_exit {trigger} +{threshold*100:.1f}%",
+            }
+        except Exception as exc:
+            logger.debug("partial_exit_eval_failed", symbol=sp.get("symbol"), error=str(exc)[:120])
+            return None
+
     async def _eval_exit(
         self, pool, strategy, sp: dict, override_strategy_id: str | None = None,
     ) -> dict | None:
@@ -608,6 +671,47 @@ class StrategyAgent:
             df = await self._fetch_market_df(pool, sp["symbol"])
             if df is None:
                 return None
+
+            # / phase 6 step 12: partial-exit tier check before full-exit evaluation.
+            # / if the strategy's exit_conditions.partial_exits[0] trigger has fired
+            # / and partial_exit_fired is still false, sell `fraction` of the position.
+            partial_sig = self._eval_partial_exit(strategy, sp, df, override_strategy_id)
+            if partial_sig is not None:
+                signal_id = await tools.store_trade_signal(
+                    pool,
+                    strategy_id=partial_sig["strategy_id"],
+                    symbol=sp["symbol"],
+                    signal_type="sell",
+                    strength=1.0,
+                    regime=None,
+                    details={
+                        "exit_reason": partial_sig["exit_reason"],
+                        "qty": partial_sig["qty"],
+                        "partial_exit": True,
+                        "exit_fraction": partial_sig["fraction"],
+                    },
+                )
+                # / mark the position so we don't re-fire next cycle; best-effort
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """UPDATE strategy_positions
+                            SET partial_exit_fired = TRUE, updated_at = NOW()
+                            WHERE strategy_id=$1 AND symbol=$2""",
+                            partial_sig["strategy_id"], sp["symbol"],
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "partial_exit_flag_update_failed",
+                        symbol=sp["symbol"], error=str(exc)[:120],
+                    )
+                return {
+                    "signal_id": signal_id,
+                    "strategy_id": partial_sig["strategy_id"],
+                    "symbol": sp["symbol"],
+                    "signal_type": "sell",
+                    "qty": partial_sig["qty"],
+                }
 
             # / use position's updated_at as entry proxy, fallback to oldest bar
             entry_ts = sp.get("updated_at")

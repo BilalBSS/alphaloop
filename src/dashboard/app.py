@@ -13,7 +13,7 @@ from pathlib import Path
 import asyncpg
 import structlog
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1396,6 +1396,109 @@ async def get_macro_context():
     }
 
 
+@app.get("/api/feature-benchmark")
+async def get_feature_benchmark(symbol: str = "SPY"):
+    # / phase 6 step 9: run the handbuilt vs alpha158 a/b on one symbol's 5y daily bars
+    # / cached per symbol for an hour so the button is cheap to press repeatedly
+    import time as _time
+    global _feature_bench_cache
+    try:
+        _feature_bench_cache  # type: ignore[name-defined]
+    except NameError:
+        _feature_bench_cache = {}
+    cache_key = symbol.upper()
+    now = _time.time()
+    hit = _feature_bench_cache.get(cache_key)
+    if hit and (now - hit["ts"]) < 3600:
+        return hit["result"]
+
+    if _pool is None:
+        return {"error": "no_db"}
+    rows = await _query(
+        """SELECT date, open, high, low, close, volume FROM market_data
+        WHERE symbol = $1 ORDER BY date ASC""",
+        cache_key,
+    )
+    if not rows or len(rows) < 400:
+        return {"error": "insufficient_history", "rows": len(rows)}
+    import pandas as pd
+    df = pd.DataFrame([{
+        "open":   float(r["open"]) if r["open"] is not None else 0.0,
+        "high":   float(r["high"]) if r["high"] is not None else 0.0,
+        "low":    float(r["low"]) if r["low"] is not None else 0.0,
+        "close":  float(r["close"]) if r["close"] is not None else 0.0,
+        "volume": float(r["volume"]) if r["volume"] is not None else 0.0,
+    } for r in rows], index=pd.DatetimeIndex([r["date"] for r in rows]))
+
+    from src.quant.ml_signals import benchmark_feature_sets
+    result = await benchmark_feature_sets(df)
+    result["symbol"] = cache_key
+    _feature_bench_cache[cache_key] = {"ts": now, "result": result}
+    return result
+
+
+@app.get("/api/hydration-status")
+async def get_hydration_status():
+    # / wiki symbol-doc hydration progress: today's count, daily cap, next fire
+    from src.agents.loop_registry import describe_loops
+    cap_raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP", "5")
+    try:
+        cap = max(0, int(cap_raw))
+    except ValueError:
+        cap = 5
+
+    hydrated_today = 0
+    last_event_ts = None
+    if _pool is not None:
+        try:
+            row = await _query_one(
+                """SELECT COUNT(*) as n, MAX(timestamp) as last_ts
+                FROM system_events
+                WHERE source='knowledge_hydration'
+                AND level='info'
+                AND timestamp >= CURRENT_DATE"""
+            )
+            if row:
+                hydrated_today = int(row.get("n") or 0)
+                last_event_ts = row.get("last_ts")
+        except Exception:
+            pass
+
+    loops = await describe_loops(_pool)
+    hydration = next((l for l in loops if l["name"] == "knowledge_hydration"), None)
+    return {
+        "daily_cap": cap,
+        "hydrated_today": hydrated_today,
+        "last_event_ts": last_event_ts.isoformat() if hasattr(last_event_ts, "isoformat") else last_event_ts,
+        "next_fire_ts": hydration.get("next_fire_ts").isoformat()
+            if hydration and hasattr(hydration.get("next_fire_ts"), "isoformat")
+            else (hydration and hydration.get("next_fire_ts")),
+        "last_status": hydration.get("last_status") if hydration else None,
+    }
+
+
+@app.get("/api/macro-history")
+async def get_macro_history(days: int = 30):
+    # / per-series timeseries over the last N days for sparkline rendering
+    if _pool is None:
+        return {"series": {}}
+    days = max(7, min(int(days or 30), 365))
+    rows = await _query(
+        """SELECT series_id, date, value FROM macro_data
+        WHERE date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
+        ORDER BY series_id, date ASC""",
+        days,
+    )
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        sid = r["series_id"]
+        out.setdefault(sid, []).append({
+            "date": r["date"].isoformat() if hasattr(r["date"], "isoformat") else r["date"],
+            "value": float(r["value"]) if r["value"] is not None else None,
+        })
+    return {"series": out, "days": days}
+
+
 @app.get("/api/congressional/{symbol}")
 async def get_congressional(symbol: str):
     # / last 20 congressional trades for symbol + computed net_buy_ratio
@@ -1753,6 +1856,56 @@ async def get_strategy_decay():
         return {"signals": signals}
     except Exception:
         return {"signals": []}
+
+
+# / phase 6 step 1: loop introspection + admin trigger + env health
+
+@app.get("/api/loops")
+async def get_loops():
+    # / one row per known orchestrator loop with cadence, last fire, next fire, status
+    from src.agents.loop_registry import describe_loops
+    rows = await describe_loops(_pool)
+    return {"loops": _serialize(rows)}
+
+
+@app.post("/api/admin/trigger/{service}")
+async def admin_trigger(service: str, request: Request):
+    # / queue a one-shot run of {service} for the orchestrator to pick up
+    # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
+    from src.agents.loop_registry import enqueue_trigger, LOOP_METADATA
+    expected = os.environ.get("ADMIN_TOKEN")
+    if expected:
+        auth = request.headers.get("Authorization", "")
+        supplied = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else ""
+        if supplied != expected:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if service not in LOOP_METADATA:
+        return JSONResponse({"error": "unknown_service", "service": service}, status_code=404)
+    row_id = await enqueue_trigger(_pool, service)
+    if row_id is None:
+        return JSONResponse({"error": "enqueue_failed"}, status_code=500)
+    return JSONResponse({"trigger_id": row_id, "service": service, "status": "queued"}, status_code=202)
+
+
+@app.get("/api/env-health")
+async def get_env_health():
+    # / presence check only — never returns values
+    required = [
+        "DATABASE_URL", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+        "GROQ_API_KEY", "DEEPSEEK_API_KEY", "CEREBRAS_API_KEY",
+        "FRED_API_KEY", "FINNHUB_API_KEY", "SEC_EDGAR_USER_AGENT",
+        "OLLAMA_BASE_URL", "TRADE_SYMBOLS",
+    ]
+    optional = [
+        "DUNE_API_KEY", "DISCORD_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+        "TELEGRAM_BOT_TOKEN", "ADMIN_TOKEN", "KRONOS_ENABLED",
+        "WIKI_HYDRATION_DAILY_CAP", "MAX_POSITION_PCT", "CONSENSUS_MODE",
+        "ML_FEATURE_SET",
+    ]
+    return {
+        "required": {k: bool(os.environ.get(k)) for k in required},
+        "optional": {k: bool(os.environ.get(k)) for k in optional},
+    }
 
 
 # / websocket for live updates

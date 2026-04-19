@@ -1,0 +1,33 @@
+{
+  "id": "strategy_024",
+  "name": "Sector_Rotation_Healthcare_Stable",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "XLV leaders during sideways-to-bear equity regime; lower beta, fundamentals gate",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": { "strict_data": true, "pe_ratio_max": 25, "fcf_margin_min": 0.15, "debt_to_equity_max": 1.5 },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      { "indicator": "regime", "condition": "in", "values": ["sideways", "bear", "high_vol"] },
+      { "indicator": "sector_relative_strength", "condition": "above", "threshold": 0.0, "lookback": 20, "sector_etf": "XLV" },
+      { "indicator": "beta", "condition": "below", "threshold": 0.9 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "type": "fixed_pct", "pct": 0.06 },
+    "stop_loss": { "type": "atr_trailing", "multiplier": 1.5, "period": 14 },
+    "time_exit": { "max_holding_days": 45 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.25
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": "health_energy",
+  "symbol": null
+}

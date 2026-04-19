@@ -1,0 +1,37 @@
+{
+  "id": "strategy_029",
+  "name": "Event_Insider_Cluster_Buy",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Buy when 3+ insiders buy within 30 days and net buying > $500k; hold through next earnings",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 40,
+    "debt_to_equity_max": 2.0
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      { "indicator": "insider_cluster", "condition": "count_above", "threshold": 3, "lookback_days": 30 },
+      { "indicator": "insider_net_dollar", "condition": "above", "threshold_usd": 500000, "lookback_days": 30 },
+      { "indicator": "sma", "condition": "price_above", "period": 50 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "type": "fixed_pct", "pct": 0.12 },
+    "stop_loss": { "type": "atr_trailing", "multiplier": 2.0, "period": 14 },
+    "time_exit": { "max_holding_days": 45 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.25
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
+}

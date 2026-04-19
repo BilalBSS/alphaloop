@@ -11,6 +11,8 @@ from typing import Any
 
 import structlog
 
+import os
+
 from src.analysis.ratio_analysis import RatioScore, analyze_ratios
 from src.analysis.dcf_model import DCFResult, analyze_dcf
 from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
@@ -22,8 +24,57 @@ from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
 from src.data.symbols import is_crypto
 from src.notifications.notifier import notify_analysis_highlight
+from src.quant import kronos_signal
 
 logger = structlog.get_logger(__name__)
+
+
+async def _compute_kronos_score(pool, symbol: str) -> tuple[float | None, dict | None]:
+    # / returns (score_0_100, details_dict) — returns (None, None) when disabled or short data
+    # / weight 0.15 in the composite when present (see _apply_kronos_to_composite below)
+    try:
+        import pandas as pd
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT open, high, low, close, volume
+                FROM market_data
+                WHERE symbol = $1
+                ORDER BY date DESC
+                LIMIT 120""",
+                symbol,
+            )
+        if not rows or len(rows) < 32:
+            return None, None
+        df = pd.DataFrame([{
+            "open":   float(r["open"]) if r["open"] is not None else 0.0,
+            "high":   float(r["high"]) if r["high"] is not None else 0.0,
+            "low":    float(r["low"]) if r["low"] is not None else 0.0,
+            "close":  float(r["close"]) if r["close"] is not None else 0.0,
+            "volume": float(r["volume"]) if r["volume"] is not None else 0.0,
+        } for r in reversed(rows)])  # / oldest-first for kronos
+        pred = kronos_signal.predict(symbol, df, lookback=64)
+        if pred.source == "insufficient_data":
+            return None, None
+        score = round(pred.probability * 100.0, 1)  # / map [0,1] -> [0,100]
+        return score, {
+            "probability": round(pred.probability, 4),
+            "confidence":  round(pred.confidence, 4),
+            "source":      pred.source,
+            "components":  pred.components,
+        }
+    except Exception as exc:
+        logger.debug("kronos_score_failed", symbol=symbol, error=str(exc)[:120])
+        return None, None
+
+
+def _kronos_weight() -> float:
+    # / analyst blend weight for Kronos; 0 disables without requiring env tweak
+    raw = os.environ.get("KRONOS_COMPOSITE_WEIGHT", "0.15")
+    try:
+        w = float(raw)
+    except ValueError:
+        w = 0.15
+    return max(0.0, min(0.5, w))
 
 
 def _compute_technical_score(indicator_data: dict | None) -> float | None:
@@ -731,13 +782,34 @@ class AnalystAgent:
         # / rsi midline, macd histogram sign, adx trend strength, bb position — all 0-100
         technical_score = _compute_technical_score(indicator_data)
 
-        # / 70/30 blend when both sides exist, else fall through to the one that exists
+        # / phase 6 step 8: kronos candle-sequence score (0..100), blended into composite.
+        # / degrades silently to None when model is off / data too short / psutil guard trips.
+        kronos_score, kronos_details = await _compute_kronos_score(pool, symbol)
+        if kronos_details is not None:
+            details["kronos_probability"] = kronos_details.get("probability")
+            details["kronos_confidence"] = kronos_details.get("confidence")
+            details["kronos_source"] = kronos_details.get("source")
+
+        # / 70/30 blend when both fundamental+technical exist; drop to whichever side exists.
+        # / then pull the composite toward kronos_score at weight _kronos_weight() (default 0.15).
         if fundamental_score is not None and technical_score is not None:
-            composite_score = round(0.7 * fundamental_score + 0.3 * technical_score, 1)
+            base_composite = 0.7 * fundamental_score + 0.3 * technical_score
         elif technical_score is not None:
-            composite_score = technical_score
+            base_composite = technical_score
+        elif fundamental_score is not None:
+            base_composite = fundamental_score
         else:
-            composite_score = fundamental_score
+            base_composite = None
+
+        if kronos_score is not None and base_composite is not None:
+            kw = _kronos_weight()
+            composite_score = round((1.0 - kw) * base_composite + kw * kronos_score, 1)
+        elif base_composite is not None:
+            composite_score = round(base_composite, 1)
+        elif kronos_score is not None:
+            composite_score = kronos_score
+        else:
+            composite_score = None
 
         # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None

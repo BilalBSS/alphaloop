@@ -266,26 +266,27 @@ async def get_strategy_positions(
     async with pool.acquire() as conn:
         if strategy_id and symbol:
             rows = await conn.fetch(
-                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
+                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at, COALESCE(partial_exit_fired, FALSE) AS partial_exit_fired FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2",
                 strategy_id, symbol,
             )
         elif strategy_id:
             rows = await conn.fetch(
-                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at FROM strategy_positions WHERE strategy_id = $1",
+                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at, COALESCE(partial_exit_fired, FALSE) AS partial_exit_fired FROM strategy_positions WHERE strategy_id = $1",
                 strategy_id,
             )
         elif symbol:
             rows = await conn.fetch(
-                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at FROM strategy_positions WHERE symbol = $1",
+                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at, COALESCE(partial_exit_fired, FALSE) AS partial_exit_fired FROM strategy_positions WHERE symbol = $1",
                 symbol,
             )
         else:
             rows = await conn.fetch(
-                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at FROM strategy_positions",
+                "SELECT strategy_id, symbol, qty, avg_entry_price, updated_at, COALESCE(partial_exit_fired, FALSE) AS partial_exit_fired FROM strategy_positions",
             )
     return [{"strategy_id": r["strategy_id"], "symbol": r["symbol"],
              "qty": float(r["qty"]), "avg_entry_price": float(r["avg_entry_price"]) if r["avg_entry_price"] else None,
-             "updated_at": r["updated_at"]}
+             "updated_at": r["updated_at"],
+             "partial_exit_fired": bool(r.get("partial_exit_fired", False)) if hasattr(r, "get") else bool(r["partial_exit_fired"])}
             for r in rows]
 
 

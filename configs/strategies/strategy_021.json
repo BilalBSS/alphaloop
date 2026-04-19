@@ -1,0 +1,32 @@
+{
+  "id": "strategy_021",
+  "name": "Sector_Rotation_Defensive_Pivot",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Rotate into XLP/XLU when yield curve inverts or VIX > 25 (risk-off pivot)",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 35, "debt_to_equity_max": 2.5 },
+  "entry_conditions": {
+    "operator": "OR",
+    "signals": [
+      { "indicator": "yield_curve", "condition": "inverted" },
+      { "indicator": "vix", "condition": "above", "threshold": 25 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "type": "fixed_pct", "pct": 0.06 },
+    "stop_loss": { "type": "fixed_pct", "pct": 0.04 },
+    "time_exit": { "max_holding_days": 20 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.25
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": "consumer",
+  "symbol": null
+}

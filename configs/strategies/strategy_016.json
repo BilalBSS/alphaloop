@@ -1,0 +1,39 @@
+{
+  "id": "strategy_016",
+  "name": "Swing_Fib_Retrace_Uptrend",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Swing entry on 38.2/50% fib retrace in established uptrend; exit at prior high",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 50,
+    "revenue_growth_min": 0.05,
+    "fcf_margin_min": 0.05
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      { "indicator": "sma", "condition": "price_above", "period": 50 },
+      { "indicator": "sma", "condition": "above", "fast_period": 50, "slow_period": 200 },
+      { "indicator": "fib_retrace", "condition": "at_382_or_500", "lookback": 60 },
+      { "indicator": "rsi", "condition": "between", "low": 40, "high": 55, "period": 14 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "indicator": "prior_high", "condition": "lookback_60" },
+    "stop_loss": { "type": "fixed_pct", "pct": 0.04 },
+    "time_exit": { "max_holding_days": 6 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.22
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
+}

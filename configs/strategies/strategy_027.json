@@ -1,0 +1,36 @@
+{
+  "id": "strategy_027",
+  "name": "MeanRev_ZScore_Pair",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "2-std z-score deviation from 30-day mean; exit at half-z; avoid structural breakouts",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 50
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      { "indicator": "zscore_return", "condition": "below", "threshold": -2.0, "period": 30 },
+      { "indicator": "adx", "condition": "below", "threshold": 20, "period": 14 },
+      { "indicator": "atr_percentile", "condition": "below", "threshold": 70, "lookback": 60 }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": { "indicator": "zscore_return", "condition": "above", "threshold": -0.5, "period": 30 },
+    "stop_loss": { "type": "fixed_pct", "pct": 0.035 },
+    "time_exit": { "max_holding_days": 7 }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.04,
+    "kelly_fraction": 0.18
+  },
+  "metadata": { "generation": 1, "status": "paper_trading" },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null
+}

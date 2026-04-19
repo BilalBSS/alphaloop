@@ -125,6 +125,44 @@ function lastEvolutionTs(events) {
   return latest ? new Date(latest).toISOString() : null
 }
 
+function timeUntil(ts) {
+  if (!ts) return '—'
+  const diff = new Date(ts).getTime() - Date.now()
+  if (diff < 0) return 'due'
+  const h = Math.floor(diff / 3600000)
+  const m = Math.floor((diff % 3600000) / 60000)
+  if (h < 24) return `${h}h ${m}m`
+  const d = Math.floor(h / 24)
+  return `${d}d ${h % 24}h`
+}
+
+function NextEvolutionBanner() {
+  const { data } = useApi('/api/loops', 60000)
+  const loop = data?.loops?.find((l) => l.name === 'evolution')
+  if (!loop) return null
+  return (
+    <div className="bg-bg-surface border border-border rounded-md px-4 py-2 flex items-center justify-between gap-4 text-xs">
+      <div className="flex items-center gap-3">
+        <div className="w-2 h-2 rounded-full bg-accent" />
+        <span className="text-text-secondary">Evolution engine</span>
+        <span className="text-text-primary">next run in</span>
+        <span className="font-mono text-accent">{timeUntil(loop.next_fire_ts)}</span>
+      </div>
+      <div className="flex items-center gap-3 text-text-muted">
+        <span>last: {loop.last_fire_ts ? timeAgo(loop.last_fire_ts) : 'never'}</span>
+        {loop.last_duration_ms != null && (
+          <span>· {(loop.last_duration_ms / 1000).toFixed(1)}s</span>
+        )}
+        {loop.last_status === 'error' && loop.last_error && (
+          <span className="pnl-negative max-w-xs truncate" title={loop.last_error}>
+            · error: {loop.last_error}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function EvolutionHero({ strategies, events }) {
   const active = Array.isArray(strategies) ? strategies.filter(s => (s.status || '').toLowerCase() === 'active' || (s.status || '').toLowerCase() === 'live').length : 0
   const paper = Array.isArray(strategies) ? strategies.filter(s => (s.status || '').toLowerCase().startsWith('paper')).length : 0
@@ -164,6 +202,7 @@ export default function EvolutionTab({ evolution, loading }) {
   return (
     <div className="space-y-6">
       <EvolutionHero strategies={strategies} events={evolution} />
+      <NextEvolutionBanner />
 
       <Panel title="Wiki-Guided A/B">
         <SurvivalStats stats={wikiStats} />
