@@ -119,7 +119,7 @@ function MetricTile({ seriesId, latest, history }) {
 
 export default function MacroTab() {
   const { data: context, loading: loadingCtx } = useApi('/api/macro-context', 60000)
-  const { data: history } = useApi('/api/macro-history?days=30', 60000)
+  const { data: history } = useApi('/api/macro-history?days=180', 60000)
 
   const indicators = context?.indicators || []
   const spread = context?.yield_curve_spread

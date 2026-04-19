@@ -1478,11 +1478,12 @@ async def get_hydration_status():
 
 
 @app.get("/api/macro-history")
-async def get_macro_history(days: int = 30):
-    # / per-series timeseries over the last N days for sparkline rendering
+async def get_macro_history(days: int = 180):
+    # / per-series timeseries over the last N days for sparkline rendering.
+    # / default 180d so monthly series (CPI, FEDFUNDS, UNRATE) always have data.
     if _pool is None:
         return {"series": {}}
-    days = max(7, min(int(days or 30), 365))
+    days = max(7, min(int(days or 180), 730))
     rows = await _query(
         """SELECT series_id, date, value FROM macro_data
         WHERE date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
