@@ -11,3 +11,6 @@ node_modules/
 reports/
 trading-wiki/
 data/charts/
+
+configs/strategies/s[0-9].json
+configs/strategies/s[0-9][0-9].json
