@@ -50,7 +50,9 @@
   },
   "metadata": {
     "generation": 1,
-    "status": "paper_trading"
+    "status": "inactive",
+    "backtest_error": "backtest_exception: TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'\n06, in run_backtest\n    await _process_exits(\n  File \"C:\\Users\\Bilal\\Downloads\\quant-trading-system\\src\\strategies\\backtest.py\", line 278, in _process_exits\n    exit_signal = strategy.should_exit(\n                  ^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\Bilal\\Downloads\\quant-trading-system\\src\\strategies\\base_strategy.py\", line 528, in should_exit\n    exit_signal = self._check_tak",
+    "backtest_ran_at": "2026-04-19T18:51:07.475396+00:00"
   },
   "bear_market_overrides": {
     "bypass_consensus": true

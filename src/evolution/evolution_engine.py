@@ -46,6 +46,27 @@ logger = structlog.get_logger(__name__)
 DEFAULT_WIKI_GUIDED_RATIO = 0.80
 
 
+def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
+                             reason: str | None = None) -> None:
+    # / phase 7 tier 1: notify ws clients when a strategy changes status
+    # / (killed, paper_trading, live). late-bind so headless tests pass.
+    try:
+        from src.dashboard.app import broadcast, _ws_clients
+    except Exception:
+        return
+    if not _ws_clients:
+        return
+    try:
+        asyncio.create_task(broadcast("strategy_status_change", {
+            "strategy_id": strategy_id,
+            "old_status": old,
+            "new_status": new,
+            "reason": reason,
+        }))
+    except Exception as exc:
+        logger.debug("broadcast_status_change_failed", error=str(exc)[:120])
+
+
 class EvolutionEngine:
     def __init__(self, rng: np.random.Generator | None = None, risk_limits: dict | None = None):
         self._rng = rng or np.random.default_rng()
@@ -265,6 +286,7 @@ class EvolutionEngine:
                 if entry.score:
                     reason += f" (composite={entry.score.composite_score:.4f})"
 
+            prev_status = entry.status
             strategy_pool.update_status(sid, "killed")
             # / persist kill to disk so restart doesn't resurrect the strategy
             config.setdefault("metadata", {})["status"] = "killed"
@@ -280,6 +302,7 @@ class EvolutionEngine:
                     )
                 except Exception:
                     pass
+            _broadcast_status_change(sid, prev_status, "killed", reason=reason)
             killed_configs.append({"id": sid, "config": config, "reason": reason})
             summary["killed"].append({"id": sid, "reason": reason})
 
@@ -316,7 +339,9 @@ class EvolutionEngine:
             if entry.score.sharpe_ratio < sector_sharpe:
                 sid = entry.strategy.strategy_id
                 reason = f"tier2 underperforms sector base (sharpe {entry.score.sharpe_ratio:.2f} < {sector_sharpe:.2f})"
+                prev_status = entry.status
                 strategy_pool.update_status(sid, "killed")
+                _broadcast_status_change(sid, prev_status, "killed", reason=reason)
                 # / persist kill to disk (same pattern as _kill_bottom_quartile)
                 config.setdefault("metadata", {})["status"] = "killed"
                 try:
@@ -596,6 +621,8 @@ class EvolutionEngine:
                 config["metadata"]["status"] = "paper_trading"
                 strategy = ConfigDrivenStrategy(config)
                 strategy_pool.add(strategy, status="paper_trading")
+                _broadcast_status_change(config["id"], None, "paper_trading",
+                                         reason=f"mutant composite={composite:.3f}")
 
                 score = StrategyScore(
                     strategy_id=config["id"],
@@ -667,6 +694,8 @@ class EvolutionEngine:
             ):
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "live")
+                _broadcast_status_change(sid, "paper_trading", "live",
+                                         reason=f"sharpe={sharpe:.2f}, days={paper_days}")
                 summary["promoted"].append({"id": sid})
                 notify_strategy_promoted(sid, sharpe, paper_days)
                 logger.info(

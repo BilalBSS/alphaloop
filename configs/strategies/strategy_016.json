@@ -16,23 +16,59 @@
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "sma", "condition": "price_above", "period": 50 },
-      { "indicator": "sma", "condition": "above", "fast_period": 50, "slow_period": 200 },
-      { "indicator": "fib_retrace", "condition": "at_382_or_500", "lookback": 60 },
-      { "indicator": "rsi", "condition": "between", "low": 40, "high": 55, "period": 14 }
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 50
+      },
+      {
+        "indicator": "sma",
+        "condition": "above",
+        "fast_period": 50,
+        "slow_period": 200
+      },
+      {
+        "indicator": "fib_retrace",
+        "condition": "at_382_or_500",
+        "lookback": 60
+      },
+      {
+        "indicator": "rsi",
+        "condition": "between",
+        "low": 40,
+        "high": 55,
+        "period": 14
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "indicator": "prior_high", "condition": "lookback_60" },
-    "stop_loss": { "type": "fixed_pct", "pct": 0.04 },
-    "time_exit": { "max_holding_days": 6 }
+    "take_profit": {
+      "indicator": "prior_high",
+      "condition": "lookback_60"
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.04
+    },
+    "time_exit": {
+      "max_holding_days": 6
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.22
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:56.845530+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

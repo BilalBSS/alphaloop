@@ -22,6 +22,29 @@ logger = structlog.get_logger(__name__)
 _POST_MORTEM_TASKS: set = set()
 
 
+def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
+                    strategy_id: str | None, log_id: int | None,
+                    pnl: float | None) -> None:
+    # / phase 7 tier 1: fan trade_executed + position_update out to ws clients.
+    # / late-bind the dashboard import so tests / headless workers don't fail.
+    try:
+        from src.dashboard.app import broadcast, _ws_clients
+    except Exception:
+        return
+    if not _ws_clients:
+        return
+    try:
+        asyncio.create_task(broadcast("trade_executed", {
+            "symbol": symbol, "side": side, "qty": float(qty),
+            "price": float(price) if price else 0.0,
+            "strategy_id": strategy_id, "log_id": log_id,
+            "pnl": float(pnl) if pnl is not None else None,
+        }))
+        asyncio.create_task(broadcast("position_update", {"symbol": symbol}))
+    except Exception as exc:
+        logger.debug("broadcast_fill_failed", error=str(exc)[:120])
+
+
 def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> bool:
     # / phase 2: loss > $50 OR loss > 2% of entry notional
     if pnl is None or pnl >= 0:
@@ -213,6 +236,8 @@ class ExecutorAgent:
             await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
 
             notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
+            _broadcast_fill(symbol, side, order.filled_qty, order.filled_price or 0,
+                            strategy_id, log_id, pnl)
             logger.info(
                 "trade_executed",
                 trade_id=trade_id, log_id=log_id,
@@ -296,6 +321,8 @@ class ExecutorAgent:
                 )
                 await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
                 notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
+                _broadcast_fill(symbol, side, order.filled_qty, order.filled_price or 0,
+                                strategy_id, log_id, pnl)
                 logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
                             symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)
 

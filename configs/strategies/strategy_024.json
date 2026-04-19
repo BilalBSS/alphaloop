@@ -7,26 +7,67 @@
   "description": "XLV leaders during sideways-to-bear equity regime; lower beta, fundamentals gate",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": true, "pe_ratio_max": 25, "fcf_margin_min": 0.15, "debt_to_equity_max": 1.5 },
+  "fundamental_filters": {
+    "strict_data": true,
+    "pe_ratio_max": 25,
+    "fcf_margin_min": 0.15,
+    "debt_to_equity_max": 1.5
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "regime", "condition": "in", "values": ["sideways", "bear", "high_vol"] },
-      { "indicator": "sector_relative_strength", "condition": "above", "threshold": 0.0, "lookback": 20, "sector_etf": "XLV" },
-      { "indicator": "beta", "condition": "below", "threshold": 0.9 }
+      {
+        "indicator": "regime",
+        "condition": "in",
+        "values": [
+          "sideways",
+          "bear",
+          "high_vol"
+        ]
+      },
+      {
+        "indicator": "sector_relative_strength",
+        "condition": "above",
+        "threshold": 0.0,
+        "lookback": 20,
+        "sector_etf": "XLV"
+      },
+      {
+        "indicator": "beta",
+        "condition": "below",
+        "threshold": 0.9
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.06 },
-    "stop_loss": { "type": "atr_trailing", "multiplier": 1.5, "period": 14 },
-    "time_exit": { "max_holding_days": 45 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.06
+    },
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 1.5,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 45
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.25
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:58.848704+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": "health_energy",
   "symbol": null

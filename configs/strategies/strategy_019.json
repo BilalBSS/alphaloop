@@ -7,26 +7,60 @@
   "description": "Fade gap up/down > 3% on reversal confirmation; short swing hold",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 60 },
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 60
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "gap", "condition": "magnitude_above", "threshold_pct": 0.03 },
-      { "indicator": "rsi", "condition": "above", "threshold": 70, "period": 14 },
-      { "indicator": "volume", "condition": "above_average", "multiplier": 1.5, "period": 20 }
+      {
+        "indicator": "gap",
+        "condition": "magnitude_above",
+        "threshold_pct": 0.03
+      },
+      {
+        "indicator": "rsi",
+        "condition": "above",
+        "threshold": 70,
+        "period": 14
+      },
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 1.5,
+        "period": 20
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "indicator": "gap_fill", "condition": "close_back_at_prior" },
-    "stop_loss": { "type": "fixed_pct", "pct": 0.025 },
-    "time_exit": { "max_holding_days": 3 }
+    "take_profit": {
+      "indicator": "gap_fill",
+      "condition": "close_back_at_prior"
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.025
+    },
+    "time_exit": {
+      "max_holding_days": 3
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.15
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:58.428001+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

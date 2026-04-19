@@ -70,7 +70,9 @@ def _compute_next_fire(meta: dict[str, Any], base: datetime | None = None) -> da
 
 
 async def record_fire_start(pool: asyncpg.Pool | None, name: str) -> None:
-    # / set last_status=running so the dashboard can show in-flight loops
+    # / set last_status=running so the dashboard can show in-flight loops.
+    # / clears last_error so the previous cycle's failure message doesn't bleed
+    # / through on /api/loops while the new cycle is mid-flight.
     if pool is None:
         return
     meta = LOOP_METADATA.get(name, {})
@@ -78,10 +80,11 @@ async def record_fire_start(pool: asyncpg.Pool | None, name: str) -> None:
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO loop_activity (name, kind, cadence_seconds, cron_hour_et, last_status, updated_at)
-                VALUES ($1, $2, $3, $4, 'running', NOW())
+                INSERT INTO loop_activity (name, kind, cadence_seconds, cron_hour_et, last_status, last_error, updated_at)
+                VALUES ($1, $2, $3, $4, 'running', NULL, NOW())
                 ON CONFLICT (name) DO UPDATE SET
                     last_status = 'running',
+                    last_error = NULL,
                     updated_at = NOW()
                 """,
                 name,
@@ -91,6 +94,80 @@ async def record_fire_start(pool: asyncpg.Pool | None, name: str) -> None:
             )
     except Exception as exc:
         logger.debug("loop_registry_start_failed", name=name, error=str(exc)[:120])
+
+
+async def is_loop_running(pool: asyncpg.Pool | None, name: str) -> bool:
+    # / cross-process check for the "already in-flight" trigger guard. returns
+    # / True when loop_activity has last_status='running' for this service.
+    if pool is None:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT last_status FROM loop_activity WHERE name=$1",
+                name,
+            )
+    except Exception as exc:
+        logger.debug("is_loop_running_failed", name=name, error=str(exc)[:120])
+        return False
+    return bool(row and row["last_status"] == "running")
+
+
+async def upsert_service_state(
+    pool: asyncpg.Pool | None,
+    name: str,
+    status: str,
+    error: str | None = None,
+    duration_ms: int = 0,
+) -> None:
+    # / write a synthetic "service state" row into loop_activity for components
+    # / that aren't loops but still want their status surfaced on /api/loops and
+    # / consumed by the dashboard without cross-process module-global dependence.
+    # / used by kronos HF load success/failure so the dashboard reads ground truth.
+    if pool is None:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO loop_activity (
+                    name, kind, last_fire_ts, last_duration_ms, last_status, last_error, updated_at
+                ) VALUES ($1, 'service', NOW(), $2, $3, $4, NOW())
+                ON CONFLICT (name) DO UPDATE SET
+                    last_fire_ts = NOW(),
+                    last_duration_ms = EXCLUDED.last_duration_ms,
+                    last_status = EXCLUDED.last_status,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = NOW()
+                """,
+                name,
+                int(duration_ms),
+                status,
+                (str(error)[:500] if error else None),
+            )
+    except Exception as exc:
+        logger.debug("upsert_service_state_failed", name=name, error=str(exc)[:120])
+
+
+async def fetch_service_state(
+    pool: asyncpg.Pool | None,
+    name: str,
+) -> dict[str, Any] | None:
+    # / returns the latest status row for a named service (or None).
+    # / dashboard reads via this to avoid importing process-local module globals.
+    if pool is None:
+        return None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT name, last_status, last_error, last_fire_ts, last_duration_ms, updated_at "
+                "FROM loop_activity WHERE name=$1",
+                name,
+            )
+    except Exception as exc:
+        logger.debug("fetch_service_state_failed", name=name, error=str(exc)[:120])
+        return None
+    return dict(row) if row else None
 
 
 async def record_fire_end(

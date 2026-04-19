@@ -53,7 +53,13 @@
   },
   "metadata": {
     "generation": 1,
-    "status": "paper_trading"
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:09.118140+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
   },
   "bear_market_overrides": {
     "bypass_consensus": true,
