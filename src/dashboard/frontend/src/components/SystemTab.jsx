@@ -259,9 +259,27 @@ export default function SystemTab() {
   const trigger = useCallback(async (service) => {
     setTriggerError(null)
     setTriggering((prev) => new Set(prev).add(service))
+    // / include admin token from localStorage when the server requires one
+    const token = localStorage.getItem('qts-admin-token') || ''
+    const headers = token ? { Authorization: `Bearer ${token}` } : {}
     try {
-      const resp = await fetch(`/api/admin/trigger/${service}`, { method: 'POST' })
-      if (!resp.ok) {
+      const resp = await fetch(`/api/admin/trigger/${service}`, { method: 'POST', headers })
+      if (resp.status === 401) {
+        const entered = window.prompt(
+          'ADMIN_TOKEN required — paste it (stored in this browser only, not sent anywhere else):',
+          token,
+        )
+        if (entered) {
+          localStorage.setItem('qts-admin-token', entered)
+          const retry = await fetch(`/api/admin/trigger/${service}`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${entered}` },
+          })
+          if (!retry.ok) throw new Error(`${retry.status}`)
+        } else {
+          throw new Error('unauthorized')
+        }
+      } else if (!resp.ok) {
         const body = await resp.json().catch(() => ({}))
         throw new Error(body.error || `${resp.status}`)
       }

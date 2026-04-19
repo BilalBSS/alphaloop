@@ -25,6 +25,13 @@ uvicorn>=0.22.0
 # ML (used by src/quant/ml_signals.py for gradient-boosted signal prediction)
 lightgbm>=4.0.0
 
+# Kronos HF model (phase 6 step 8) — real candle-sequence transformer + memory guard.
+# / skipped gracefully when absent; fallback heuristic in src/quant/kronos_signal.py
+# / still runs. enable via KRONOS_ENABLED=true once installed on the VPS.
+transformers>=4.40.0
+torch>=2.2.0
+psutil>=5.9.0
+
 # Testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
