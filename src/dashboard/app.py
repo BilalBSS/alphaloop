@@ -379,15 +379,34 @@ async def get_phase5_metrics():
     # / brier-populated strategy count, cerebras-vs-groq split, established wiki docs,
     # / regime diversity per asset class. also surfaces kronos hf-vs-fallback load state.
     # / each metric degrades independently — a missing table doesn't 500 the endpoint.
+    # /
+    # / kronos status is read from loop_activity (written by the orchestrator) rather
+    # / than from our process-local kronos_signal module: the dashboard never calls
+    # / predict(), so its module globals stay at initial values forever. DB is the
+    # / cross-process source of truth.
     from src.agents.phase5_metrics import compute_phase5_metrics
-    from src.quant.kronos_signal import get_load_status as kronos_status
+    from src.agents.loop_registry import fetch_service_state
     try:
         metrics = await compute_phase5_metrics(_pool)
+        row = await fetch_service_state(_pool, "kronos_hf_load")
+        if row:
+            kronos_payload = {
+                "hf_loaded": row.get("last_status") == "success",
+                "load_attempted": row.get("last_fire_ts") is not None,
+                "fallback_reason": row.get("last_error"),
+                "last_status": row.get("last_status"),
+                "last_update": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+            }
+        else:
+            # / orchestrator hasn't written yet — fall back to module read so a fresh
+            # / boot doesn't show an empty field on the first dashboard request.
+            from src.quant.kronos_signal import get_load_status as kronos_status
+            kronos_payload = kronos_status()
         return {
             "metrics": metrics.as_dict(),
             "success_criteria": metrics.success_criteria(),
             "all_pass": metrics.all_pass(),
-            "kronos": kronos_status(),
+            "kronos": kronos_payload,
         }
     except Exception as exc:
         logger.warning("phase5_metrics_endpoint_failed", error=str(exc)[:200])

@@ -151,6 +151,15 @@ class AgentOrchestrator:
             mode=self._mode,
         )
 
+        # / warm kronos HF model + record status to loop_activity so the dashboard
+        # / reads orchestrator ground truth (not its own stale module-level globals).
+        try:
+            from src.quant.kronos_signal import ensure_loaded_and_record_status
+            kronos_status = await ensure_loaded_and_record_status(self._pool)
+            logger.info("kronos_startup_status", **{k: v for k, v in kronos_status.items() if k != "fallback_reason"})
+        except Exception as exc:
+            logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
+
         # / launch all loops
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
@@ -1346,8 +1355,16 @@ class AgentOrchestrator:
                 break
 
     async def _run_trigger(self, trigger_id: int, service: str) -> None:
-        # / execute one cycle of the named service in the background
+        # / execute one cycle of the named service in the background.
+        # / skip if a periodic cycle (or previous trigger) is already mid-flight —
+        # / otherwise two concurrent passes race on the same symbols/db rows.
         logger.info("trigger_received", service=service, trigger_id=trigger_id)
+        if await loop_registry.is_loop_running(self._pool, service):
+            logger.info("trigger_skipped_already_running", service=service, trigger_id=trigger_id)
+            await loop_registry.complete_trigger(
+                self._pool, trigger_id, "skipped", "already_running",
+            )
+            return
         try:
             async with loop_registry.track(self._pool, service):
                 await self._run_service_once(service)
