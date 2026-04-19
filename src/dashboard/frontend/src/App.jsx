@@ -8,8 +8,10 @@ import EvolutionTab from './components/EvolutionTab'
 import HealthTab from './components/HealthTab'
 import AnalysisTab from './components/AnalysisTab'
 import KnowledgeTab from './components/KnowledgeTab'
+import SystemTab from './components/SystemTab'
+import MacroTab from './components/MacroTab'
 
-const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health', 'Analysis', 'Knowledge']
+const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health', 'Analysis', 'Knowledge', 'Macro', 'System']
 
 function AppInner() {
   const [activeTab, setActiveTab] = useState(() =>
@@ -94,6 +96,12 @@ function AppInner() {
         )}
         {activeTab === 'Knowledge' && (
           <KnowledgeTab />
+        )}
+        {activeTab === 'Macro' && (
+          <MacroTab />
+        )}
+        {activeTab === 'System' && (
+          <SystemTab />
         )}
       </main>
     </div>
