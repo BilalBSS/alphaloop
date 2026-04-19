@@ -26,7 +26,9 @@ SERIES_CONFIG: dict[str, dict[str, float]] = {
 }
 
 
-def _fred_params(series_id: str, days: int = 90) -> dict[str, str]:
+def _fred_params(series_id: str, days: int = 180) -> dict[str, str]:
+    # / pull 180 days so monthly series (CPI, FEDFUNDS, UNRATE) always have at
+    # / least one observation and daily series (DGS10/DGS2) have a full sparkline window
     key = os.environ.get("FRED_API_KEY", "")
     start = (date.today() - timedelta(days=days)).isoformat()
     return {
@@ -35,7 +37,7 @@ def _fred_params(series_id: str, days: int = 90) -> dict[str, str]:
         "file_type": "json",
         "observation_start": start,
         "sort_order": "desc",
-        "limit": "10",
+        "limit": "200",
     }
 
 
@@ -52,50 +54,59 @@ def _normalize(series_id: str, value: float) -> float:
 
 
 @with_retry(source="fred", max_retries=2, base_delay=1.0)
-async def _fetch_series(series_id: str) -> dict[str, Any] | None:
+async def _fetch_series(series_id: str) -> list[dict[str, Any]]:
+    # / returns every valid observation in the lookback window (old->new).
+    # / phase 6 fix: previously returned only the newest point so sparklines and
+    # / monthly series (CPI/FEDFUNDS/UNRATE) had nothing to draw.
     if not os.environ.get("FRED_API_KEY"):
-        return None
+        return []
     params = _fred_params(series_id)
     resp = await api_get(FRED_BASE, params=params, source="fred")
     data = resp.json()
     observations = data.get("observations", [])
-    if not observations:
-        return None
+    out: list[dict[str, Any]] = []
     for obs in observations:
         val_str = obs.get("value", ".")
         if val_str == ".":
             continue
         try:
             value = float(val_str)
-            return {
+            out.append({
                 "series_id": series_id,
                 "date": obs["date"],
                 "value": value,
                 "normalized": _normalize(series_id, value),
-            }
+            })
         except (ValueError, TypeError):
             continue
-    return None
+    # / fred returns desc; flip to asc so insert order + sparkline draw left->right
+    out.sort(key=lambda r: r["date"])
+    return out
 
 
 async def fetch_macro_indicators(pool: Any) -> dict[str, Any]:
+    # / returns the latest point per series (plus yield-curve spread) for the
+    # / analyst/strategy layer, but writes the full window to macro_data so the
+    # / dashboard's /api/macro-history can render sparklines.
     results: dict[str, Any] = {}
     for series_id in SERIES_CONFIG:
         try:
-            data = await _fetch_series(series_id)
-            if data:
-                results[series_id] = data
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        """
-                        INSERT INTO macro_data (date, series_id, value, normalized)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (date, series_id) DO UPDATE SET
-                            value = EXCLUDED.value, normalized = EXCLUDED.normalized
-                        """,
-                        date.fromisoformat(data["date"]), series_id,
-                        data["value"], data["normalized"],
-                    )
+            points = await _fetch_series(series_id)
+            if not points:
+                continue
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    """
+                    INSERT INTO macro_data (date, series_id, value, normalized)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (date, series_id) DO UPDATE SET
+                        value = EXCLUDED.value, normalized = EXCLUDED.normalized
+                    """,
+                    [(date.fromisoformat(p["date"]), series_id, p["value"], p["normalized"])
+                     for p in points],
+                )
+            latest = points[-1]
+            results[series_id] = latest
         except Exception as exc:
             logger.warning("fred_fetch_failed", series=series_id, error=str(exc))
 

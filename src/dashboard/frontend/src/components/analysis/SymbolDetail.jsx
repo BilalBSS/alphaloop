@@ -26,6 +26,46 @@ import {
 } from './AltDataPanels'
 import CryptoFundamentalsCard from './CryptoFundamentalsCard'
 
+// / phase 6 step 8: kronos probability tile — shows the neural candle-sequence
+// / signal alongside composite. `source` flips hf-local vs fallback_heuristic so
+// / it's visible at a glance whether the real HF model loaded.
+function KronosTile({ score }) {
+  const d = typeof score?.details === 'object' ? score.details : {}
+  const prob = d.kronos_probability
+  const conf = d.kronos_confidence
+  const source = d.kronos_source
+  if (prob == null) return <div className="text-text-muted text-sm py-2">No Kronos signal yet</div>
+
+  const pct = Math.round(prob * 100)
+  const tone = prob >= 0.6 ? 'pnl-positive' : prob <= 0.4 ? 'pnl-negative' : 'text-text-secondary'
+  const sourceColor = source === 'kronos_hf' ? 'pnl-positive' : source === 'fallback_heuristic' ? 'text-warning' : 'text-text-muted'
+  const sourceLabel = source === 'kronos_hf' ? 'hf-local' : source || 'none'
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <div className="text-[11px] uppercase text-text-secondary">P(next close ↑)</div>
+          <div className={`text-2xl font-mono font-bold ${tone}`}>{pct}%</div>
+        </div>
+        <div className="text-right">
+          <div className="text-[11px] uppercase text-text-secondary">Confidence</div>
+          <div className="text-xl font-mono">{(conf != null ? conf * 100 : 0).toFixed(0)}%</div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className="text-text-muted uppercase tracking-wider">Source</span>
+        <span className={`font-mono ${sourceColor}`}>{sourceLabel}</span>
+      </div>
+      {source === 'fallback_heuristic' && (
+        <div className="text-[10px] text-text-muted">
+          Statistical fallback. Set KRONOS_ENABLED=true + install transformers on VPS to use the neural model.
+        </div>
+      )}
+    </div>
+  )
+}
+
 // / score overview badges + composite breakdown
 function ScoreOverview({ score }) {
   if (!score) return <div className="text-text-muted text-sm py-2">No analysis data</div>
@@ -1043,10 +1083,15 @@ export default function SymbolDetail({ symbol, onBack }) {
       <button onClick={onBack} className="text-accent text-sm hover:underline">&larr; Back to list</button>
       <div className="text-lg font-mono font-bold text-text-primary">{symbol}</div>
 
-      {/* row 1: score overview */}
-      <Panel title="Score Overview">
-        <ScoreOverview score={d.score} />
-      </Panel>
+      {/* row 1: score overview + kronos signal side-by-side */}
+      <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-2">
+        <Panel title="Score Overview">
+          <ScoreOverview score={d.score} />
+        </Panel>
+        <Panel title="Kronos Signal">
+          <KronosTile score={d.score} />
+        </Panel>
+      </div>
 
       {/* row 1b: macro regime context — applies to all symbols */}
       <Panel title="Macro Regime" collapsible defaultOpen={!isCrypto}>

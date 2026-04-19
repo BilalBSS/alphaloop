@@ -229,9 +229,11 @@ function StrategiesPanel({ strategies, loading }) {
     )
   }
 
+  // / phase 6 step 11: hard cap raised from 18 to 30 now that we ship 29 strategies.
+  // / show-all by default; the grid is cheap to render and hiding rows silently was confusing.
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {strategies.slice(0, 18).map((s, i) => (
+      {strategies.slice(0, 30).map((s, i) => (
         <StrategyCard key={s.strategy_id || i} strategy={s} decay={decayById[s.strategy_id]} />
       ))}
     </div>
