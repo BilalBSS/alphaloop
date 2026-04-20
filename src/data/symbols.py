@@ -7,23 +7,33 @@ from __future__ import annotations
 _CRYPTO_SUFFIXES = ("-USD", "-USDT", "-EUR", "-GBP")
 
 EQUITY_UNIVERSE = [
-    # / etfs
+    # / first 30 stream via alpaca iex ws (free tier cap, ALPACA_STREAM_MAX_SYMBOLS).
+    # / order = priority for real-time ticks; overflow falls to 5-min rest poll.
+    # /
+    # / etfs — benchmarks, always streamed
     "SPY", "QQQ", "SPUS",
-    # / mega-cap tech
+    # / mega-cap tech — core movers
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    # / semiconductors
+    # / semiconductors — high intraday range
     "AMD", "AVGO", "QCOM", "MRVL", "ARM",
-    # / cybersecurity + cloud
-    "CRM", "ADBE", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB", "PANW", "ZS",
-    # / fintech
-    "SHOP", "XYZ", "COIN", "HOOD", "SOFI", "AFRM",
+    # / high-mover cyber/cloud (dropped ADBE/PANW/ZS — stable enterprise, low vol)
+    "CRM", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB",
+    # / fintech — generally high beta
+    "SHOP", "XYZ", "COIN", "HOOD", "SOFI",
+    # / retail/day-trader favorites promoted into streamed tier (high intraday range)
+    "HIMS", "RKLB", "ASTS",
+    # / --- below = overflow, 5-min rest poll ---
+    # / stable enterprise cyber/cloud
+    "ADBE", "PANW", "ZS",
+    # / fintech tail
+    "AFRM",
     # / consumer tech
     "ABNB", "UBER", "DASH", "DUOL",
     # / health + clean energy
-    "HIMS", "LLY", "MRNA", "ENPH", "FSLR", "ON",
-    # / space
-    "ASTS", "RKLB", "LUNR",
-    # / commodities
+    "LLY", "MRNA", "ENPH", "FSLR", "ON",
+    # / space tail
+    "LUNR",
+    # / commodities (low movement)
     "GLD", "SLV",
 ]
 CRYPTO_UNIVERSE = [

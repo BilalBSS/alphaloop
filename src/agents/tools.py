@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -445,8 +445,20 @@ async def sync_trades_from_alpaca(pool) -> int:
             side = o["side"]
             qty = float(o.get("filled_qty", 0))
             price = float(o.get("filled_avg_price", 0))
-            filled_at = o.get("filled_at")
-            if qty <= 0 or price <= 0:
+            # / alpaca returns filled_at as iso8601 string; asyncpg timestamptz
+            # / codec wants a datetime instance. parse once per order.
+            filled_at_raw = o.get("filled_at")
+            filled_at: datetime | None = None
+            if filled_at_raw:
+                try:
+                    filled_at = datetime.fromisoformat(
+                        str(filled_at_raw).replace("Z", "+00:00"),
+                    )
+                except (ValueError, TypeError):
+                    logger.debug("alpaca_sync_bad_filled_at",
+                                 order_id=order_id, raw=str(filled_at_raw)[:40])
+                    continue
+            if qty <= 0 or price <= 0 or filled_at is None:
                 continue
             # / bug e: compute pnl for sells from the most recent buy BEFORE this sell
             # / critical: alpaca returns orders desc, so a later-sync buy could have later created_at

@@ -86,6 +86,9 @@ class AgentOrchestrator:
         self._alpaca_stream: AlpacaStream | None = None
         self._coinbase_stream: CoinbaseStream | None = None
         self._last_tick_broadcast: dict[str, float] = {}
+        # / equity symbols passed to the alpaca stream (capped at 30 on free tier).
+        # / overflow symbols are rest-polled every 5 min via _price_refresh_loop.
+        self._streamed_equity_symbols: set[str] = set()
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -731,9 +734,12 @@ class AgentOrchestrator:
                 break
 
     async def _price_refresh_loop(self) -> None:
-        # / fallback price refresh. phase 7: websocket streams are primary; this polls
-        # / via yfinance only when streams are unhealthy (stale + circuit open for that
-        # / vendor's asset class). writes to latest_prices.
+        # / price refresh — phase 7 behavior:
+        # /   1. if streams are healthy, ONLY poll equity symbols not in the stream
+        # /      (the overflow past alpaca iex's 30-symbol cap). without this, the
+        # /      non-streamed 16 symbols get stale latest_prices rows.
+        # /   2. if streams are unhealthy, poll the full universe for that asset
+        # /      class (legacy fallback behavior).
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():
@@ -741,28 +747,39 @@ class AgentOrchestrator:
                 async with loop_registry.track(self._pool, "price_refresh"):
                     if not self._is_market_hours():
                         pass
-                    elif self._streams_healthy_equity() and self._streams_healthy_crypto():
-                        # / streams are delivering — no poll needed this cycle
-                        logger.debug("price_refresh_streams_healthy_skip")
                     else:
                         from src.data.market_data import fetch_latest_prices, store_latest_prices
                         symbols = self._get_symbols()
-                        # / only poll the asset classes whose stream is unhealthy
-                        need_equity = not self._streams_healthy_equity()
-                        need_crypto = not self._streams_healthy_crypto()
-                        poll_syms = [
-                            s for s in symbols
-                            if (need_equity and not is_crypto(s))
-                            or (need_crypto and is_crypto(s))
-                        ]
-                        prices = await fetch_latest_prices(poll_syms) if poll_syms else {}
-                        if prices:
-                            stored = await store_latest_prices(self._pool, prices)
-                            logger.info("price_refresh_fallback_complete",
-                                        symbols=stored, reason="streams_unhealthy")
-                            await tools.log_event(
-                                self._pool, "info", "price_refresh", f"symbols={stored}",
-                            )
+                        equity_healthy = self._streams_healthy_equity()
+                        crypto_healthy = self._streams_healthy_crypto()
+
+                        poll_syms: list[str] = []
+                        for s in symbols:
+                            if is_crypto(s):
+                                if not crypto_healthy:
+                                    poll_syms.append(s)
+                            else:
+                                # / equity: poll if stream unhealthy OR the symbol
+                                # / isn't in the streamed set (overflow past 30 cap)
+                                if (not equity_healthy
+                                        or s not in self._streamed_equity_symbols):
+                                    poll_syms.append(s)
+
+                        if not poll_syms:
+                            logger.debug("price_refresh_streams_cover_all_skip")
+                        else:
+                            prices = await fetch_latest_prices(poll_syms)
+                            if prices:
+                                stored = await store_latest_prices(self._pool, prices)
+                                reason = ("streams_unhealthy"
+                                          if not (equity_healthy and crypto_healthy)
+                                          else "overflow_symbols")
+                                logger.info("price_refresh_poll_complete",
+                                            symbols=stored, reason=reason)
+                                await tools.log_event(
+                                    self._pool, "info", "price_refresh",
+                                    f"symbols={stored} reason={reason}",
+                                )
             except Exception as exc:
                 logger.warning("price_refresh_error", error=str(exc)[:100])
                 notify_system_error(f"price refresh failed: {str(exc)[:80]}", "price_refresh")
@@ -773,14 +790,32 @@ class AgentOrchestrator:
 
     async def _start_streams(self) -> None:
         # / split universe → equity (alpaca) + crypto (coinbase); start both streams.
+        # / alpaca iex free tier caps at 30 symbols per connection. if the equity
+        # / universe is larger we stream the first N (preserves FULL_UNIVERSE order:
+        # / etfs + mega-caps + semis take priority) and the overflow falls back to
+        # / 5-min rest polling via _price_refresh_loop.
         symbols = self._get_symbols()
-        equity_syms = [s for s in symbols if not is_crypto(s)]
+        equity_all = [s for s in symbols if not is_crypto(s)]
         crypto_syms = [s for s in symbols if is_crypto(s)]
+        try:
+            stream_cap = int(os.environ.get("ALPACA_STREAM_MAX_SYMBOLS", "30"))
+        except ValueError:
+            stream_cap = 30
+        equity_streamed = equity_all[:stream_cap]
+        equity_overflow = equity_all[stream_cap:]
+        self._streamed_equity_symbols: set[str] = set(equity_streamed)
+        if equity_overflow:
+            logger.info("alpaca_stream_symbol_cap",
+                        cap=stream_cap, streamed=len(equity_streamed),
+                        overflow=len(equity_overflow),
+                        overflow_symbols=equity_overflow,
+                        note="overflow symbols use 5-min rest poll fallback")
+
         self._tick_buffer = TickBuffer(max_per_symbol=1000)
 
-        if equity_syms:
+        if equity_streamed:
             self._alpaca_stream = AlpacaStream(
-                equity_syms, self._tick_buffer, on_tick=self._on_tick_broadcast,
+                equity_streamed, self._tick_buffer, on_tick=self._on_tick_broadcast,
             )
             try:
                 await self._alpaca_stream.start()
