@@ -482,10 +482,20 @@ async def get_strategies():
             sid = cfg.get("id", config_path.stem)
             entry_signals = cfg.get("entry_conditions", {}).get("signals", [])
             exit_conds = cfg.get("exit_conditions", {})
+            # / seed sharpe/mdd/brier/win_rate from backtest metadata so strategies
+            # / that haven't been live-scored yet still show their offline numbers.
+            # / strategy_scores rows (when present) override these below — so live
+            # / metrics always win. metrics_source tells the UI which we rendered.
+            meta = cfg.get("metadata", {}) or {}
+            backtest_sharpe = meta.get("backtest_sharpe")
+            backtest_mdd = meta.get("backtest_max_drawdown")
+            backtest_win_rate = meta.get("backtest_win_rate")
+            backtest_brier = meta.get("brier_score")
+            backtest_trade_count = meta.get("trade_count")
             strategies_by_id[sid] = {
                 "strategy_id": sid,
                 "name": cfg.get("name"),
-                "status": cfg.get("metadata", {}).get("status"),
+                "status": meta.get("status"),
                 "description": cfg.get("description"),
                 "universe": cfg.get("universe"),
                 "asset_class": cfg.get("asset_class"),
@@ -496,10 +506,17 @@ async def get_strategies():
                 "losses": 0,
                 "total_pnl": 0,
                 "avg_pnl": 0,
-                "win_rate": None,
-                "sharpe_ratio": None,
-                "max_drawdown": None,
+                "win_rate": backtest_win_rate,
+                "sharpe_ratio": backtest_sharpe,
+                "max_drawdown": backtest_mdd,
+                "brier_score": backtest_brier,
                 "last_trade_at": None,
+                "backtest_sharpe": backtest_sharpe,
+                "backtest_max_drawdown": backtest_mdd,
+                "backtest_win_rate": backtest_win_rate,
+                "backtest_brier": backtest_brier,
+                "backtest_trade_count": backtest_trade_count,
+                "metrics_source": "backtest" if backtest_sharpe is not None else None,
             }
         except Exception as exc:
             logger.warning("strategy_config_read_failed", path=str(config_path), error=str(exc))
@@ -514,8 +531,10 @@ async def get_strategies():
         sid = row.get("strategy_id")
         if sid and sid in strategies_by_id:
             strategies_by_id[sid].update({k: v for k, v in dict(row).items() if k != "strategy_id"})
+            strategies_by_id[sid]["metrics_source"] = "live"
         elif sid:
             strategies_by_id[sid] = dict(row)
+            strategies_by_id[sid]["metrics_source"] = "live"
 
     # / overlay trade_log aggregates where available
     # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
