@@ -1531,6 +1531,11 @@ async def get_hydration_status():
 
     loops = await describe_loops(_pool)
     hydration = next((l for l in loops if l["name"] == "knowledge_hydration"), None)
+    # / never-fired hydration was rendering as status="ok" while last_fire_ts
+    # / was null — a contradiction in the UI. force "pending" until the loop
+    # / has produced at least one event.
+    raw_status = hydration.get("last_status") if hydration else None
+    last_status = "pending" if last_event_ts is None else raw_status
     return {
         "daily_cap": cap,
         "hydrated_today": hydrated_today,
@@ -1538,7 +1543,7 @@ async def get_hydration_status():
         "next_fire_ts": hydration.get("next_fire_ts").isoformat()
             if hydration and hasattr(hydration.get("next_fire_ts"), "isoformat")
             else (hydration and hydration.get("next_fire_ts")),
-        "last_status": hydration.get("last_status") if hydration else None,
+        "last_status": last_status,
     }
 
 
