@@ -473,13 +473,24 @@ async def sync_trades_from_alpaca(pool) -> int:
                 )
                 if prior_buy and prior_buy["price"]:
                     pnl = (Decimal(str(price)) - prior_buy["price"]) * Decimal(str(qty))
+            # / recover strategy attribution — approved_trades.order_id is written
+            # / by the executor right after place_order, so reconciled fills can
+            # / trace back to the strategy that authored them instead of landing
+            # / as null/untracked rows.
+            approved_row = await conn.fetchrow(
+                "SELECT id, strategy_id FROM approved_trades WHERE order_id = $1",
+                order_id,
+            )
+            linked_trade_id = approved_row["id"] if approved_row else None
+            linked_strategy_id = approved_row["strategy_id"] if approved_row else None
             await conn.execute(
                 """INSERT INTO trade_log
                 (trade_id, symbol, side, qty, price, order_id, broker, regime, pnl, strategy_id, details, created_at)
-                VALUES (NULL, $1, $2, $3, $4, $5, 'AlpacaBroker', NULL, $6, NULL,
-                        $7, $8::timestamptz)""",
+                VALUES ($1, $2, $3, $4, $5, $6, 'AlpacaBroker', NULL, $7, $8,
+                        $9, $10::timestamptz)""",
+                linked_trade_id,
                 symbol, side, Decimal(str(qty)), Decimal(str(price)),
-                order_id, pnl,
+                order_id, pnl, linked_strategy_id,
                 {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
@@ -832,6 +843,42 @@ async def claim_approved_trade_atomic(pool, trade_id: int) -> bool:
             trade_id,
         )
     return result == "UPDATE 1"
+
+
+async def attach_broker_order_id(pool, trade_id: int, order_id: str) -> None:
+    # / persist the broker-assigned order id so sync_trades_from_alpaca can
+    # / recover strategy_id on reconciled fills via a point lookup.
+    if not order_id:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE approved_trades SET order_id = $1 WHERE id = $2",
+                order_id, trade_id,
+            )
+    except Exception as exc:
+        logger.debug("attach_broker_order_id_failed",
+                     trade_id=trade_id, error=str(exc)[:120])
+
+
+async def fetch_strategy_id_by_order(pool, order_id: str) -> tuple[int | None, str | None]:
+    # / returns (approved_trade_id, strategy_id) for a reconciled fill, or (None, None).
+    # / used by sync_trades_from_alpaca to attribute fills back to their strategy.
+    if not order_id:
+        return None, None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, strategy_id FROM approved_trades WHERE order_id = $1",
+                order_id,
+            )
+    except Exception as exc:
+        logger.debug("fetch_strategy_id_by_order_failed",
+                     order_id=order_id, error=str(exc)[:120])
+        return None, None
+    if not row:
+        return None, None
+    return row.get("id"), row.get("strategy_id")
 
 
 async def fetch_daily_ohlcv(pool, symbol: str, limit: int = 250) -> list[dict]:
