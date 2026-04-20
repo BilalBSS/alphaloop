@@ -40,13 +40,20 @@ class Tick:
 class TickBuffer:
     # / bounded per-symbol ring of the most-recent ticks. drop-oldest on overflow.
     # / read-only snapshots are cheap — the deque holds references, not copies.
+    # / dropped_ticks tracks overflow count; _log_suppress_until rate-limits the
+    # / overflow warning so a single hot symbol can't spam the log.
 
-    __slots__ = ("_by_symbol", "_max_per_symbol", "_lock")
+    __slots__ = (
+        "_by_symbol", "_max_per_symbol", "_lock",
+        "_dropped", "_log_suppress_until",
+    )
 
     def __init__(self, max_per_symbol: int = 1000) -> None:
         self._by_symbol: dict[str, Deque[Tick]] = {}
         self._max_per_symbol = max_per_symbol
         self._lock = asyncio.Lock()
+        self._dropped: dict[str, int] = {}
+        self._log_suppress_until: dict[str, float] = {}
 
     async def push(self, tick: Tick) -> None:
         async with self._lock:
@@ -54,7 +61,25 @@ class TickBuffer:
             if buf is None:
                 buf = deque(maxlen=self._max_per_symbol)
                 self._by_symbol[tick.symbol] = buf
+            # / at maxlen, append silently drops the oldest; count + log it
+            # / so we can correlate pricing-staleness incidents to stream pressure.
+            if len(buf) >= self._max_per_symbol:
+                self._dropped[tick.symbol] = self._dropped.get(tick.symbol, 0) + 1
+                now = time.monotonic()
+                next_ok = self._log_suppress_until.get(tick.symbol, 0.0)
+                if now >= next_ok:
+                    logger.warning(
+                        "stream_buffer_overflow",
+                        symbol=tick.symbol, vendor=tick.vendor,
+                        dropped_total=self._dropped[tick.symbol],
+                        max_per_symbol=self._max_per_symbol,
+                    )
+                    self._log_suppress_until[tick.symbol] = now + 60.0
             buf.append(tick)
+
+    def dropped_ticks(self) -> dict[str, int]:
+        # / snapshot for /api/phase5-metrics. no lock — reads atomic in CPython.
+        return dict(self._dropped)
 
     async def drain(self, symbol: str) -> list[Tick]:
         # / grab-and-clear for aggregation passes
