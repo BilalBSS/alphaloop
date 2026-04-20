@@ -18,11 +18,28 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, time as dtime
 from typing import Any, Callable, Deque, Literal
 
 import structlog
 
+try:
+    from zoneinfo import ZoneInfo
+    _NY_TZ = ZoneInfo("America/New_York")
+except Exception:
+    _NY_TZ = None
+
 logger = structlog.get_logger(__name__)
+
+
+def _is_lunch_hour_et(now: datetime | None = None) -> bool:
+    # / 12:00-13:00 ET — low-liquidity names can genuinely go a minute or two
+    # / between prints. the aggressive 30s watchdog false-alarms here.
+    if _NY_TZ is None:
+        return False
+    now = now or datetime.now(_NY_TZ)
+    et = now.astimezone(_NY_TZ)
+    return dtime(12, 0) <= et.time() < dtime(13, 0)
 
 
 StreamStatus = Literal["connecting", "connected", "reconnecting", "circuit_open", "stopped"]
@@ -168,6 +185,7 @@ class StreamBase(ABC):
 
     MAX_BACKOFF_S = 60.0
     WATCHDOG_IDLE_S = 30.0
+    WATCHDOG_IDLE_LUNCH_S = 120.0  # / lunch-hour ET window is genuinely quieter
 
     def __init__(
         self,
@@ -272,17 +290,23 @@ class StreamBase(ABC):
 
     async def _watchdog(self) -> None:
         # / force reconnect if no tick received during market hours for a long while.
-        # / uses a soft check only — doesn't know market hours by itself; orchestrator
-        # / runs this during its expected-active window.
+        # / threshold relaxes to WATCHDOG_IDLE_LUNCH_S during 12:00-13:00 ET so the
+        # / low-liquidity lunch lull doesn't trip needless reconnects.
         while not self._stop.is_set():
             if await self._sleep_or_stop(5.0):
                 return
             if self.state.last_tick_at is None:
                 continue
             idle = time.monotonic() - self.state.last_tick_at
-            if idle > self.WATCHDOG_IDLE_S and self.state.status == "connected":
+            threshold = (
+                self.WATCHDOG_IDLE_LUNCH_S
+                if _is_lunch_hour_et()
+                else self.WATCHDOG_IDLE_S
+            )
+            if idle > threshold and self.state.status == "connected":
                 logger.warning("stream_watchdog_idle_reconnect",
-                               stream=self.name, idle_s=round(idle, 1))
+                               stream=self.name, idle_s=round(idle, 1),
+                               threshold_s=threshold)
                 # / setting status triggers the subclass consume loop to detect it
                 # / on its next iteration (subclasses check self._stop + state)
                 self.state.status = "reconnecting"
