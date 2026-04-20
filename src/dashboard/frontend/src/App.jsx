@@ -1,17 +1,31 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { WebSocketProvider, useWebSocketContext } from './contexts/WebSocketContext'
 import { useApiLive } from './hooks/useApiLive'
 import Header from './components/Header'
-import PortfolioTab from './components/PortfolioTab'
-import TradesTab from './components/TradesTab'
-import EvolutionTab from './components/EvolutionTab'
-import HealthTab from './components/HealthTab'
-import AnalysisTab from './components/AnalysisTab'
-import KnowledgeTab from './components/KnowledgeTab'
-import SystemTab from './components/SystemTab'
-import MacroTab from './components/MacroTab'
+
+// / code-split each tab so first paint ships ~header + portfolio only.
+// / vite manualChunks config keeps each tab on its own hashed bundle that loads
+// / on first activation. previously the dashboard shipped every tab at once
+// / (~570kB main chunk); with route splitting each page is ~60-90kB.
+const PortfolioTab = lazy(() => import('./components/PortfolioTab'))
+const TradesTab    = lazy(() => import('./components/TradesTab'))
+const EvolutionTab = lazy(() => import('./components/EvolutionTab'))
+const HealthTab    = lazy(() => import('./components/HealthTab'))
+const AnalysisTab  = lazy(() => import('./components/AnalysisTab'))
+const KnowledgeTab = lazy(() => import('./components/KnowledgeTab'))
+const SystemTab    = lazy(() => import('./components/SystemTab'))
+const MacroTab     = lazy(() => import('./components/MacroTab'))
 
 const TABS = ['Portfolio', 'Trades', 'Evolution', 'Health', 'Analysis', 'Knowledge', 'Macro', 'System']
+
+// / suspense fallback shown while a tab chunk downloads on first activation
+function TabLoading() {
+  return (
+    <div className="flex items-center justify-center py-16 text-text-secondary text-sm">
+      <div className="skeleton h-8 w-40 rounded" />
+    </div>
+  )
+}
 
 function AppInner() {
   const [activeTab, setActiveTab] = useState(() =>
@@ -72,37 +86,31 @@ function AppInner() {
         ))}
       </nav>
 
-      {/* tab content */}
+      {/* tab content — lazy loaded, each inside suspense boundary */}
       <main className="flex-1 p-4 md:p-6">
-        {activeTab === 'Portfolio' && (
-          <PortfolioTab
-            portfolio={portfolio.data}
-            trades={trades.data}
-            strategies={strategies.data}
-            loading={loading}
-          />
-        )}
-        {activeTab === 'Trades' && (
-          <TradesTab trades={trades.data} loading={loading.trades} />
-        )}
-        {activeTab === 'Evolution' && (
-          <EvolutionTab evolution={evolution.data} loading={loading.evolution} />
-        )}
-        {activeTab === 'Health' && (
-          <HealthTab health={health.data} loading={loading.health} />
-        )}
-        {activeTab === 'Analysis' && (
-          <AnalysisTab />
-        )}
-        {activeTab === 'Knowledge' && (
-          <KnowledgeTab />
-        )}
-        {activeTab === 'Macro' && (
-          <MacroTab />
-        )}
-        {activeTab === 'System' && (
-          <SystemTab />
-        )}
+        <Suspense fallback={<TabLoading />}>
+          {activeTab === 'Portfolio' && (
+            <PortfolioTab
+              portfolio={portfolio.data}
+              trades={trades.data}
+              strategies={strategies.data}
+              loading={loading}
+            />
+          )}
+          {activeTab === 'Trades' && (
+            <TradesTab trades={trades.data} loading={loading.trades} />
+          )}
+          {activeTab === 'Evolution' && (
+            <EvolutionTab evolution={evolution.data} loading={loading.evolution} />
+          )}
+          {activeTab === 'Health' && (
+            <HealthTab health={health.data} loading={loading.health} />
+          )}
+          {activeTab === 'Analysis' && <AnalysisTab />}
+          {activeTab === 'Knowledge' && <KnowledgeTab />}
+          {activeTab === 'Macro' && <MacroTab />}
+          {activeTab === 'System' && <SystemTab />}
+        </Suspense>
       </main>
     </div>
   )
