@@ -115,15 +115,9 @@ class ExecutorAgent:
         self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
     ) -> dict:
         # / place order for one approved trade
-        # / fetch approved trade
-        async with pool.acquire() as conn:
-            trade = await conn.fetchrow(
-                "SELECT * FROM approved_trades WHERE id = $1", trade_id,
-            )
+        trade = await tools.fetch_approved_trade_by_id(pool, trade_id)
         if not trade:
             return {"status": "error", "reason": "trade_not_found"}
-
-        trade = dict(trade)
         strategy_id = trade.get("strategy_id")
 
         # / killed-strategy gate: reject trades from strategies marked killed in the pool
@@ -150,14 +144,9 @@ class ExecutorAgent:
                 )
                 return {"status": "cancelled", "reason": f"strategy_{strategy_id}_killed"}
 
-        # / atomic guard against double execution — WHERE status = 'pending'
-        # / prevents toctou race between check and update
-        async with pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE approved_trades SET status = 'executing' WHERE id = $1 AND status = 'pending'",
-                trade_id,
-            )
-        if result != "UPDATE 1":
+        # / atomic guard against double execution — prevents toctou race
+        claimed = await tools.claim_approved_trade_atomic(pool, trade_id)
+        if not claimed:
             logger.warning(
                 "executor_skip_non_pending",
                 trade_id=trade_id, status=trade["status"],
