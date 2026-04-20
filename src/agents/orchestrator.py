@@ -889,9 +889,13 @@ class AgentOrchestrator:
         # / every 60s, drain the tick buffer and write the newest tick per symbol
         # / into latest_prices. gives downstream consumers (analyst, risk, dashboard
         # / refresh) a fresh pointer even between manual refreshes.
+        # / escalates to a visible error after N consecutive upsert failures so the
+        # / operator sees "aggregator stuck" on /api/loops instead of silent staleness.
         if self._tick_buffer is None:
             return
         from src.data.market_data import store_latest_prices
+        consecutive_failures = 0
+        escalation_threshold = 3
         while not self._stop_event.is_set():
             try:
                 drained = await self._tick_buffer.drain_all()
@@ -904,8 +908,25 @@ class AgentOrchestrator:
                     if latest and self._pool is not None:
                         await store_latest_prices(self._pool, latest)
                         logger.debug("stream_aggregator_upserted", n=len(latest))
+                if consecutive_failures > 0:
+                    consecutive_failures = 0
+                    await loop_registry.upsert_service_state(
+                        self._pool, "stream_aggregator", "ok", error=None,
+                    )
             except Exception as exc:
-                logger.warning("stream_aggregator_error", error=str(exc)[:200])
+                consecutive_failures += 1
+                logger.warning(
+                    "stream_aggregator_error",
+                    error=str(exc)[:200],
+                    consecutive_failures=consecutive_failures,
+                )
+                if consecutive_failures >= escalation_threshold:
+                    await loop_registry.upsert_service_state(
+                        self._pool,
+                        "stream_aggregator",
+                        "error",
+                        error=f"aggregator stuck ({consecutive_failures} consecutive failures): {str(exc)[:200]}",
+                    )
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
