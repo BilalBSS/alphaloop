@@ -95,15 +95,9 @@ class RiskAgent:
         strategy_pool=None,
     ) -> dict:
         # / fetch signal
-        async with pool.acquire() as conn:
-            signal = await conn.fetchrow(
-                "SELECT * FROM trade_signals WHERE id = $1 AND status = 'pending'",
-                signal_id,
-            )
+        signal = await tools.fetch_pending_signal_by_id(pool, signal_id)
         if not signal:
             return {"status": "skipped", "reason": "signal_not_found_or_not_pending"}
-
-        signal = dict(signal)
         symbol = signal["symbol"]
         side = signal["signal_type"]
         # / clamp to [0, 1] to prevent oversized positions from malformed data
@@ -394,13 +388,9 @@ class RiskAgent:
         position_symbols = [p.symbol for p in positions] + [symbol]
 
         # / fetch returns for all symbols
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT symbol, date, close FROM market_data
-                WHERE symbol = ANY($1)
-                ORDER BY date DESC LIMIT $2""",
-                position_symbols, 252 * len(position_symbols),
-            )
+        rows = await tools.fetch_close_history_batch(
+            pool, position_symbols, bars_per_symbol=252,
+        )
 
         if not rows:
             return None

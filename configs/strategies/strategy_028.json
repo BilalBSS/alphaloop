@@ -15,23 +15,59 @@
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "earnings_surprise", "condition": "above", "threshold_pct": 0.05, "max_days_since_report": 3 },
-      { "indicator": "earnings_revision_momentum", "condition": "above", "threshold": 0.0, "lookback": 30 },
-      { "indicator": "sma", "condition": "price_above", "period": 50 },
-      { "indicator": "volume", "condition": "above_average", "multiplier": 1.5, "period": 20 }
+      {
+        "indicator": "earnings_surprise",
+        "condition": "above",
+        "threshold_pct": 0.05,
+        "max_days_since_report": 3
+      },
+      {
+        "indicator": "earnings_revision_momentum",
+        "condition": "above",
+        "threshold": 0.0,
+        "lookback": 30
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 50
+      },
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 1.5,
+        "period": 20
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.08 },
-    "stop_loss": { "type": "fixed_pct", "pct": 0.04 },
-    "time_exit": { "max_holding_days": 10 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.08
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.04
+    },
+    "time_exit": {
+      "max_holding_days": 10
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
     "kelly_fraction": 0.22
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:52:00.943898+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null

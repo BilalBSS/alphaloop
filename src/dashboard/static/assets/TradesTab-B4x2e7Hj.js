@@ -1,0 +1,1 @@
+import{t as e}from"./tab-trades-DDVGaCVn.js";export{e as default};

@@ -42,13 +42,7 @@ class StrategyAgent:
         if symbol in self._df_cache:
             return self._df_cache[symbol]
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT date, open, high, low, close, volume
-                FROM market_data WHERE symbol = $1
-                ORDER BY date DESC LIMIT 250""",
-                symbol,
-            )
+        rows = await tools.fetch_daily_ohlcv(pool, symbol, limit=250)
 
         if len(rows) < min_bars:
             self._df_cache[symbol] = None
@@ -431,13 +425,9 @@ class StrategyAgent:
             return self._intraday_cache[symbol]
 
         try:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """SELECT timestamp, open, high, low, close, volume
-                    FROM market_data_intraday WHERE symbol = $1 AND timeframe = '1Hour'
-                    ORDER BY timestamp DESC LIMIT 100""",
-                    symbol,
-                )
+            rows = await tools.fetch_intraday_ohlcv(
+                pool, symbol, timeframe="1Hour", limit=100,
+            )
 
             if len(rows) < min_bars:
                 self._intraday_cache[symbol] = None
@@ -693,13 +683,9 @@ class StrategyAgent:
                 )
                 # / mark the position so we don't re-fire next cycle; best-effort
                 try:
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            """UPDATE strategy_positions
-                            SET partial_exit_fired = TRUE, updated_at = NOW()
-                            WHERE strategy_id=$1 AND symbol=$2""",
-                            partial_sig["strategy_id"], sp["symbol"],
-                        )
+                    await tools.mark_partial_exit_fired(
+                        pool, partial_sig["strategy_id"], sp["symbol"],
+                    )
                 except Exception as exc:
                     logger.warning(
                         "partial_exit_flag_update_failed",

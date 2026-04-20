@@ -40,6 +40,67 @@ function EquityChart() {
   )
 }
 
+// / phase 7 tier 2j: compact realized-pnl-today breakdown, fills the left column
+// / bottom under the equity curve. groups today's filled trades by strategy_id and
+// / sums pnl per group, sorted desc.
+function DailyPnLByStrategy({ trades }) {
+  const rows = useMemo(() => {
+    if (!Array.isArray(trades) || trades.length === 0) return []
+    const today = new Date().toISOString().slice(0, 10)
+    const byStrat = new Map()
+    for (const t of trades) {
+      const ts = t.created_at || t.timestamp || ''
+      if (!ts.startsWith(today)) continue
+      const sid = t.strategy_id || '(unassigned)'
+      const pnl = parseFloat(t.pnl ?? 0) || 0
+      const cur = byStrat.get(sid) || { pnl: 0, count: 0 }
+      byStrat.set(sid, { pnl: cur.pnl + pnl, count: cur.count + 1 })
+    }
+    return [...byStrat.entries()]
+      .map(([sid, v]) => ({ sid, pnl: v.pnl, count: v.count }))
+      .sort((a, b) => b.pnl - a.pnl)
+  }, [trades])
+
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No realized P&L today"
+        hint="Rows appear as strategies close positions during the session."
+      />
+    )
+  }
+
+  const maxAbs = Math.max(...rows.map(r => Math.abs(r.pnl)), 1)
+
+  return (
+    <div className="space-y-1">
+      {rows.map(r => {
+        const pct = (Math.abs(r.pnl) / maxAbs) * 100
+        const colorClass = r.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'
+        const barBg = r.pnl >= 0 ? 'bg-win/20' : 'bg-loss/20'
+        return (
+          <div key={r.sid} className="text-xs flex items-center gap-2">
+            <div className="font-mono w-28 truncate text-text-secondary" title={r.sid}>
+              {r.sid}
+            </div>
+            <div className="flex-1 h-4 bg-bg-primary rounded relative overflow-hidden">
+              <div className={`absolute inset-y-0 ${r.pnl >= 0 ? 'left-1/2' : 'right-1/2'} ${barBg}`}
+                   style={{ width: `${pct / 2}%` }} />
+              <div className="absolute inset-0 flex items-center justify-center text-[10px] text-text-muted">
+                {r.count} trade{r.count !== 1 ? 's' : ''}
+              </div>
+            </div>
+            <div className={`font-mono w-20 text-right ${colorClass}`}>
+              {r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+
 function PositionsTable({ positions, loading }) {
   if (loading) return <SkeletonTable rows={3} cols={6} />
   if (!positions || positions.length === 0) {
@@ -569,11 +630,17 @@ export default function PortfolioTab({ portfolio, trades, strategies, loading })
       {/* hero */}
       <PortfolioHero portfolio={portfolio} />
 
-      {/* primary positions + equity */}
+      {/* primary positions + equity. stacks equity chart + quick stats tile on
+          the left so it balances against the (usually longer) positions table */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Equity Curve">
-          <EquityChart />
-        </Panel>
+        <div className="flex flex-col gap-4">
+          <Panel title="Equity Curve">
+            <EquityChart />
+          </Panel>
+          <Panel title="Today's P&L by Strategy">
+            <DailyPnLByStrategy trades={trades} />
+          </Panel>
+        </div>
 
         <Panel title="Open Positions">
           <PositionsTable positions={portfolio?.positions} loading={loading.portfolio} />

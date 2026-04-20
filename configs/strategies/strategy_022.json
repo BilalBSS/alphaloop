@@ -7,26 +7,63 @@
   "description": "Buy energy names when XLE leads and WTI crude is in a 20d uptrend",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 20, "fcf_margin_min": 0.10 },
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 20,
+    "fcf_margin_min": 0.1
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "sector_relative_strength", "condition": "above", "threshold": 0.01, "lookback": 20, "sector_etf": "XLE" },
-      { "indicator": "intermarket_correlation", "condition": "correlated_with", "series": "WTI", "threshold": 0.6 },
-      { "indicator": "sma", "condition": "price_above", "period": 50 }
+      {
+        "indicator": "sector_relative_strength",
+        "condition": "above",
+        "threshold": 0.01,
+        "lookback": 20,
+        "sector_etf": "XLE"
+      },
+      {
+        "indicator": "intermarket_correlation",
+        "condition": "correlated_with",
+        "series": "WTI",
+        "threshold": 0.6
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 50
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.08 },
-    "stop_loss": { "type": "atr_trailing", "multiplier": 2.0, "period": 14 },
-    "time_exit": { "max_holding_days": 25 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.08
+    },
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 2.0,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 25
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
-    "kelly_fraction": 0.20
+    "kelly_fraction": 0.2
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:58.668494+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": "health_energy",
   "symbol": null

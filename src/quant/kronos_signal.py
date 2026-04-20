@@ -194,9 +194,12 @@ def _run_hf_inference(
     # / runs real Kronos inference via the KronosPredictor API. Returns None on
     # / failure so the caller can gracefully fall back.
     # /
-    # / Kronos's predictor takes an OHLCV dataframe + timestamps and returns point
-    # / forecasts. to get a probability, we run sample_count paths and count how
-    # / many end with next_close > last_actual_close.
+    # / KronosPredictor.predict averages across its internal `sample_count` paths
+    # / before returning a single-row df (see vendor/kronos/kronos.py:auto_regressive_inference
+    # / where `preds = np.mean(preds, axis=1)`). passing sample_count=30 therefore
+    # / collapses to a single averaged close — deterministic direction → prob ∈ {0,0.5,1}.
+    # / to recover a true probability we loop sample_count=1 N times; the stochastic
+    # / decoder (T=1.0, top_p=0.9) produces a different draw each call.
     global _predictor
     if _predictor is None:
         return None
@@ -215,35 +218,38 @@ def _run_hf_inference(
         x_timestamp = pd.Series(pd.date_range(end=pd.Timestamp.utcnow().normalize(), periods=len(df_in), freq="D"))
         y_timestamp = pd.Series(pd.date_range(start=x_timestamp.iloc[-1] + pd.Timedelta(days=1), periods=1, freq="D"))
 
-        sample_count = int(os.environ.get("KRONOS_SAMPLE_COUNT", "30"))
-        pred_df = _predictor.predict(
-            df=df_in,
-            x_timestamp=x_timestamp,
-            y_timestamp=y_timestamp,
-            pred_len=1,
-            T=1.0,
-            top_p=0.9,
-            sample_count=sample_count,
-        )
-
-        # / sample paths can come back as stacked rows (n_samples rows) OR as a
-        # / single-row df of averages depending on KronosPredictor version. handle both.
+        n_samples = max(int(os.environ.get("KRONOS_SAMPLE_COUNT", "30")), 2)
         last_close = float(df_in["close"].iloc[-1])
-        if hasattr(pred_df, "shape") and len(pred_df) >= 2:
-            predicted_closes = pred_df["close"].to_numpy().astype(float)
-            prob_up = float(np.mean(predicted_closes > last_close))
-        else:
-            # / fall-back: single forecast → deterministic direction, confidence shrinks
-            pred_close = float(pred_df["close"].iloc[0])
-            prob_up = 1.0 if pred_close > last_close else 0.0 if pred_close < last_close else 0.5
-            sample_count = 1
 
-        # / confidence scales with sample disagreement — tight consensus = high confidence
+        sample_closes: list[float] = []
+        for _ in range(n_samples):
+            pred_df = _predictor.predict(
+                df=df_in,
+                x_timestamp=x_timestamp,
+                y_timestamp=y_timestamp,
+                pred_len=1,
+                T=1.0,
+                top_p=0.9,
+                sample_count=1,
+            )
+            if pred_df is None or len(pred_df) == 0:
+                continue
+            sample_closes.append(float(pred_df["close"].iloc[0]))
+
+        if len(sample_closes) < 2:
+            return None
+
+        closes_arr = np.asarray(sample_closes, dtype=float)
+        prob_up = float(np.mean(closes_arr > last_close))
+        # / confidence = directional conviction; |0.5 - p| * 2 ∈ [0, 1]
         confidence = float(min(abs(prob_up - 0.5) * 2.0, 1.0))
+        pred_std_pct = float(np.std(closes_arr) / max(abs(last_close), 1e-9))
         components = {
             "source": "kronos_hf_predict",
-            "sample_count": sample_count,
+            "sample_count": len(sample_closes),
             "last_close": round(last_close, 4),
+            "pred_mean": round(float(np.mean(closes_arr)), 4),
+            "pred_std_pct": round(pred_std_pct * 100.0, 4),
         }
         return prob_up, confidence, components
     except Exception as exc:
@@ -322,3 +328,37 @@ def get_load_status() -> dict:
         "fallback_reason": _model_load_failed_reason,
         "enabled_via_env": os.environ.get("KRONOS_ENABLED", "false").lower() in ("true", "1", "yes"),
     }
+
+
+async def ensure_loaded_and_record_status(pool) -> dict:
+    """trigger HF load (idempotent) then persist status to loop_activity so the
+    dashboard can surface it without importing our process-local module state.
+
+    returns the same dict get_load_status() returns. pool may be None (tests).
+    """
+    import time as _time
+    t0 = _time.monotonic()
+    _try_load_hf_model()
+    duration_ms = int((_time.monotonic() - t0) * 1000)
+
+    status = get_load_status()
+    if pool is not None:
+        try:
+            from src.agents.loop_registry import upsert_service_state
+            if status["hf_loaded"]:
+                await upsert_service_state(
+                    pool, "kronos_hf_load", "success", error=None, duration_ms=duration_ms,
+                )
+            elif not status["enabled_via_env"]:
+                await upsert_service_state(
+                    pool, "kronos_hf_load", "disabled", error=status["fallback_reason"],
+                    duration_ms=duration_ms,
+                )
+            else:
+                await upsert_service_state(
+                    pool, "kronos_hf_load", "error", error=status["fallback_reason"] or "unknown_load_error",
+                    duration_ms=duration_ms,
+                )
+        except Exception as exc:
+            logger.debug("kronos_status_record_failed", error=str(exc)[:160])
+    return status

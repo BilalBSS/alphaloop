@@ -170,7 +170,10 @@ class StrategyMetadata(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_status(cls, v: str) -> str:
-        valid = ("backtest_pending", "backtesting", "paper_trading", "live", "killed")
+        # / inactive = strategy failed backtest or was manually retired but not
+        # / evolution-killed; distinct from "killed" so operators can revive it.
+        valid = ("backtest_pending", "backtesting", "paper_trading", "live",
+                 "killed", "inactive")
         if v not in valid:
             raise ValueError(f"status must be one of {valid}, got {v}")
         return v

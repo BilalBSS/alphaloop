@@ -801,6 +801,94 @@ async def store_ict_indicators(
         logger.warning("store_ict_failed", symbol=symbol, error=str(exc))
 
 
+async def fetch_approved_trade_by_id(pool, trade_id: int) -> dict | None:
+    # / fetch a single approved_trades row (any status) — executor uses this to
+    # / re-hydrate a trade before placing the order
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM approved_trades WHERE id = $1", trade_id,
+        )
+    return dict(row) if row else None
+
+
+async def claim_approved_trade_atomic(pool, trade_id: int) -> bool:
+    # / flip approved_trades.status pending→executing atomically. returns True if we
+    # / grabbed it, False if another worker already claimed it (toctou guard).
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE approved_trades SET status = 'executing' WHERE id = $1 AND status = 'pending'",
+            trade_id,
+        )
+    return result == "UPDATE 1"
+
+
+async def fetch_daily_ohlcv(pool, symbol: str, limit: int = 250) -> list[dict]:
+    # / recent daily bars for a single symbol, newest-first ordering
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT date, open, high, low, close, volume
+            FROM market_data WHERE symbol = $1
+            ORDER BY date DESC LIMIT $2""",
+            symbol, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def fetch_intraday_ohlcv(
+    pool, symbol: str, timeframe: str = "1Hour", limit: int = 100,
+) -> list[dict]:
+    # / recent intraday bars for a single symbol/timeframe combo
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT timestamp, open, high, low, close, volume
+            FROM market_data_intraday WHERE symbol = $1 AND timeframe = $2
+            ORDER BY timestamp DESC LIMIT $3""",
+            symbol, timeframe, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def mark_partial_exit_fired(
+    pool, strategy_id: str, symbol: str,
+) -> None:
+    # / flag a strategy_positions row so we don't re-fire the partial exit next cycle
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE strategy_positions
+            SET partial_exit_fired = TRUE, updated_at = NOW()
+            WHERE strategy_id=$1 AND symbol=$2""",
+            strategy_id, symbol,
+        )
+
+
+async def fetch_pending_signal_by_id(pool, signal_id: int) -> dict | None:
+    # / fetch a single pending signal row by id. returns None if missing or already
+    # / filled — used by risk_agent to re-validate a signal before approval.
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM trade_signals WHERE id = $1 AND status = 'pending'",
+            signal_id,
+        )
+    return dict(row) if row else None
+
+
+async def fetch_close_history_batch(
+    pool, symbols: list[str], bars_per_symbol: int = 252,
+) -> list[dict]:
+    # / batch fetch recent close prices for a list of symbols. used by risk_agent's
+    # / copula tail-dependence check; caller pivots into a returns matrix.
+    if not symbols:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT symbol, date, close FROM market_data
+            WHERE symbol = ANY($1)
+            ORDER BY date DESC LIMIT $2""",
+            symbols, bars_per_symbol * len(symbols),
+        )
+    return [dict(r) for r in rows]
+
+
 async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
     # / get latest regime from regime_history for equity or crypto
     try:

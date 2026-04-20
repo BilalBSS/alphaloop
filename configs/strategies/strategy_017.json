@@ -7,26 +7,62 @@
   "description": "3-5 day swing on MACD bullish cross after pullback to 20-day SMA",
   "asset_class": "stocks",
   "universe": "all_stocks",
-  "fundamental_filters": { "strict_data": false, "pe_ratio_max": 60 },
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 60
+  },
   "entry_conditions": {
     "operator": "AND",
     "signals": [
-      { "indicator": "macd", "condition": "bullish_cross", "fast": 12, "slow": 26, "signal": 9 },
-      { "indicator": "sma", "condition": "price_near", "period": 20, "tolerance_pct": 0.02 },
-      { "indicator": "sma", "condition": "price_above", "period": 200 }
+      {
+        "indicator": "macd",
+        "condition": "bullish_cross",
+        "fast": 12,
+        "slow": 26,
+        "signal": 9
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_near",
+        "period": 20,
+        "tolerance_pct": 0.02
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 200
+      }
     ]
   },
   "exit_conditions": {
-    "take_profit": { "type": "fixed_pct", "pct": 0.05 },
-    "stop_loss": { "type": "atr_trailing", "multiplier": 1.5, "period": 14 },
-    "time_exit": { "max_holding_days": 5 }
+    "take_profit": {
+      "type": "fixed_pct",
+      "pct": 0.05
+    },
+    "stop_loss": {
+      "type": "atr_trailing",
+      "multiplier": 1.5,
+      "period": 14
+    },
+    "time_exit": {
+      "max_holding_days": 5
+    }
   },
   "position_sizing": {
     "method": "kelly_fraction",
     "max_position_pct": 0.04,
-    "kelly_fraction": 0.20
+    "kelly_fraction": 0.2
   },
-  "metadata": { "generation": 1, "status": "paper_trading" },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading",
+    "backtest_sharpe": null,
+    "backtest_max_drawdown": null,
+    "backtest_win_rate": null,
+    "backtest_trade_count": 0,
+    "backtest_ran_at": "2026-04-19T18:51:57.364226+00:00",
+    "backtest_error": "no_trades_or_nonfinite"
+  },
   "tier": "sector",
   "sector": null,
   "symbol": null
