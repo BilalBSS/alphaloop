@@ -1,0 +1,1 @@
+import{t as e}from"./tab-system-C6QvmsTn.js";export{e as default};

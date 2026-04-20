@@ -1,0 +1,1 @@
+import{t as e}from"./tab-health-DXTMvaLj.js";export{e as default};
