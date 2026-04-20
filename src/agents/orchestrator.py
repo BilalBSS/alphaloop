@@ -89,6 +89,11 @@ class AgentOrchestrator:
         # / equity symbols passed to the alpaca stream (capped at 30 on free tier).
         # / overflow symbols are rest-polled every 5 min via _price_refresh_loop.
         self._streamed_equity_symbols: set[str] = set()
+        # / bound the in-flight broadcast task count so a slow dashboard client
+        # / can't let fire-and-forget ws sends pile up unbounded under tick storms.
+        self._broadcast_semaphore = asyncio.Semaphore(50)
+        self._broadcast_dropped = 0
+        self._broadcast_drop_log_next = 0.0
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -348,8 +353,8 @@ class AgentOrchestrator:
     async def _deepseek_loop(self) -> None:
         # / run deepseek analysis hourly (separate from groq every-cycle)
         # / first run after short delay to let initial groq cycle start
-        first_run = True
         timeout = loop_registry.timeout_for("deepseek")
+        first_run = True
         while not self._stop_event.is_set():
             wait = 120 if first_run else DEEPSEEK_INTERVAL
             first_run = False
@@ -845,6 +850,8 @@ class AgentOrchestrator:
     def _on_tick_broadcast(self, tick) -> None:
         # / fan each tick out to dashboard ws clients, rate-limited per symbol.
         # / fire-and-forget — buffering is already done by _emit before us.
+        # / bounded by self._broadcast_semaphore so the task queue can't grow
+        # / unbounded if a dashboard client stops reading.
         import time as _t
         now = _t.monotonic()
         last = self._last_tick_broadcast.get(tick.symbol, 0.0)
@@ -853,15 +860,37 @@ class AgentOrchestrator:
         self._last_tick_broadcast[tick.symbol] = now
         try:
             from src.dashboard.app import broadcast, _ws_clients
-            if _ws_clients:
-                asyncio.create_task(broadcast("price_tick", {
-                    "symbol": tick.symbol,
-                    "price": tick.price,
-                    "timestamp_ms": tick.timestamp_ms,
-                    "vendor": tick.vendor,
-                }))
+            if not _ws_clients:
+                return
+            if self._broadcast_semaphore.locked():
+                # / drop silently — the tick is stale anyway once we're backlogged.
+                # / aggregate count + log at most once per minute.
+                self._broadcast_dropped += 1
+                if now >= self._broadcast_drop_log_next:
+                    logger.warning(
+                        "price_tick_broadcast_dropped",
+                        dropped_total=self._broadcast_dropped,
+                    )
+                    self._broadcast_drop_log_next = now + 60.0
+                return
+            payload = {
+                "symbol": tick.symbol,
+                "price": tick.price,
+                "timestamp_ms": tick.timestamp_ms,
+                "vendor": tick.vendor,
+            }
+            asyncio.create_task(self._bounded_broadcast("price_tick", payload))
         except Exception:
             pass  # / dashboard not mounted in this process
+
+    async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
+        async with self._broadcast_semaphore:
+            try:
+                from src.dashboard.app import broadcast
+                await broadcast(event_type, payload)
+            except Exception as exc:
+                logger.debug("bounded_broadcast_failed",
+                             event=event_type, error=str(exc)[:120])
 
     def _streams_healthy_equity(self) -> bool:
         s = self._alpaca_stream
