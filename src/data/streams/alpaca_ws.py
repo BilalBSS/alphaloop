@@ -105,12 +105,14 @@ class AlpacaStream(StreamBase):
             if not self._is_auth_ack(auth_msg):
                 raise RuntimeError(f"alpaca_auth_failed: {str(auth_msg)[:200]}")
 
-            # / 3. subscribe
-            await ws.send(json.dumps({
-                "action": "subscribe",
-                "trades": self.symbols,
-                "quotes": self.symbols,
-            }))
+            # / 3. subscribe. free iex tier counts trades + quotes + bars as separate
+            # / subscriptions against the 30-symbol cap, so subscribing to both means
+            # / 30 symbols uses 60 slots and 405s. trades-only keeps us under the cap
+            # / and is more actionable than mid-price quotes anyway.
+            sub_req: dict[str, Any] = {"action": "subscribe", "trades": self.symbols}
+            if os.getenv("ALPACA_STREAM_QUOTES", "false").lower() in ("true", "1", "yes"):
+                sub_req["quotes"] = self.symbols
+            await ws.send(json.dumps(sub_req))
             sub_resp = await asyncio.wait_for(ws.recv(), timeout=10.0)
             logger.info("alpaca_ws_subscribed", response=str(sub_resp)[:200])
 
