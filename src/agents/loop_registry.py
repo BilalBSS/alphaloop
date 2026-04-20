@@ -48,6 +48,22 @@ LOOP_METADATA: dict[str, dict[str, Any]] = {
 ALL_LOOP_NAMES: list[str] = list(LOOP_METADATA.keys())
 
 
+# / per-loop cycle-body timeout (seconds). wedged loops don't block the next tick
+# / forever — asyncio.wait_for raises TimeoutError, the tracker records an error,
+# / the next interval re-attempts. only set for loops that historically wedged.
+LOOP_TIMEOUTS: dict[str, float] = {
+    "analyst":         600.0,   # / 10 min — full universe groq pass
+    "deepseek":        600.0,   # / 10 min — full universe deepseek pass
+    "wiki_embedding":  900.0,   # / 15 min — ollama backfill batches
+    "wiki_archive":    900.0,   # / 15 min — archive + rewrite old docs
+}
+
+
+def timeout_for(name: str) -> float | None:
+    # / returns cycle-body timeout for `name`, or None (no enforced timeout).
+    return LOOP_TIMEOUTS.get(name)
+
+
 def _compute_next_fire(meta: dict[str, Any], base: datetime | None = None) -> datetime | None:
     # / project the next fire from now + cadence (interval) or next et cron hour
     now = base or datetime.now(timezone.utc)

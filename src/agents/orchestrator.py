@@ -319,12 +319,16 @@ class AgentOrchestrator:
 
     async def _analyst_loop(self) -> None:
         # / run analyst agent on schedule (groq only, deepseek on separate hourly loop)
+        timeout = loop_registry.timeout_for("analyst")
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
             try:
                 async with loop_registry.track(self._pool, "analyst"):
                     symbols = self._get_symbols()
-                    await self._analyst.run(self._pool, symbols, run_deepseek=False)
+                    await asyncio.wait_for(
+                        self._analyst.run(self._pool, symbols, run_deepseek=False),
+                        timeout=timeout,
+                    )
                     # / broadcast analysis update (fire-and-forget); dashboard may not be running
                     try:
                         from src.dashboard.app import broadcast, _ws_clients
@@ -332,6 +336,8 @@ class AgentOrchestrator:
                             asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
                     except Exception as exc:
                         logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
+            except asyncio.TimeoutError:
+                logger.warning("analyst_loop_timeout", timeout_s=timeout)
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -343,6 +349,7 @@ class AgentOrchestrator:
         # / run deepseek analysis hourly (separate from groq every-cycle)
         # / first run after short delay to let initial groq cycle start
         first_run = True
+        timeout = loop_registry.timeout_for("deepseek")
         while not self._stop_event.is_set():
             wait = 120 if first_run else DEEPSEEK_INTERVAL
             first_run = False
@@ -351,8 +358,13 @@ class AgentOrchestrator:
             try:
                 async with loop_registry.track(self._pool, "deepseek"):
                     symbols = self._get_symbols()
-                    await self._analyst.run(self._pool, symbols, run_deepseek=True)
+                    await asyncio.wait_for(
+                        self._analyst.run(self._pool, symbols, run_deepseek=True),
+                        timeout=timeout,
+                    )
                     logger.info("deepseek_cycle_complete")
+            except asyncio.TimeoutError:
+                logger.warning("deepseek_loop_timeout", timeout_s=timeout)
             except Exception as exc:
                 logger.error("deepseek_loop_error", exc_info=True)
                 notify_system_error(str(exc), "deepseek_loop")
@@ -1276,12 +1288,18 @@ class AgentOrchestrator:
         # / backfill missing wiki_embeddings every 6h via ollama nomic-embed-text
         if await self._wait_or_stop(300):
             return
+        timeout = loop_registry.timeout_for("wiki_embedding")
         try:
             async with loop_registry.track(self._pool, "wiki_embedding"):
                 from src.knowledge.loops import wiki_embedding_backfill_loop
-                await wiki_embedding_backfill_loop(self._pool)
+                await asyncio.wait_for(
+                    wiki_embedding_backfill_loop(self._pool),
+                    timeout=timeout,
+                )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            logger.warning("wiki_embedding_loop_timeout", timeout_s=timeout)
         except Exception as exc:
             logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_embedding_loop")
@@ -1290,12 +1308,18 @@ class AgentOrchestrator:
         # / daily archive of wiki docs older than 180 days
         if await self._wait_or_stop(600):
             return
+        timeout = loop_registry.timeout_for("wiki_archive")
         try:
             async with loop_registry.track(self._pool, "wiki_archive"):
                 from src.knowledge.loops import wiki_archive_loop
-                await wiki_archive_loop(self._pool)
+                await asyncio.wait_for(
+                    wiki_archive_loop(self._pool),
+                    timeout=timeout,
+                )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            logger.warning("wiki_archive_loop_timeout", timeout_s=timeout)
         except Exception as exc:
             logger.error("wiki_archive_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_archive_loop")
