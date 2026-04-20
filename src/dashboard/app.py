@@ -143,17 +143,30 @@ async def get_portfolio():
         broker = _get_broker()
         balance = await broker.get_account_balance()
         positions = await broker.get_positions()
+        trades_today = _serialize(await _query(
+            """SELECT * FROM trade_log
+            WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
+        ))
+        # / daily pnl = open-position unrealized + today's realized fills
+        # / (prior formula only counted unrealized and read 0 on a flat book)
+        unrealized = sum(p.unrealized_pnl for p in positions)
+        realized = 0.0
+        for t in trades_today:
+            pnl = t.get("pnl")
+            if pnl is None:
+                continue
+            try:
+                realized += float(pnl)
+            except (TypeError, ValueError):
+                continue
         return {
             "equity": balance.equity,
             "cash": balance.cash,
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
-            "daily_pnl": sum(p.unrealized_pnl for p in positions),
+            "daily_pnl": unrealized + realized,
             "positions": [_serialize_position(p) for p in positions],
-            "trades_today": _serialize(await _query(
-                """SELECT * FROM trade_log
-                WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
-            )),
+            "trades_today": trades_today,
         }
     except Exception as exc:
         logger.debug("portfolio_alpaca_fallback", error=str(exc))
