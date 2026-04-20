@@ -17,6 +17,15 @@ logger = structlog.get_logger(__name__)
 # / valid tables for status updates (whitelist prevents sql injection)
 _STATUS_TABLES = {"trade_signals", "approved_trades"}
 
+# / monotonic counter of alpaca reconcile rows skipped due to unparseable
+# / filled_at timestamps. surfaced via /api/phase5-metrics so a silent
+# / parser drift can't quietly eat fills.
+_sync_skipped_orders = 0
+
+
+def get_sync_skipped_orders() -> int:
+    return _sync_skipped_orders
+
 
 async def store_analysis_score(
     pool, symbol: str, as_of: date, fundamental_score: float | None,
@@ -455,8 +464,12 @@ async def sync_trades_from_alpaca(pool) -> int:
                         str(filled_at_raw).replace("Z", "+00:00"),
                     )
                 except (ValueError, TypeError):
-                    logger.debug("alpaca_sync_bad_filled_at",
-                                 order_id=order_id, raw=str(filled_at_raw)[:40])
+                    global _sync_skipped_orders
+                    _sync_skipped_orders += 1
+                    logger.warning("alpaca_sync_bad_filled_at",
+                                   order_id=order_id,
+                                   raw=str(filled_at_raw)[:40],
+                                   skipped_total=_sync_skipped_orders)
                     continue
             if qty <= 0 or price <= 0 or filled_at is None:
                 continue
