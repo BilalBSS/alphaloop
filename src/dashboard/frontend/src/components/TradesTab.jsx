@@ -187,9 +187,12 @@ function TradeRow({ trade, expanded, onToggle }) {
 }
 
 function TradesHero({ trades }) {
+  // / open-position count belongs on portfolio tab (authoritative via alpaca).
+  // / the naive buys − sells formula mixed buys/sells across unrelated symbols
+  // / and contradicted positions_count=0 — dropped.
   const stats = useMemo(() => {
     if (!Array.isArray(trades) || trades.length === 0) {
-      return { total: 0, buys: 0, sells: 0, open: 0, lastTs: null }
+      return { total: 0, buys: 0, sells: 0, lastTs: null }
     }
     let buys = 0
     let sells = 0
@@ -200,7 +203,7 @@ function TradesHero({ trades }) {
       const ts = t.created_at ? new Date(t.created_at).getTime() : 0
       if (ts && (!lastTs || ts > lastTs)) lastTs = ts
     }
-    return { total: trades.length, buys, sells, open: buys - sells, lastTs }
+    return { total: trades.length, buys, sells, lastTs }
   }, [trades])
 
   return (
@@ -216,10 +219,6 @@ function TradesHero({ trades }) {
       <div className="hero-metric">
         <span className="hero-metric-label">Sells</span>
         <span className="hero-metric-value font-mono pnl-negative">{stats.sells}</span>
-      </div>
-      <div className="hero-metric">
-        <span className="hero-metric-label">Open (buys − sells)</span>
-        <span className="hero-metric-value font-mono">{stats.open}</span>
       </div>
       <div className="hero-metric">
         <span className="hero-metric-label">Last trade</span>

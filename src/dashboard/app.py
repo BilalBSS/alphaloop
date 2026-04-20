@@ -143,17 +143,30 @@ async def get_portfolio():
         broker = _get_broker()
         balance = await broker.get_account_balance()
         positions = await broker.get_positions()
+        trades_today = _serialize(await _query(
+            """SELECT * FROM trade_log
+            WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
+        ))
+        # / daily pnl = open-position unrealized + today's realized fills
+        # / (prior formula only counted unrealized and read 0 on a flat book)
+        unrealized = sum(p.unrealized_pnl for p in positions)
+        realized = 0.0
+        for t in trades_today:
+            pnl = t.get("pnl")
+            if pnl is None:
+                continue
+            try:
+                realized += float(pnl)
+            except (TypeError, ValueError):
+                continue
         return {
             "equity": balance.equity,
             "cash": balance.cash,
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
-            "daily_pnl": sum(p.unrealized_pnl for p in positions),
+            "daily_pnl": unrealized + realized,
             "positions": [_serialize_position(p) for p in positions],
-            "trades_today": _serialize(await _query(
-                """SELECT * FROM trade_log
-                WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
-            )),
+            "trades_today": trades_today,
         }
     except Exception as exc:
         logger.debug("portfolio_alpaca_fallback", error=str(exc))
@@ -469,10 +482,20 @@ async def get_strategies():
             sid = cfg.get("id", config_path.stem)
             entry_signals = cfg.get("entry_conditions", {}).get("signals", [])
             exit_conds = cfg.get("exit_conditions", {})
+            # / seed sharpe/mdd/brier/win_rate from backtest metadata so strategies
+            # / that haven't been live-scored yet still show their offline numbers.
+            # / strategy_scores rows (when present) override these below — so live
+            # / metrics always win. metrics_source tells the UI which we rendered.
+            meta = cfg.get("metadata", {}) or {}
+            backtest_sharpe = meta.get("backtest_sharpe")
+            backtest_mdd = meta.get("backtest_max_drawdown")
+            backtest_win_rate = meta.get("backtest_win_rate")
+            backtest_brier = meta.get("brier_score")
+            backtest_trade_count = meta.get("trade_count")
             strategies_by_id[sid] = {
                 "strategy_id": sid,
                 "name": cfg.get("name"),
-                "status": cfg.get("metadata", {}).get("status"),
+                "status": meta.get("status"),
                 "description": cfg.get("description"),
                 "universe": cfg.get("universe"),
                 "asset_class": cfg.get("asset_class"),
@@ -483,10 +506,17 @@ async def get_strategies():
                 "losses": 0,
                 "total_pnl": 0,
                 "avg_pnl": 0,
-                "win_rate": None,
-                "sharpe_ratio": None,
-                "max_drawdown": None,
+                "win_rate": backtest_win_rate,
+                "sharpe_ratio": backtest_sharpe,
+                "max_drawdown": backtest_mdd,
+                "brier_score": backtest_brier,
                 "last_trade_at": None,
+                "backtest_sharpe": backtest_sharpe,
+                "backtest_max_drawdown": backtest_mdd,
+                "backtest_win_rate": backtest_win_rate,
+                "backtest_brier": backtest_brier,
+                "backtest_trade_count": backtest_trade_count,
+                "metrics_source": "backtest" if backtest_sharpe is not None else None,
             }
         except Exception as exc:
             logger.warning("strategy_config_read_failed", path=str(config_path), error=str(exc))
@@ -501,8 +531,10 @@ async def get_strategies():
         sid = row.get("strategy_id")
         if sid and sid in strategies_by_id:
             strategies_by_id[sid].update({k: v for k, v in dict(row).items() if k != "strategy_id"})
+            strategies_by_id[sid]["metrics_source"] = "live"
         elif sid:
             strategies_by_id[sid] = dict(row)
+            strategies_by_id[sid]["metrics_source"] = "live"
 
     # / overlay trade_log aggregates where available
     # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
@@ -727,17 +759,17 @@ async def get_health():
         pass
 
     # / parallel fetch — all remaining queries are independent
+    # / last_analysis is no longer queried here; canonical source is
+    # / describe_loops("analyst").last_fire_ts (same value the Health tab
+    # / reads). previously system_events + describe_loops disagreed, so
+    # / Analysis tab and Health tab showed different "last analyst pass" ages.
     (
-        last_trade, last_evolution, last_analysis, last_synthesis, last_eval,
+        last_trade, last_evolution, last_synthesis, last_eval,
         symbols_analyzed, last_llm, db_size, tables, conn_stats, active,
         recent_errors, source_stats,
     ) = await asyncio.gather(
         _query_one("SELECT created_at FROM trade_log ORDER BY created_at DESC LIMIT 1"),
         _query_one("SELECT created_at FROM evolution_log ORDER BY created_at DESC LIMIT 1"),
-        _query_one(
-            """SELECT timestamp FROM system_events
-            WHERE source = 'analyst' ORDER BY timestamp DESC LIMIT 1"""
-        ),
         _query_one("SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"),
         _query_one("SELECT created_at FROM strategy_evaluations ORDER BY created_at DESC LIMIT 1"),
         _query_one(
@@ -784,8 +816,6 @@ async def get_health():
         last_trade = None
     if isinstance(last_evolution, Exception):
         last_evolution = None
-    if isinstance(last_analysis, Exception):
-        last_analysis = None
     if isinstance(last_synthesis, Exception):
         last_synthesis = None
     if isinstance(last_eval, Exception):
@@ -868,6 +898,21 @@ async def get_health():
         if _loop not in sources:
             sources[_loop] = {"status": "pending", "last_error": None, "errors_24h": 0}
 
+    # / canonical analyst timestamp: loop_registry.last_fire_ts for the
+    # / "analyst" loop. every tab that renders "last analyst pass" reads
+    # / from this. system_events-based computation retired to end the
+    # / prior Health vs Analysis disagreement.
+    last_analysis_ts: str | None = None
+    try:
+        from src.agents.loop_registry import describe_loops
+        loops_rows = await describe_loops(_pool)
+        analyst_row = next((l for l in loops_rows if l.get("name") == "analyst"), None)
+        if analyst_row and analyst_row.get("last_fire_ts"):
+            lft = analyst_row["last_fire_ts"]
+            last_analysis_ts = lft.isoformat() if hasattr(lft, "isoformat") else str(lft)
+    except Exception:
+        last_analysis_ts = None
+
     return {
         "db_connected": db_ok,
         "storage": {
@@ -881,7 +926,7 @@ async def get_health():
             "cache_hit_ratio": cache_ratio,
         },
         "cycles": {
-            "last_analysis": str(last_analysis["timestamp"]) if last_analysis else None,
+            "last_analysis": last_analysis_ts,
             "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
             "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
             "last_trade": str(last_trade["created_at"]) if last_trade else None,
@@ -1499,6 +1544,11 @@ async def get_hydration_status():
 
     loops = await describe_loops(_pool)
     hydration = next((l for l in loops if l["name"] == "knowledge_hydration"), None)
+    # / never-fired hydration was rendering as status="ok" while last_fire_ts
+    # / was null — a contradiction in the UI. force "pending" until the loop
+    # / has produced at least one event.
+    raw_status = hydration.get("last_status") if hydration else None
+    last_status = "pending" if last_event_ts is None else raw_status
     return {
         "daily_cap": cap,
         "hydrated_today": hydrated_today,
@@ -1506,7 +1556,7 @@ async def get_hydration_status():
         "next_fire_ts": hydration.get("next_fire_ts").isoformat()
             if hydration and hasattr(hydration.get("next_fire_ts"), "isoformat")
             else (hydration and hydration.get("next_fire_ts")),
-        "last_status": hydration.get("last_status") if hydration else None,
+        "last_status": last_status,
     }
 
 

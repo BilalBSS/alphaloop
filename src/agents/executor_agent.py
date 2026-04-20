@@ -179,6 +179,11 @@ class ExecutorAgent:
             notify_trade_error(symbol, side, str(exc))
             return {"status": "error", "reason": str(exc)}
 
+        # / persist broker order_id so alpaca_sync can recover strategy_id
+        # / on reconciled fills (the usual cause of null strategy_id rows).
+        if getattr(order, "order_id", None):
+            await tools.attach_broker_order_id(pool, trade_id, order.order_id)
+
         if order.status == "filled":
             # / fetch regime for logging
             regime = await tools.fetch_latest_regime(pool, "equity")

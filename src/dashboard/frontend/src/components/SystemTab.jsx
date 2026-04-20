@@ -63,7 +63,9 @@ function statusPill(status) {
   return <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-bg-primary text-text-muted font-semibold">pending</span>
 }
 
-// / env-var presence pills — green=set, red=missing
+// / env-var presence pills — green=set, red=missing with warning icon.
+// / missing chips sort first and use a stronger red so a single missing var in
+// / a grid of 11 set vars still catches the eye.
 function EnvHealthGrid({ envHealth }) {
   if (!envHealth) return null
   const { required = {}, optional = {} } = envHealth
@@ -71,32 +73,45 @@ function EnvHealthGrid({ envHealth }) {
     <div
       key={key}
       className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px] border ${
-        set ? 'bg-profit/10 border-profit/40 pnl-positive' : 'bg-loss/10 border-loss/40 pnl-negative'
+        set
+          ? 'bg-profit/10 border-profit/40 pnl-positive'
+          : 'bg-loss/20 border-loss pnl-negative font-semibold'
       }`}
-      title={set ? 'env var set' : 'env var missing'}
+      title={set ? 'env var set' : 'env var missing — loops that depend on this will silently skip'}
     >
-      <div className={`w-1.5 h-1.5 rounded-full ${set ? 'bg-profit' : 'bg-loss'}`} />
+      {set ? (
+        <div className="w-1.5 h-1.5 rounded-full bg-profit" />
+      ) : (
+        <span className="text-loss font-bold leading-none" aria-hidden>!</span>
+      )}
       <span className="font-mono">{key}</span>
     </div>
   )
+  // / sort: missing first, then alphabetical within each group
+  const sortByMissing = (entries) =>
+    [...entries].sort(([ak, av], [bk, bv]) => (av === bv ? ak.localeCompare(bk) : av ? 1 : -1))
   const missingRequired = Object.entries(required).filter(([, v]) => !v)
   return (
     <Panel title="Environment health">
       {missingRequired.length > 0 && (
         <div className="pnl-negative text-xs border-l-2 border-loss pl-3 py-1 mb-3">
-          {missingRequired.length} required env var{missingRequired.length === 1 ? '' : 's'} missing — some loops will silently skip
+          {missingRequired.length} required env var{missingRequired.length === 1 ? '' : 's'} missing: {' '}
+          <span className="font-mono font-semibold">
+            {missingRequired.map(([k]) => k).join(', ')}
+          </span>
+          {' '}— some loops will silently skip
         </div>
       )}
       <div className="mb-3">
         <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">Required</div>
         <div className="flex flex-wrap gap-1.5">
-          {Object.entries(required).map(([k, v]) => renderPill(k, v))}
+          {sortByMissing(Object.entries(required)).map(([k, v]) => renderPill(k, v))}
         </div>
       </div>
       <div>
         <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">Optional</div>
         <div className="flex flex-wrap gap-1.5">
-          {Object.entries(optional).map(([k, v]) => renderPill(k, v))}
+          {sortByMissing(Object.entries(optional)).map(([k, v]) => renderPill(k, v))}
         </div>
       </div>
     </Panel>

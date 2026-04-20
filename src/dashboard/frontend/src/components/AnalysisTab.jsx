@@ -20,18 +20,14 @@ function timeAgo(ts) {
 }
 
 // / hero — last analyst cycle + synthesis top buy/avoid.
-// / /api/symbols returns `date` on each row — use max as the last analyst pass.
-function AnalysisHero({ symbols, synthesis }) {
-  let lastTs = null
+// / "last analyst cycle" reads loop_registry.last_fire_ts via /api/loops —
+// / the same source Health uses. /api/symbols.date (scored row date) was
+// / lagging by hours and made Analysis disagree with Health.
+function AnalysisHero({ symbols, synthesis, analystLastFire }) {
   let analyzedCount = 0
   if (Array.isArray(symbols)) {
     for (const s of symbols) {
-      const t = s.date || s.analyzed_at || s.updated_at || s.created_at
-      if (t) {
-        analyzedCount++
-        const ms = new Date(t).getTime()
-        if (Number.isFinite(ms) && (!lastTs || ms > lastTs)) lastTs = ms
-      }
+      if (s.date || s.analyzed_at || s.updated_at || s.created_at) analyzedCount++
     }
   }
   const topBuy = synthesis?.top_buys?.[0]
@@ -44,7 +40,7 @@ function AnalysisHero({ symbols, synthesis }) {
     <HeroBanner>
       <div className="hero-metric">
         <span className="hero-metric-label">Last analyst cycle</span>
-        <span className="hero-metric-value-sm font-mono">{timeAgo(lastTs ? new Date(lastTs).toISOString() : null)}</span>
+        <span className="hero-metric-value-sm font-mono">{timeAgo(analystLastFire)}</span>
       </div>
       <div className="hero-metric">
         <span className="hero-metric-label">Symbols scored</span>
@@ -69,6 +65,9 @@ export default function AnalysisTab() {
   const [selectedSymbol, setSelectedSymbol] = useState(null)
   const symbols = useApi('/api/symbols', 60000)
   const { data: synthesis } = useApi('/api/synthesis', 120000)
+  const { data: loopsData } = useApi('/api/loops', 60000)
+  const analystLastFire =
+    loopsData?.loops?.find?.((l) => l.name === 'analyst')?.last_fire_ts || null
 
   // / browser back button support
   const selectSymbol = useCallback((sym) => {
@@ -94,7 +93,11 @@ export default function AnalysisTab() {
 
   return (
     <div className="space-y-6">
-      <AnalysisHero symbols={symbols.data} synthesis={synthesis} />
+      <AnalysisHero
+        symbols={symbols.data}
+        synthesis={synthesis}
+        analystLastFire={analystLastFire}
+      />
 
       <Panel title="Daily Synthesis">
         <SynthesisPanel onSelect={selectSymbol} />

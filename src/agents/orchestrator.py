@@ -89,6 +89,11 @@ class AgentOrchestrator:
         # / equity symbols passed to the alpaca stream (capped at 30 on free tier).
         # / overflow symbols are rest-polled every 5 min via _price_refresh_loop.
         self._streamed_equity_symbols: set[str] = set()
+        # / bound the in-flight broadcast task count so a slow dashboard client
+        # / can't let fire-and-forget ws sends pile up unbounded under tick storms.
+        self._broadcast_semaphore = asyncio.Semaphore(50)
+        self._broadcast_dropped = 0
+        self._broadcast_drop_log_next = 0.0
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -319,12 +324,16 @@ class AgentOrchestrator:
 
     async def _analyst_loop(self) -> None:
         # / run analyst agent on schedule (groq only, deepseek on separate hourly loop)
+        timeout = loop_registry.timeout_for("analyst")
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
             try:
                 async with loop_registry.track(self._pool, "analyst"):
                     symbols = self._get_symbols()
-                    await self._analyst.run(self._pool, symbols, run_deepseek=False)
+                    await asyncio.wait_for(
+                        self._analyst.run(self._pool, symbols, run_deepseek=False),
+                        timeout=timeout,
+                    )
                     # / broadcast analysis update (fire-and-forget); dashboard may not be running
                     try:
                         from src.dashboard.app import broadcast, _ws_clients
@@ -332,6 +341,8 @@ class AgentOrchestrator:
                             asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
                     except Exception as exc:
                         logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
+            except asyncio.TimeoutError:
+                logger.warning("analyst_loop_timeout", timeout_s=timeout)
             except Exception as exc:
                 logger.error("analyst_loop_error", exc_info=True)
                 notify_system_error(str(exc), "analyst_loop")
@@ -342,6 +353,7 @@ class AgentOrchestrator:
     async def _deepseek_loop(self) -> None:
         # / run deepseek analysis hourly (separate from groq every-cycle)
         # / first run after short delay to let initial groq cycle start
+        timeout = loop_registry.timeout_for("deepseek")
         first_run = True
         while not self._stop_event.is_set():
             wait = 120 if first_run else DEEPSEEK_INTERVAL
@@ -351,8 +363,13 @@ class AgentOrchestrator:
             try:
                 async with loop_registry.track(self._pool, "deepseek"):
                     symbols = self._get_symbols()
-                    await self._analyst.run(self._pool, symbols, run_deepseek=True)
+                    await asyncio.wait_for(
+                        self._analyst.run(self._pool, symbols, run_deepseek=True),
+                        timeout=timeout,
+                    )
                     logger.info("deepseek_cycle_complete")
+            except asyncio.TimeoutError:
+                logger.warning("deepseek_loop_timeout", timeout_s=timeout)
             except Exception as exc:
                 logger.error("deepseek_loop_error", exc_info=True)
                 notify_system_error(str(exc), "deepseek_loop")
@@ -833,6 +850,8 @@ class AgentOrchestrator:
     def _on_tick_broadcast(self, tick) -> None:
         # / fan each tick out to dashboard ws clients, rate-limited per symbol.
         # / fire-and-forget — buffering is already done by _emit before us.
+        # / bounded by self._broadcast_semaphore so the task queue can't grow
+        # / unbounded if a dashboard client stops reading.
         import time as _t
         now = _t.monotonic()
         last = self._last_tick_broadcast.get(tick.symbol, 0.0)
@@ -841,15 +860,37 @@ class AgentOrchestrator:
         self._last_tick_broadcast[tick.symbol] = now
         try:
             from src.dashboard.app import broadcast, _ws_clients
-            if _ws_clients:
-                asyncio.create_task(broadcast("price_tick", {
-                    "symbol": tick.symbol,
-                    "price": tick.price,
-                    "timestamp_ms": tick.timestamp_ms,
-                    "vendor": tick.vendor,
-                }))
+            if not _ws_clients:
+                return
+            if self._broadcast_semaphore.locked():
+                # / drop silently — the tick is stale anyway once we're backlogged.
+                # / aggregate count + log at most once per minute.
+                self._broadcast_dropped += 1
+                if now >= self._broadcast_drop_log_next:
+                    logger.warning(
+                        "price_tick_broadcast_dropped",
+                        dropped_total=self._broadcast_dropped,
+                    )
+                    self._broadcast_drop_log_next = now + 60.0
+                return
+            payload = {
+                "symbol": tick.symbol,
+                "price": tick.price,
+                "timestamp_ms": tick.timestamp_ms,
+                "vendor": tick.vendor,
+            }
+            asyncio.create_task(self._bounded_broadcast("price_tick", payload))
         except Exception:
             pass  # / dashboard not mounted in this process
+
+    async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
+        async with self._broadcast_semaphore:
+            try:
+                from src.dashboard.app import broadcast
+                await broadcast(event_type, payload)
+            except Exception as exc:
+                logger.debug("bounded_broadcast_failed",
+                             event=event_type, error=str(exc)[:120])
 
     def _streams_healthy_equity(self) -> bool:
         s = self._alpaca_stream
@@ -877,9 +918,13 @@ class AgentOrchestrator:
         # / every 60s, drain the tick buffer and write the newest tick per symbol
         # / into latest_prices. gives downstream consumers (analyst, risk, dashboard
         # / refresh) a fresh pointer even between manual refreshes.
+        # / escalates to a visible error after N consecutive upsert failures so the
+        # / operator sees "aggregator stuck" on /api/loops instead of silent staleness.
         if self._tick_buffer is None:
             return
         from src.data.market_data import store_latest_prices
+        consecutive_failures = 0
+        escalation_threshold = 3
         while not self._stop_event.is_set():
             try:
                 drained = await self._tick_buffer.drain_all()
@@ -892,8 +937,25 @@ class AgentOrchestrator:
                     if latest and self._pool is not None:
                         await store_latest_prices(self._pool, latest)
                         logger.debug("stream_aggregator_upserted", n=len(latest))
+                if consecutive_failures > 0:
+                    consecutive_failures = 0
+                    await loop_registry.upsert_service_state(
+                        self._pool, "stream_aggregator", "ok", error=None,
+                    )
             except Exception as exc:
-                logger.warning("stream_aggregator_error", error=str(exc)[:200])
+                consecutive_failures += 1
+                logger.warning(
+                    "stream_aggregator_error",
+                    error=str(exc)[:200],
+                    consecutive_failures=consecutive_failures,
+                )
+                if consecutive_failures >= escalation_threshold:
+                    await loop_registry.upsert_service_state(
+                        self._pool,
+                        "stream_aggregator",
+                        "error",
+                        error=f"aggregator stuck ({consecutive_failures} consecutive failures): {str(exc)[:200]}",
+                    )
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
@@ -1276,12 +1338,18 @@ class AgentOrchestrator:
         # / backfill missing wiki_embeddings every 6h via ollama nomic-embed-text
         if await self._wait_or_stop(300):
             return
+        timeout = loop_registry.timeout_for("wiki_embedding")
         try:
             async with loop_registry.track(self._pool, "wiki_embedding"):
                 from src.knowledge.loops import wiki_embedding_backfill_loop
-                await wiki_embedding_backfill_loop(self._pool)
+                await asyncio.wait_for(
+                    wiki_embedding_backfill_loop(self._pool),
+                    timeout=timeout,
+                )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            logger.warning("wiki_embedding_loop_timeout", timeout_s=timeout)
         except Exception as exc:
             logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_embedding_loop")
@@ -1290,12 +1358,18 @@ class AgentOrchestrator:
         # / daily archive of wiki docs older than 180 days
         if await self._wait_or_stop(600):
             return
+        timeout = loop_registry.timeout_for("wiki_archive")
         try:
             async with loop_registry.track(self._pool, "wiki_archive"):
                 from src.knowledge.loops import wiki_archive_loop
-                await wiki_archive_loop(self._pool)
+                await asyncio.wait_for(
+                    wiki_archive_loop(self._pool),
+                    timeout=timeout,
+                )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            logger.warning("wiki_archive_loop_timeout", timeout_s=timeout)
         except Exception as exc:
             logger.error("wiki_archive_loop_error", error=str(exc)[:200])
             notify_system_error(str(exc), "wiki_archive_loop")
