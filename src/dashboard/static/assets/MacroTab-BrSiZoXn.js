@@ -1,0 +1,1 @@
+import{t as e}from"./tab-macro-CtqEq2rs.js";export{e as default};
