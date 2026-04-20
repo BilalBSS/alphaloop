@@ -134,7 +134,7 @@ class AnalystAgent:
 
     async def run(self, pool, symbols: list[str], run_deepseek: bool = True) -> dict[str, float | None]:
         # / run full analysis pipeline for each symbol
-        # / run_deepseek=False: groq only (30-min cycle), True: groq + deepseek (hourly)
+        # / run_deepseek=False: groq only, True: groq + deepseek (dual-LLM consensus)
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
         self._macro_cache = None  # / reset per cycle
