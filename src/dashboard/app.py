@@ -759,17 +759,17 @@ async def get_health():
         pass
 
     # / parallel fetch — all remaining queries are independent
+    # / last_analysis is no longer queried here; canonical source is
+    # / describe_loops("analyst").last_fire_ts (same value the Health tab
+    # / reads). previously system_events + describe_loops disagreed, so
+    # / Analysis tab and Health tab showed different "last analyst pass" ages.
     (
-        last_trade, last_evolution, last_analysis, last_synthesis, last_eval,
+        last_trade, last_evolution, last_synthesis, last_eval,
         symbols_analyzed, last_llm, db_size, tables, conn_stats, active,
         recent_errors, source_stats,
     ) = await asyncio.gather(
         _query_one("SELECT created_at FROM trade_log ORDER BY created_at DESC LIMIT 1"),
         _query_one("SELECT created_at FROM evolution_log ORDER BY created_at DESC LIMIT 1"),
-        _query_one(
-            """SELECT timestamp FROM system_events
-            WHERE source = 'analyst' ORDER BY timestamp DESC LIMIT 1"""
-        ),
         _query_one("SELECT date FROM daily_synthesis ORDER BY date DESC LIMIT 1"),
         _query_one("SELECT created_at FROM strategy_evaluations ORDER BY created_at DESC LIMIT 1"),
         _query_one(
@@ -816,8 +816,6 @@ async def get_health():
         last_trade = None
     if isinstance(last_evolution, Exception):
         last_evolution = None
-    if isinstance(last_analysis, Exception):
-        last_analysis = None
     if isinstance(last_synthesis, Exception):
         last_synthesis = None
     if isinstance(last_eval, Exception):
@@ -900,6 +898,21 @@ async def get_health():
         if _loop not in sources:
             sources[_loop] = {"status": "pending", "last_error": None, "errors_24h": 0}
 
+    # / canonical analyst timestamp: loop_registry.last_fire_ts for the
+    # / "analyst" loop. every tab that renders "last analyst pass" reads
+    # / from this. system_events-based computation retired to end the
+    # / prior Health vs Analysis disagreement.
+    last_analysis_ts: str | None = None
+    try:
+        from src.agents.loop_registry import describe_loops
+        loops_rows = await describe_loops(_pool)
+        analyst_row = next((l for l in loops_rows if l.get("name") == "analyst"), None)
+        if analyst_row and analyst_row.get("last_fire_ts"):
+            lft = analyst_row["last_fire_ts"]
+            last_analysis_ts = lft.isoformat() if hasattr(lft, "isoformat") else str(lft)
+    except Exception:
+        last_analysis_ts = None
+
     return {
         "db_connected": db_ok,
         "storage": {
@@ -913,7 +926,7 @@ async def get_health():
             "cache_hit_ratio": cache_ratio,
         },
         "cycles": {
-            "last_analysis": str(last_analysis["timestamp"]) if last_analysis else None,
+            "last_analysis": last_analysis_ts,
             "last_strategy_eval": str(last_eval["created_at"]) if last_eval else None,
             "last_evolution": str(last_evolution["created_at"]) if last_evolution else None,
             "last_trade": str(last_trade["created_at"]) if last_trade else None,
