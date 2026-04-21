@@ -33,11 +33,20 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
-ANALYST_MARKET_HOURS = 3600      # / 60 minutes (data refreshes every 2h)
-ANALYST_OFF_HOURS = 3600         # / 60 minutes
+# / phase 9: analyst + deepseek switched to batched staleness-ordered runs.
+# / each cycle is time-budgeted (ANALYST_BUDGET_S / DEEPSEEK_BUDGET_S) so the
+# / 10-min loop_registry timeout acts as a hard ceiling, not the usual case.
+# / full-universe refresh = 3 batches/hour for analyst, 2/hour for deepseek.
+ANALYST_MARKET_HOURS = 1200      # / 20 minutes (3 batches/hour, staleness-ordered)
+ANALYST_OFF_HOURS = 1800         # / 30 minutes (slower off-hours)
+ANALYST_BUDGET_S = 420.0         # / 7 min wall-clock budget per batch
+ANALYST_MIN_REFRESH_S = 1800.0   # / skip symbols refreshed within 30 min (anti-thrash)
+ANALYST_PER_SYMBOL_TIMEOUT_S = 60.0
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
-DEEPSEEK_INTERVAL = 3600         # / 1 hour
+DEEPSEEK_INTERVAL = 1800         # / 30 minutes (dual-llm is 2x more expensive)
+DEEPSEEK_BUDGET_S = 480.0        # / 8 min wall-clock budget per batch
+DEEPSEEK_MIN_REFRESH_S = 2700.0  # / skip symbols deepseek'd within 45 min
 INTRADAY_INTERVAL = 3600         # / 1 hour
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
@@ -323,7 +332,9 @@ class AgentOrchestrator:
             return False  # / timeout expired normally
 
     async def _analyst_loop(self) -> None:
-        # / run analyst agent on schedule (groq only, deepseek on separate hourly loop)
+        # / batched staleness-ordered analyst cycle (phase 9).
+        # / orchestrator sets a short wall-clock budget inside run(); the
+        # / loop_registry timeout is the hard ceiling if one symbol wedges.
         timeout = loop_registry.timeout_for("analyst")
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
@@ -331,7 +342,13 @@ class AgentOrchestrator:
                 async with loop_registry.track(self._pool, "analyst"):
                     symbols = self._get_symbols()
                     await asyncio.wait_for(
-                        self._analyst.run(self._pool, symbols, run_deepseek=False),
+                        self._analyst.run(
+                            self._pool, symbols,
+                            run_deepseek=False,
+                            wall_clock_budget_s=ANALYST_BUDGET_S,
+                            per_symbol_timeout_s=ANALYST_PER_SYMBOL_TIMEOUT_S,
+                            min_refresh_interval_s=ANALYST_MIN_REFRESH_S,
+                        ),
                         timeout=timeout,
                     )
                     # / broadcast analysis update (fire-and-forget); dashboard may not be running
@@ -351,8 +368,9 @@ class AgentOrchestrator:
                 break
 
     async def _deepseek_loop(self) -> None:
-        # / run deepseek analysis hourly (separate from groq every-cycle)
-        # / first run after short delay to let initial groq cycle start
+        # / batched deepseek cycle (phase 9). dual-llm path, lower cadence
+        # / than analyst since each symbol pays two llm calls in parallel.
+        # / first run after short delay to let initial groq cycle start.
         timeout = loop_registry.timeout_for("deepseek")
         first_run = True
         while not self._stop_event.is_set():
@@ -364,7 +382,13 @@ class AgentOrchestrator:
                 async with loop_registry.track(self._pool, "deepseek"):
                     symbols = self._get_symbols()
                     await asyncio.wait_for(
-                        self._analyst.run(self._pool, symbols, run_deepseek=True),
+                        self._analyst.run(
+                            self._pool, symbols,
+                            run_deepseek=True,
+                            wall_clock_budget_s=DEEPSEEK_BUDGET_S,
+                            per_symbol_timeout_s=ANALYST_PER_SYMBOL_TIMEOUT_S,
+                            min_refresh_interval_s=DEEPSEEK_MIN_REFRESH_S,
+                        ),
                         timeout=timeout,
                     )
                     logger.info("deepseek_cycle_complete")

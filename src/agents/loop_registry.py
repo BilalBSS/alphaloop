@@ -18,8 +18,8 @@ logger = structlog.get_logger(__name__)
 # / canonical metadata per loop — name -> kind + cadence/cron hour
 # / interval loops declare cadence_seconds; cron loops declare cron_hour_et (ET)
 LOOP_METADATA: dict[str, dict[str, Any]] = {
-    "analyst":              {"kind": "interval", "cadence_seconds": 3600, "description": "groq analyst pass"},
-    "deepseek":             {"kind": "interval", "cadence_seconds": 3600, "description": "deepseek 2nd opinion pass"},
+    "analyst":              {"kind": "interval", "cadence_seconds": 1200, "description": "groq analyst pass (batched, staleness-ordered)"},
+    "deepseek":             {"kind": "interval", "cadence_seconds": 1800, "description": "deepseek dual-llm pass (batched, staleness-ordered)"},
     "reasoner":             {"kind": "cron",     "cron_hour_et": 17,     "description": "daily synthesis (deepseek-reasoner)"},
     "strategy":             {"kind": "interval", "cadence_seconds": 300,  "description": "strategy evaluation cycle"},
     "risk":                 {"kind": "interval", "cadence_seconds": 5,    "description": "risk signal poll"},
@@ -52,8 +52,11 @@ ALL_LOOP_NAMES: list[str] = list(LOOP_METADATA.keys())
 # / forever — asyncio.wait_for raises TimeoutError, the tracker records an error,
 # / the next interval re-attempts. only set for loops that historically wedged.
 LOOP_TIMEOUTS: dict[str, float] = {
-    "analyst":         600.0,   # / 10 min — full universe groq pass
-    "deepseek":        600.0,   # / 10 min — full universe deepseek pass
+    # / hard ceiling — run() has its own wall_clock_budget_s (shorter, see
+    # / orchestrator.ANALYST_BUDGET_S). timeout only fires if one batch truly
+    # / hangs past the budget + some slack.
+    "analyst":         720.0,   # / 12 min (budget 7 min + 5 slack)
+    "deepseek":        780.0,   # / 13 min (budget 8 min + 5 slack)
     "wiki_embedding":  900.0,   # / 15 min — ollama backfill batches
     "wiki_archive":    900.0,   # / 15 min — archive + rewrite old docs
 }
