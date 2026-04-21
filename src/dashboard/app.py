@@ -1467,6 +1467,40 @@ async def get_strategy_evaluations(limit: int = 20):
     return _serialize(rows)
 
 
+@app.get("/api/observation-log")
+async def get_observation_log(hours: int = 24, limit: int = 20):
+    # / near-miss tracker (migration 052). grouped counts per strategy so the
+    # / analysis tab can show "close to firing" without scanning raw rows.
+    hours = max(1, min(hours, 168))
+    limit = max(1, min(limit, 100))
+    by_strategy = await _query(
+        """SELECT strategy_id,
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE near_miss_type = 'n_minus_1_technical') AS n_minus_1,
+            COUNT(*) FILTER (WHERE near_miss_type = 'fundamental_gate') AS fundamental_gate,
+            MAX(created_at) AS last_seen
+        FROM observation_log
+        WHERE created_at >= NOW() - ($1 || ' hours')::interval
+        GROUP BY strategy_id
+        ORDER BY COUNT(*) DESC""",
+        str(hours),
+    )
+    recent = await _query(
+        """SELECT strategy_id, symbol, near_miss_type, passed_count, total_count,
+            failed_reason, created_at
+        FROM observation_log
+        WHERE created_at >= NOW() - ($1 || ' hours')::interval
+        ORDER BY created_at DESC
+        LIMIT $2""",
+        str(hours), limit,
+    )
+    return {
+        "hours": hours,
+        "by_strategy": _serialize(by_strategy),
+        "recent": _serialize(recent),
+    }
+
+
 @app.get("/api/signal-funnel")
 async def get_signal_funnel(hours: int = 24):
     # / break down the signal -> approved -> trade path over the last N hours so

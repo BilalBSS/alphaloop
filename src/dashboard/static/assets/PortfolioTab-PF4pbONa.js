@@ -1,0 +1,1 @@
+import{t as e}from"./tab-portfolio-BkWoSOYu.js";export{e as default};

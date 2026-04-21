@@ -259,6 +259,13 @@ class EntrySignal:
     should_enter: bool
     strength: float = 0.0  # 0.0 to 1.0
     reasons: list[str] = field(default_factory=list)
+    # / near-miss instrumentation: how many of the AND/OR clauses actually
+    # / passed vs total. populated by _check_entry_technicals so the strategy
+    # / agent can emit an observation_log row when a strategy is N-1 of N —
+    # / surfaces "close to firing" on the dashboard without polluting trade_log.
+    passed_count: int = 0
+    total_count: int = 0
+    failed_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -473,16 +480,26 @@ class ConfigDrivenStrategy(StrategyInterface):
             if not passed:
                 return EntrySignal(should_enter=False, reasons=fundamental_reasons)
 
-        # / check technical entry conditions
-        passed, strength, tech_reasons = self._check_entry_technicals(market_data, intraday_df)
+        # / check technical entry conditions. _check_entry_technicals now also
+        # / returns a per-clause breakdown so near-miss tracking can fire when
+        # / N-1 of N passed.
+        passed, strength, tech_reasons, passed_n, total_n, failed = (
+            self._check_entry_technicals(market_data, intraday_df)
+        )
         if not passed:
-            return EntrySignal(should_enter=False, reasons=tech_reasons)
+            return EntrySignal(
+                should_enter=False, reasons=tech_reasons,
+                passed_count=passed_n, total_count=total_n, failed_reasons=failed,
+            )
 
         reasons = tech_reasons
         if self._requires_fundamentals:
             reasons = ["fundamentals passed"] + reasons
 
-        return EntrySignal(should_enter=True, strength=strength, reasons=reasons)
+        return EntrySignal(
+            should_enter=True, strength=strength, reasons=reasons,
+            passed_count=passed_n, total_count=total_n, failed_reasons=[],
+        )
 
     def should_exit(
         self,
@@ -589,13 +606,15 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_entry_technicals(
         self, market_data: pd.DataFrame, intraday_df: pd.DataFrame | None = None,
-    ) -> tuple[bool, float, list[str]]:
-        # / evaluate technical entry conditions from config
+    ) -> tuple[bool, float, list[str], int, int, list[str]]:
+        # / evaluate technical entry conditions from config.
+        # / returns (overall_passed, strength, reasons, passed_count, total_count, failed_reasons).
+        # / passed_count/total_count drive the observation_log near-miss tracker.
         signals = self._entry_conditions.get("signals", [])
         operator = self._entry_conditions.get("operator", "AND")
 
         if not signals:
-            return True, 1.0, ["no technical conditions"]
+            return True, 1.0, ["no technical conditions"], 0, 0, []
 
         results: list[tuple[bool, float, str]] = []
         for sig in signals:
@@ -611,22 +630,25 @@ class ConfigDrivenStrategy(StrategyInterface):
             passed, strength, reason = self._evaluate_signal(sig, market_data)
             results.append((passed, strength, reason))
 
+        passed_count = sum(1 for r in results if r[0])
+        total_count = len(results)
+        failed_reasons = [r[2] for r in results if not r[0]]
+
         if operator == "AND":
             all_passed = all(r[0] for r in results)
             if not all_passed:
-                failed = [r[2] for r in results if not r[0]]
-                return False, 0.0, failed
+                return False, 0.0, failed_reasons, passed_count, total_count, failed_reasons
             avg_strength = sum(r[1] for r in results) / len(results)
             reasons = [r[2] for r in results]
-            return True, avg_strength, reasons
+            return True, avg_strength, reasons, passed_count, total_count, []
         else:  # OR
             any_passed = any(r[0] for r in results)
             if not any_passed:
-                return False, 0.0, [r[2] for r in results]
+                return False, 0.0, [r[2] for r in results], passed_count, total_count, failed_reasons
             passed_results = [r for r in results if r[0]]
             max_strength = max(r[1] for r in passed_results)
             reasons = [r[2] for r in passed_results]
-            return True, max_strength, reasons
+            return True, max_strength, reasons, passed_count, total_count, []
 
     def _eval_bollinger(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
@@ -684,15 +706,27 @@ class ConfigDrivenStrategy(StrategyInterface):
         from src.indicators.trend import macd as macd_fn
         close = market_data["close"]
         condition = sig.get("condition", "")
-        result = macd_fn(close)
-        last_hist = float(result.histogram.dropna().iloc[-1]) if not result.histogram.dropna().empty else 0.0
-        prev_hist = float(result.histogram.dropna().iloc[-2]) if len(result.histogram.dropna()) >= 2 else 0.0
-        if condition == "crossover_bullish":
-            passed = prev_hist < 0 and last_hist >= 0
-            return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
-        elif condition == "crossover_bearish":
-            passed = prev_hist > 0 and last_hist <= 0
-            return passed, 0.7 if passed else 0.0, f"macd histogram: {prev_hist:.4f} -> {last_hist:.4f}"
+        # / lookback widens crossover detection from a 1-bar event to "within
+        # / last N bars". fixes the problem where 5-minute strategy eval cycles
+        # / kept missing a bar-close crossover because the eval fired 3 minutes
+        # / after the bar. default 3 bars keeps the "just crossed" semantic.
+        lookback = max(1, int(sig.get("lookback", 3)))
+        hist_series = macd_fn(close).histogram.dropna()
+        if len(hist_series) < 2:
+            return False, 0.0, "macd: insufficient history"
+        hist = hist_series.tolist()
+        last_hist = float(hist[-1])
+        window = hist[-(lookback + 1):]
+        if condition in ("crossover_bullish", "crossover_bullish_within"):
+            crossed = any(window[i] < 0 and window[i + 1] >= 0 for i in range(len(window) - 1))
+            return crossed, 0.7 if crossed else 0.0, (
+                f"macd crossover_bullish in last {lookback} bars (last={last_hist:.4f})"
+            )
+        elif condition in ("crossover_bearish", "crossover_bearish_within"):
+            crossed = any(window[i] > 0 and window[i + 1] <= 0 for i in range(len(window) - 1))
+            return crossed, 0.7 if crossed else 0.0, (
+                f"macd crossover_bearish in last {lookback} bars (last={last_hist:.4f})"
+            )
         elif condition == "positive":
             passed = last_hist > 0
             return passed, 0.5 if passed else 0.0, f"macd histogram={last_hist:.4f}"

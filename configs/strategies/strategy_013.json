@@ -71,5 +71,7 @@
       "revenue_growth_min": -0.1,
       "dcf_upside_min": -0.1
     }
-  }
+  },
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

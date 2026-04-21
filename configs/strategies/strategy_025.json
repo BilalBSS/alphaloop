@@ -8,7 +8,7 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
-    "strict_data": true,
+    "strict_data": false,
     "pe_ratio_max": 30,
     "revenue_growth_min": 0.05,
     "fcf_margin_min": 0.1,
@@ -69,5 +69,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }
