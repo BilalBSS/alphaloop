@@ -1,0 +1,1 @@
+import{t as e}from"./tab-macro-DoiDTHoS.js";export{e as default};

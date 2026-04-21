@@ -191,7 +191,13 @@ function StrategyCard({ strategy, decay }) {
   const wr = parseFloat(strategy.win_rate || 0)
   const brier = strategy.brier_score != null ? parseFloat(strategy.brier_score) : null
   const comp = parseFloat(strategy.composite_score || 0)
-  const trades = strategy.trades_count ?? strategy.total_trades ?? null
+  // / show fills (all buys + sells) rather than just closed round-trips. a
+  // / strategy with only open positions had "0 trades" on the card which made
+  // / it look dormant. total_trades is retained for win_rate math; fills_count
+  // / / opens_count comes from the trade_log aggregate in /api/strategies.
+  const closedTrades = strategy.total_trades ?? 0
+  const fillsCount = strategy.fills_count ?? strategy.trades_count ?? null
+  const opensOnly = fillsCount != null ? fillsCount - closedTrades : 0
   const compColor = comp >= 70 ? 'pnl-positive' : comp >= 40 ? 'text-warning' : 'pnl-negative'
 
   return (
@@ -245,8 +251,14 @@ function StrategyCard({ strategy, decay }) {
       {/* footer */}
       <div className="flex items-center justify-between pt-2 border-t border-border text-[11px]">
         <div className="flex items-center gap-3">
-          <div className="text-text-muted">
-            <span className="font-mono text-text-secondary">{trades != null ? trades : '—'}</span> trades
+          <div
+            className="text-text-muted"
+            title={fillsCount != null ? `${fillsCount} total fills (${closedTrades} closed, ${opensOnly} open)` : undefined}
+          >
+            <span className="font-mono text-text-secondary">{fillsCount != null ? fillsCount : '—'}</span> trades
+            {opensOnly > 0 && (
+              <span className="ml-1 text-text-muted">({opensOnly} open)</span>
+            )}
           </div>
           <div
             className="text-text-muted"
@@ -290,11 +302,13 @@ function StrategiesPanel({ strategies, loading }) {
     )
   }
 
-  // / phase 6 step 11: hard cap raised from 18 to 30 now that we ship 29 strategies.
-  // / show-all by default; the grid is cheap to render and hiding rows silently was confusing.
+  // / no slice cap — silently dropping the last card whenever the pool grows
+  // / past the cap was exactly the bug this comment warned about (strategy_029
+  // / disappeared after evolution added a 30th row). the grid renders 30+ cards
+  // / cheaply.
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {strategies.slice(0, 30).map((s, i) => (
+      {strategies.map((s, i) => (
         <StrategyCard key={s.strategy_id || i} strategy={s} decay={decayById[s.strategy_id]} />
       ))}
     </div>

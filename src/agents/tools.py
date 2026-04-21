@@ -161,15 +161,26 @@ async def count_today_approved_trades(pool) -> int:
         return int(count or 0)
 
 
-async def update_trade_status(pool, table: str, row_id: int, status: str) -> bool:
-    # / update status column on trade_signals or approved_trades
+async def update_trade_status(
+    pool, table: str, row_id: int, status: str,
+    rejection_reason: str | None = None,
+) -> bool:
+    # / update status column on trade_signals or approved_trades.
+    # / rejection_reason only applies to trade_signals — silently ignored
+    # / elsewhere so callers don't need to branch.
     if table not in _STATUS_TABLES:
         raise ValueError(f"invalid table '{table}', must be one of {_STATUS_TABLES}")
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            f"UPDATE {table} SET status = $1 WHERE id = $2",
-            status, row_id,
-        )
+        if table == "trade_signals" and rejection_reason is not None:
+            result = await conn.execute(
+                "UPDATE trade_signals SET status = $1, rejection_reason = $2 WHERE id = $3",
+                status, rejection_reason[:80], row_id,
+            )
+        else:
+            result = await conn.execute(
+                f"UPDATE {table} SET status = $1 WHERE id = $2",
+                status, row_id,
+            )
         return result == "UPDATE 1"
 
 
@@ -328,23 +339,74 @@ async def reconcile_strategy_positions(
             for symbol, alpaca_qty in alpaca_map.items():
                 entries = db_by_symbol.pop(symbol, [])
                 if not entries:
-                    # / new position not in db — add as untracked with alpaca cost basis
+                    # / new position not in db — recover strategy attribution from
+                    # / the most recent buy in trade_log before falling back to
+                    # / untracked. fixes the case where a broker fill landed before
+                    # / executor's open_strategy_position committed and the next
+                    # / reconciler tick wrote the row as untracked even though
+                    # / trade_log already had the real strategy_id.
                     # / bug e: avg_entry_price was hardcoded 0, now pulled from price_map
                     avg_price = price_map.get(symbol, 0)
+                    recovered = await conn.fetchrow(
+                        """SELECT strategy_id FROM trade_log
+                        WHERE symbol = $1 AND side = 'buy' AND strategy_id IS NOT NULL
+                        ORDER BY created_at DESC LIMIT 1""",
+                        symbol,
+                    )
+                    strat = (recovered["strategy_id"] if recovered else None) or "untracked"
                     await conn.execute(
                         """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
-                        VALUES ('untracked', $1, $2, $3, NOW())
+                        VALUES ($1, $2, $3, $4, NOW())
                         ON CONFLICT (strategy_id, symbol) DO UPDATE SET
-                            qty = $2,
-                            avg_entry_price = COALESCE(NULLIF($3, 0), strategy_positions.avg_entry_price),
+                            qty = $3,
+                            avg_entry_price = COALESCE(NULLIF($4, 0), strategy_positions.avg_entry_price),
                             updated_at = NOW()""",
-                        symbol, Decimal(str(alpaca_qty)), Decimal(str(avg_price or 0)),
+                        strat, symbol, Decimal(str(alpaca_qty)), Decimal(str(avg_price or 0)),
                     )
                     continue
 
-                # / if total tracked qty matches alpaca, no drift for this symbol
+                # / if total tracked qty matches alpaca, no drift for this symbol —
+                # / but before skipping, heal stale attribution: if the sole
+                # / owner is 'untracked' and trade_log carries a real strategy_id
+                # / for a recent buy, re-attribute the row. this repairs the
+                # / race where the reconciler's untracked insert won a tie
+                # / against the executor's attributed insert.
                 total_tracked = sum(float(e["qty"]) for e in entries)
                 if abs(total_tracked - alpaca_qty) < 0.0001:
+                    untracked_rows = [e for e in entries if e["strategy_id"] == "untracked"]
+                    has_attributed = any(e["strategy_id"] != "untracked" for e in entries)
+                    if untracked_rows and not has_attributed:
+                        recovered = await conn.fetchrow(
+                            """SELECT strategy_id FROM trade_log
+                            WHERE symbol = $1 AND side = 'buy' AND strategy_id IS NOT NULL
+                            ORDER BY created_at DESC LIMIT 1""",
+                            symbol,
+                        )
+                        if recovered and recovered["strategy_id"]:
+                            sid = recovered["strategy_id"]
+                            # / move row to the real strategy_id. use DELETE +
+                            # / INSERT rather than UPDATE because (strategy_id,
+                            # / symbol) is the PK so an in-place key change is
+                            # / cleaner as a two-step.
+                            row = untracked_rows[0]
+                            await conn.execute(
+                                "DELETE FROM strategy_positions WHERE id = $1",
+                                row["id"],
+                            )
+                            await conn.execute(
+                                """INSERT INTO strategy_positions
+                                (strategy_id, symbol, qty, avg_entry_price, updated_at)
+                                VALUES ($1, $2, $3, $4, NOW())
+                                ON CONFLICT (strategy_id, symbol) DO UPDATE SET
+                                    qty = EXCLUDED.qty,
+                                    avg_entry_price = EXCLUDED.avg_entry_price,
+                                    updated_at = NOW()""",
+                                sid, symbol,
+                                Decimal(str(alpaca_qty)),
+                                Decimal(str(price_map.get(symbol) or 0)),
+                            )
+                            logger.info("strategy_position_reattributed",
+                                        symbol=symbol, from_id="untracked", to_id=sid)
                     continue
 
                 # / drift detected — update keeping attribution
@@ -507,23 +569,29 @@ async def sync_trades_from_alpaca(pool) -> int:
                 {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
-            # / bug 1a: project alpaca fills into strategy_positions as 'untracked'
-            # / only when no real strategy already owns the symbol — avoids corrupting
-            # / attributed positions when a sell comes through sync after executor already closed it
-            # / guard: sync skips orders already in trade_log (existing_set), so this only runs
-            # / on historical fills the executor never saw (startup, external trades)
-            owned_by_real = await conn.fetchrow(
-                """SELECT 1 FROM strategy_positions
-                WHERE symbol = $1 AND strategy_id <> 'untracked' AND qty > 0
-                LIMIT 1""",
-                symbol,
-            )
-            if not owned_by_real:
+            # / bug 1a: project alpaca fills into strategy_positions so the position
+            # / table never disagrees with the broker. prefer the strategy_id we
+            # / recovered from approved_trades (same attribution we wrote to
+            # / trade_log above) so sync-ingested fills don't land as untracked
+            # / when the executor authored them.
+            position_strategy = linked_strategy_id or "untracked"
+            # / only short-circuit when the symbol is already attributed to a
+            # / DIFFERENT real strategy — avoids clobbering an existing open pos.
+            skip_insert = False
+            if position_strategy == "untracked":
+                owned_by_real = await conn.fetchrow(
+                    """SELECT 1 FROM strategy_positions
+                    WHERE symbol = $1 AND strategy_id <> 'untracked' AND qty > 0
+                    LIMIT 1""",
+                    symbol,
+                )
+                skip_insert = bool(owned_by_real)
+            if not skip_insert:
                 if side == "buy":
                     await conn.execute(
                         """
                         INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
-                        VALUES ('untracked', $1, $2, $3, $4::timestamptz)
+                        VALUES ($1, $2, $3, $4, $5::timestamptz)
                         ON CONFLICT (strategy_id, symbol) DO UPDATE SET
                             avg_entry_price = (
                                 (strategy_positions.avg_entry_price * strategy_positions.qty
@@ -533,21 +601,22 @@ async def sync_trades_from_alpaca(pool) -> int:
                             qty = strategy_positions.qty + EXCLUDED.qty,
                             updated_at = EXCLUDED.updated_at
                         """,
-                        symbol, Decimal(str(qty)), Decimal(str(price)), filled_at,
+                        position_strategy, symbol, Decimal(str(qty)), Decimal(str(price)), filled_at,
                     )
                 elif side == "sell":
-                    # / reduce untracked qty first (if any), delete row when <= 0
+                    # / reduce qty on the matching attributed row first, fall back
+                    # / to untracked if none exists for this strategy_id
                     await conn.execute(
                         """
                         UPDATE strategy_positions
                         SET qty = qty - $2, updated_at = $3::timestamptz
-                        WHERE strategy_id = 'untracked' AND symbol = $1
+                        WHERE strategy_id = $4 AND symbol = $1
                         """,
-                        symbol, Decimal(str(qty)), filled_at,
+                        symbol, Decimal(str(qty)), filled_at, position_strategy,
                     )
                     await conn.execute(
-                        "DELETE FROM strategy_positions WHERE strategy_id = 'untracked' AND symbol = $1 AND qty <= 0",
-                        symbol,
+                        "DELETE FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 AND qty <= 0",
+                        position_strategy, symbol,
                     )
             synced += 1
     if synced:

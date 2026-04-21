@@ -88,26 +88,28 @@ async def _embed_backfill_once(pool) -> int:
         await embedder.close()
 
 
-async def wiki_embedding_backfill_loop(pool) -> None:
-    # / continuously top up missing embeddings at EMBED_LOOP_INTERVAL cadence
-    logger.info("wiki_embedding_loop_starting", interval=EMBED_LOOP_INTERVAL)
-    while True:
-        try:
-            await _embed_backfill_once(pool)
-        except Exception as exc:
-            logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
-        await asyncio.sleep(EMBED_LOOP_INTERVAL)
+async def wiki_embedding_backfill_loop(pool) -> int:
+    # / one-shot backfill pass. orchestrator handles cadence via its own scheduler;
+    # / the prior `while True` + sleep pattern conflicted with asyncio.wait_for
+    # / in the orchestrator wrapper — the outer timeout always fired (900s).
+    # / returns the number of documents embedded in this pass.
+    try:
+        return await _embed_backfill_once(pool)
+    except Exception as exc:
+        logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
+        return 0
 
 
-async def wiki_archive_loop(pool) -> None:
-    # / daily archive of docs older than ARCHIVE_OLDER_THAN_DAYS
-    logger.info("wiki_archive_loop_starting", interval=ARCHIVE_LOOP_INTERVAL)
+async def wiki_archive_loop(pool) -> int:
+    # / one-shot archive pass. same fix as wiki_embedding_backfill_loop — the
+    # / infinite-loop shape was being wrapped by asyncio.wait_for in the
+    # / orchestrator and timed out every 15 minutes without doing work.
     writer = WikiWriter(pool=pool)
-    while True:
-        try:
-            moved = await writer.archive_old(older_than_days=ARCHIVE_OLDER_THAN_DAYS)
-            if moved:
-                logger.info("wiki_archive_loop_moved", count=moved)
-        except Exception as exc:
-            logger.error("wiki_archive_loop_error", error=str(exc)[:200])
-        await asyncio.sleep(ARCHIVE_LOOP_INTERVAL)
+    try:
+        moved = await writer.archive_old(older_than_days=ARCHIVE_OLDER_THAN_DAYS)
+        if moved:
+            logger.info("wiki_archive_loop_moved", count=moved)
+        return moved
+    except Exception as exc:
+        logger.error("wiki_archive_loop_error", error=str(exc)[:200])
+        return 0
