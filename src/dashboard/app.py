@@ -413,6 +413,8 @@ async def get_phase5_metrics():
     # / cross-process source of truth.
     from src.agents.phase5_metrics import compute_phase5_metrics
     from src.agents.loop_registry import fetch_service_state
+    from src.agents.analyst_agent import get_coverage_pct
+    from src.data.symbols import FULL_UNIVERSE
     try:
         metrics = await compute_phase5_metrics(_pool)
         row = await fetch_service_state(_pool, "kronos_hf_load")
@@ -429,10 +431,19 @@ async def get_phase5_metrics():
             # / boot doesn't show an empty field on the first dashboard request.
             from src.quant.kronos_signal import get_load_status as kronos_status
             kronos_payload = kronos_status()
+
+        # / phase 9: analyst freshness. 60-min window matches the intended full-universe
+        # / refresh cadence (3 batches x 20-min interval). <0.8 = trading on stale signals.
+        coverage_60m = await get_coverage_pct(_pool, list(FULL_UNIVERSE), window_s=3600.0)
+        metrics_dict = metrics.as_dict()
+        metrics_dict["analyst_coverage_pct_60m"] = coverage_60m
+        success = metrics.success_criteria()
+        success["analyst_coverage_80pct_60m"] = coverage_60m >= 0.80
+
         return {
-            "metrics": metrics.as_dict(),
-            "success_criteria": metrics.success_criteria(),
-            "all_pass": metrics.all_pass(),
+            "metrics": metrics_dict,
+            "success_criteria": success,
+            "all_pass": metrics.all_pass() and success["analyst_coverage_80pct_60m"],
             "kronos": kronos_payload,
         }
     except Exception as exc:
