@@ -9,10 +9,10 @@
   "universe": "all_stocks",
   "fundamental_filters": {
     "strict_data": false,
-    "fcf_margin_min": 0.2,
-    "debt_to_equity_max": 0.8,
+    "fcf_margin_min": 0.1,
+    "debt_to_equity_max": 1.5,
     "revenue_growth_min": 0.03,
-    "dcf_upside_min": 0.1
+    "dcf_upside_min": 0.0
   },
   "entry_conditions": {
     "operator": "AND",

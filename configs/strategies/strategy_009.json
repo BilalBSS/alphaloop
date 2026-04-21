@@ -13,13 +13,13 @@
       {
         "indicator": "adx",
         "condition": "above",
-        "threshold": 35,
+        "threshold": 22,
         "period": 14
       },
       {
         "indicator": "rsi",
         "condition": "above",
-        "threshold": 55,
+        "threshold": 50,
         "period": 14
       },
       {

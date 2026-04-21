@@ -24,13 +24,13 @@
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 1.5,
+        "multiplier": 1.2,
         "period": 20
       },
       {
         "indicator": "adx",
         "condition": "above",
-        "threshold": 25,
+        "threshold": 20,
         "period": 14
       }
     ]

@@ -17,12 +17,12 @@
       {
         "indicator": "gap",
         "condition": "magnitude_above",
-        "threshold_pct": 0.03
+        "threshold_pct": 0.015
       },
       {
         "indicator": "rsi",
         "condition": "above",
-        "threshold": 70,
+        "threshold": 60,
         "period": 14
       },
       {

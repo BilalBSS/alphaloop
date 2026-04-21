@@ -9,7 +9,7 @@
   "universe": "all_stocks",
   "fundamental_filters": {
     "strict_data": false,
-    "pe_ratio_max": 20,
+    "pe_ratio_max": 35,
     "fcf_margin_min": 0.1
   },
   "entry_conditions": {
@@ -26,7 +26,7 @@
         "indicator": "intermarket_correlation",
         "condition": "correlated_with",
         "series": "WTI",
-        "threshold": 0.6
+        "threshold": 0.3
       },
       {
         "indicator": "sma",

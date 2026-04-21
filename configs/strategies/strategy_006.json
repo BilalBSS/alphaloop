@@ -26,12 +26,6 @@
         "condition": "above",
         "threshold": 50,
         "period": 14
-      },
-      {
-        "indicator": "volume",
-        "condition": "above_average",
-        "multiplier": 1.2,
-        "period": 20
       }
     ]
   },

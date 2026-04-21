@@ -19,7 +19,7 @@
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 1.8,
+        "multiplier": 1.3,
         "period": 20
       }
     ]

@@ -18,13 +18,13 @@
       {
         "indicator": "insider_cluster",
         "condition": "count_above",
-        "threshold": 3,
+        "threshold": 2,
         "lookback_days": 30
       },
       {
         "indicator": "insider_net_dollar",
         "condition": "above",
-        "threshold_usd": 500000,
+        "threshold_usd": 100000,
         "lookback_days": 30
       },
       {

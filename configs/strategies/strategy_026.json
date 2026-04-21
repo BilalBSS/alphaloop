@@ -24,13 +24,13 @@
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 2.5,
+        "multiplier": 1.5,
         "period": 20
       },
       {
         "indicator": "rsi",
         "condition": "below",
-        "threshold": 25,
+        "threshold": 35,
         "period": 14
       }
     ]

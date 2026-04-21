@@ -17,7 +17,7 @@
       {
         "indicator": "zscore_return",
         "condition": "below",
-        "threshold": -2.0,
+        "threshold": -1.5,
         "period": 30
       },
       {
@@ -25,12 +25,6 @@
         "condition": "below",
         "threshold": 20,
         "period": 14
-      },
-      {
-        "indicator": "atr_percentile",
-        "condition": "below",
-        "threshold": 70,
-        "lookback": 60
       }
     ]
   },
