@@ -1,0 +1,1 @@
+import{t as e}from"./tab-system-BrLo-Uc7.js";export{e as default};

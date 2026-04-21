@@ -113,7 +113,7 @@ class RiskAgent:
                 None,
             )
             if not held:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "long_only_no_position")
                 logger.info("long_only_rejected", symbol=symbol, signal_id=signal_id)
                 return {"status": "rejected", "reason": "long_only_no_position"}
             # / cap sell qty to actual alpaca position — never go short
@@ -130,7 +130,7 @@ class RiskAgent:
         positions = await broker.get_positions()
 
         if balance.equity <= 0:
-            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "zero_equity")
             return {"status": "rejected", "reason": "zero_equity"}
 
         # / lazy-init peak equity from db on first call
@@ -145,21 +145,21 @@ class RiskAgent:
             if strategy_id:
                 strat_positions = await tools.get_strategy_positions(pool, strategy_id=strategy_id, symbol=symbol)
                 if strat_positions:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "already_holding")
                     return {"status": "rejected", "reason": "already_holding"}
             else:
                 # / fallback for signals without strategy_id
                 existing_pos = [p for p in positions
                                if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol]
                 if existing_pos:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "already_holding")
                     return {"status": "rejected", "reason": "already_holding"}
 
         # / get current price (needed for concentration check and sizing)
         try:
             price = await broker.get_price(symbol)
         except Exception:
-            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "no_price")
             return {"status": "rejected", "reason": "no_price"}
 
         # / circuit breaker: drawdown from peak
@@ -172,18 +172,18 @@ class RiskAgent:
             if _peak_equity > 0:
                 drawdown = (balance.equity - _peak_equity) / _peak_equity
                 if drawdown < self._max_drawdown_hard_stop:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_drawdown")
                     logger.warning("circuit_breaker_drawdown", drawdown=drawdown, threshold=self._max_drawdown_hard_stop)
                     return {"status": "rejected", "reason": f"circuit_breaker_drawdown ({drawdown:.2%})"}
 
             # / circuit breaker: consecutive losses
             if time.time() < _circuit_breaker_until:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_losses")
                 return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
             recent_pnl = await tools.fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
             if len(recent_pnl) >= self._consecutive_loss_pause and all(p < 0 for p in recent_pnl):
                 _circuit_breaker_until = time.time() + self._consecutive_loss_seconds
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_losses")
                 logger.warning("circuit_breaker_consecutive_losses", count=len(recent_pnl))
                 return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
 
@@ -193,7 +193,7 @@ class RiskAgent:
                 trade_value = (balance.equity * self.max_position_pct * strength)
                 daily_dollar_vol = avg_vol * price
                 if trade_value > daily_dollar_vol * self._max_liquidity_pct:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "insufficient_liquidity")
                     return {"status": "rejected", "reason": "insufficient_liquidity"}
 
             # / sector concentration check
@@ -205,25 +205,25 @@ class RiskAgent:
                     if get_sector(p_sym) == sector:
                         sector_value += p.market_value if hasattr(p, "market_value") else 0
                 if balance.equity > 0 and sector_value / balance.equity > self._max_sector_pct:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "sector_concentration")
                     return {"status": "rejected", "reason": f"sector_concentration ({sector})"}
 
         # / enforce risk limits for buys
         if side == "buy":
             # / cash reserve: current cash must be at least N% of equity
             if balance.cash < balance.equity * self._min_cash_reserve_pct:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "cash_reserve_insufficient")
                 return {"status": "rejected", "reason": "cash_reserve_insufficient"}
 
             # / max open positions
             if len(positions) >= self._max_open_positions:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "max_positions")
                 return {"status": "rejected", "reason": f"max_positions ({self._max_open_positions}) reached"}
 
             # / max daily trades
             today_count = await tools.count_today_approved_trades(pool)
             if today_count >= self._max_daily_trades:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "max_daily_trades")
                 return {"status": "rejected", "reason": f"max_daily_trades ({self._max_daily_trades}) reached"}
 
             # / cross-strategy symbol concentration: cap at 2x single-strategy limit
@@ -232,7 +232,7 @@ class RiskAgent:
                 total_held_value = sum(sp["qty"] for sp in all_sym_positions) * price
                 max_concentration = self.max_position_pct * 2 * balance.equity
                 if total_held_value >= max_concentration:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "cross_strategy_concentration")
                     return {"status": "rejected", "reason": f"cross_strategy_concentration: {symbol}"}
 
         # / compute position size
@@ -279,7 +279,7 @@ class RiskAgent:
                 logger.debug("beta_sizing_skipped", symbol=symbol, error=str(exc)[:100])
 
         if qty <= 0:
-            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+            await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "qty_zero")
             return {"status": "rejected", "reason": "qty_zero"}
 
         # / single-trade loss cap (buys only): size down so worst-case stop loss
@@ -298,7 +298,7 @@ class RiskAgent:
                     )
                     qty = max(0, max_qty_by_loss)
                     if qty <= 0:
-                        await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                        await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "single_trade_loss_cap")
                         return {"status": "rejected", "reason": "single_trade_loss_cap"}
 
         # / check total portfolio exposure (buys only — sells reduce exposure)
@@ -311,11 +311,11 @@ class RiskAgent:
                 # / size down to fit within risk limit
                 available = (self.max_portfolio_risk * balance.equity) - total_position_value
                 if available <= 0:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "portfolio_risk_exceeded")
                     return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
                 qty = max(0, int(available / price))
                 if qty <= 0:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected")
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "portfolio_risk_exceeded")
                     return {"status": "rejected", "reason": "portfolio_risk_exceeded"}
 
         # / copula tail dependence check (skip on small portfolios, buys only)

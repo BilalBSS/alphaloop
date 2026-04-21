@@ -23,14 +23,26 @@ export function SynthesisPanel({ onSelect }) {
   const avoids = data.top_avoids || []
   const dateStr = data.date?.split('T')[0] || data.date
 
+  // / stale badge: flag when the latest synthesis isn't from today (the 5PM
+  // / reasoner cron didn't fire — usually means the orchestrator was down at
+  // / market close). without this the date silently lied about freshness.
+  const todayISO = new Date().toISOString().slice(0, 10)
+  const isStale = dateStr !== todayISO
+
   return (
     <div className="space-y-3">
-      <div className="type-metric-label">
-        Daily Synthesis — {dateStr} (5:00 PM ET)
+      <div className="type-metric-label flex items-center gap-2">
+        <span>Daily Synthesis — {dateStr} (5:00 PM ET)</span>
+        {isStale && (
+          <span className="chip chip-warning" title="This synthesis is from a previous session. 5PM reasoner has not run today.">stale</span>
+        )}
+      </div>
+      <div className="text-[10px] text-text-muted">
+        Candidates screened from the full watchlist — not positions held. Holdings are listed on the Portfolio tab.
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <div className="type-metric-label pnl-positive mb-2">Top Buys</div>
+          <div className="type-metric-label pnl-positive mb-2">Top Buy Candidates</div>
           {buys.length > 0 ? buys.map((b, i) => (
             <div key={i}
               onClick={() => onSelect(b.symbol || b)}
@@ -42,7 +54,7 @@ export function SynthesisPanel({ onSelect }) {
           )) : <div className="text-text-muted text-xs">Awaiting first synthesis pass</div>}
         </div>
         <div>
-          <div className="type-metric-label pnl-negative mb-2">Top Avoids</div>
+          <div className="type-metric-label pnl-negative mb-2">Top Avoid Candidates</div>
           {avoids.length > 0 ? avoids.map((a, i) => (
             <div key={i}
               onClick={() => onSelect(a.symbol || a)}
@@ -55,7 +67,57 @@ export function SynthesisPanel({ onSelect }) {
         </div>
       </div>
       {data.portfolio_risk && (
-        <div className="text-xs text-warning">Risk: {data.portfolio_risk}</div>
+        <div className="text-xs text-warning">
+          <span className="font-semibold">Portfolio risk note (LLM commentary):</span> {data.portfolio_risk}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// / signal funnel panel: signals → approved → filled, with rejection reasons
+// / answers "why aren't signals turning into trades" by showing where they die.
+export function SignalFunnelPanel() {
+  const { data } = useApi('/api/signal-funnel?hours=24', 60000)
+  if (!data) return null
+  const byStatus = data.by_status || {}
+  const totalSignals = Object.values(byStatus).reduce((a, b) => a + b, 0)
+  const approved = data.approved_trades || 0
+  const filled = data.filled_trades || 0
+  const reasons = Array.isArray(data.by_rejection_reason) ? data.by_rejection_reason : []
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-4 text-xs font-mono">
+        <span>{totalSignals} signals <span className="text-text-muted">(24h)</span></span>
+        <span className="text-text-muted">→</span>
+        <span className="pnl-positive">{approved} approved</span>
+        <span className="text-text-muted">→</span>
+        <span className="pnl-positive font-bold">{filled} filled</span>
+        {totalSignals > 0 && approved === 0 && (
+          <span className="chip chip-warning" title="signals generated but risk agent approved none">all blocked</span>
+        )}
+      </div>
+      {reasons.length > 0 && (
+        <div>
+          <div className="type-metric-label pnl-negative mb-2">Rejection reasons (24h)</div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-text-secondary text-[11px] uppercase">
+                <th className="text-left px-2 py-1">Reason</th>
+                <th className="text-right px-2 py-1">Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reasons.map((r, i) => (
+                <tr key={i} className="border-t border-border" style={{ height: 28 }}>
+                  <td className="px-2 py-1 font-mono text-text-primary">{r.reason}</td>
+                  <td className="px-2 py-1 text-right font-mono">{r.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

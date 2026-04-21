@@ -551,9 +551,15 @@ async def get_strategies():
     # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
     # / broke `pnl > 0` so every buy fell into the "loss" bucket → win_rate 0.000 for everyone.
     # / closed = sells with realized pnl; win_rate NULL until we have at least one closed trade.
+    # / expose both the "closed trades" count (used for win_rate math) and the
+    # / full fill count so strategies that have only opened positions don't read
+    # / as completely inactive in the ui. the card renders fills_count first and
+    # / falls back to total_trades for back-compat.
     trade_rows = await _query(
         """SELECT strategy_id,
             COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) as total_trades,
+            COUNT(*) as fills_count,
+            COUNT(*) FILTER (WHERE side = 'buy') as opens_count,
             COUNT(*) FILTER (WHERE side = 'sell' AND pnl > 0) as wins,
             COUNT(*) FILTER (WHERE side = 'sell' AND pnl < 0) as losses,
             COALESCE(ROUND(AVG(pnl) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL)::numeric, 2), 0) as avg_pnl,
@@ -603,8 +609,18 @@ async def get_strategies():
     except Exception as exc:
         logger.debug("strategy_unrealized_pnl_failed", error=str(exc))
 
-    # / sort by total_pnl + unrealized desc, nulls/zeros last
-    result = sorted(strategies_by_id.values(), key=lambda s: (s.get("total_pnl") or 0) + (s.get("unrealized_pnl") or 0), reverse=True)
+    # / sort by strategy_id natural order. sorting by pnl pushed strategies with
+    # / negative unrealized to the bottom regardless of numeric id, which made
+    # / strategy_011 appear last when it had the only open position — user read
+    # / this as "no strat 11 box". numeric order is the readable default;
+    # / pnl ranking can be a ui toggle later.
+    def _natural_key(s):
+        sid = s.get("strategy_id") or ""
+        parts = sid.split("_")
+        if len(parts) == 2 and parts[1].isdigit():
+            return (parts[0], int(parts[1]))
+        return (sid, 0)
+    result = sorted(strategies_by_id.values(), key=_natural_key)
     return _serialize(result)
 
 
@@ -1451,6 +1467,50 @@ async def get_strategy_evaluations(limit: int = 20):
     return _serialize(rows)
 
 
+@app.get("/api/signal-funnel")
+async def get_signal_funnel(hours: int = 24):
+    # / break down the signal -> approved -> trade path over the last N hours so
+    # / "generated 3 signals/cycle, 0 trades today" is answerable on the ui.
+    # / rejection_reason was added in migration 051; pre-existing rejected rows
+    # / read as "(unknown)" in the breakdown until the agent tags them.
+    hours = max(1, min(hours, 168))
+    status_rows = await _query(
+        """SELECT COALESCE(status, 'pending') AS status, COUNT(*) AS n
+        FROM trade_signals
+        WHERE created_at >= NOW() - ($1 || ' hours')::interval
+        GROUP BY status""",
+        str(hours),
+    )
+    reason_rows = await _query(
+        """SELECT COALESCE(rejection_reason, '(untagged)') AS reason, COUNT(*) AS n
+        FROM trade_signals
+        WHERE status = 'rejected'
+          AND created_at >= NOW() - ($1 || ' hours')::interval
+        GROUP BY rejection_reason
+        ORDER BY COUNT(*) DESC""",
+        str(hours),
+    )
+    approved_count = await _query_one(
+        """SELECT COUNT(*) AS n FROM approved_trades
+        WHERE created_at >= NOW() - ($1 || ' hours')::interval""",
+        str(hours),
+    )
+    filled_count = await _query_one(
+        """SELECT COUNT(*) AS n FROM trade_log
+        WHERE created_at >= NOW() - ($1 || ' hours')::interval""",
+        str(hours),
+    )
+    return {
+        "hours": hours,
+        "by_status": {r["status"]: int(r["n"]) for r in status_rows},
+        "by_rejection_reason": [
+            {"reason": r["reason"], "count": int(r["n"])} for r in reason_rows
+        ],
+        "approved_trades": int((approved_count or {}).get("n") or 0),
+        "filled_trades": int((filled_count or {}).get("n") or 0),
+    }
+
+
 # / phase 4: alt-data endpoints — one per source backed by the source_registry
 
 @app.get("/api/macro-context")
@@ -1914,10 +1974,20 @@ async def get_staleness():
         return {"sources": []}
     try:
         from src.data.staleness_monitor import check_all_freshness
+        import math
         results = await check_all_freshness(_pool)
+        # / staleness_monitor uses float('inf') for sources that failed entirely.
+        # / json.dumps can't encode inf, so the whole response 500s if any source
+        # / errored. clamp to None — the ui already treats unknown as "never".
+        def _clean(h: float):
+            if h is None:
+                return None
+            if math.isinf(h) or math.isnan(h):
+                return None
+            return round(h, 1)
         return {"sources": [
             {"source": s.source, "last_update": str(s.last_update) if s.last_update else None,
-             "staleness_hours": round(s.staleness_hours, 1), "threshold_hours": s.threshold_hours,
+             "staleness_hours": _clean(s.staleness_hours), "threshold_hours": s.threshold_hours,
              "is_stale": s.is_stale}
             for s in results
         ]}
@@ -1991,13 +2061,17 @@ async def admin_trigger(service: str, request: Request):
 @app.get("/api/env-health")
 async def get_env_health():
     # / presence check only — never returns values
+    # / required = things the system cannot do its core job without.
+    # / OLLAMA_BASE_URL only gates wiki embeddings (soft-skip) and TRADE_SYMBOLS
+    # / is a universe override that falls back to strategy configs — neither
+    # / belongs in required.
     required = [
         "DATABASE_URL", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
         "GROQ_API_KEY", "DEEPSEEK_API_KEY", "CEREBRAS_API_KEY",
         "FRED_API_KEY", "FINNHUB_API_KEY", "SEC_EDGAR_USER_AGENT",
-        "OLLAMA_BASE_URL", "TRADE_SYMBOLS",
     ]
     optional = [
+        "OLLAMA_BASE_URL", "TRADE_SYMBOLS",
         "DUNE_API_KEY", "DISCORD_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
         "TELEGRAM_BOT_TOKEN", "ADMIN_TOKEN", "KRONOS_ENABLED",
         "WIKI_HYDRATION_DAILY_CAP", "MAX_POSITION_PCT", "CONSENSUS_MODE",

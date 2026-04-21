@@ -938,6 +938,37 @@ async def generate_daily_synthesis(
             )
     score_text = "\n".join(score_lines)
 
+    # / ground the narrative in actual holdings. without this the LLM's
+    # / "portfolio_risk" paragraph referenced arbitrary scored tickers as if we
+    # / owned them — user flagged it as "synthesis shows stuff that never
+    # / happened". the prompt now separates OWNED positions from watchlist scores.
+    positions_text = ""
+    owned_symbols: set[str] = set()
+    try:
+        async with pool.acquire() as conn:
+            pos_rows = await conn.fetch(
+                """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+                FROM strategy_positions WHERE qty > 0
+                ORDER BY symbol"""
+            )
+        if pos_rows:
+            lines = []
+            for r in pos_rows:
+                owned_symbols.add(r["symbol"])
+                lines.append(
+                    f"  {r['symbol']}: qty={float(r['qty']):.2f} "
+                    f"entry=${float(r['avg_entry_price'] or 0):.2f} "
+                    f"strategy={r['strategy_id']}"
+                )
+            positions_text = (
+                "\n\nCURRENT OPEN POSITIONS (ground truth — these are the ONLY symbols we actually own):\n"
+                + "\n".join(lines)
+            )
+        else:
+            positions_text = "\n\nCURRENT OPEN POSITIONS: none (flat portfolio)."
+    except Exception as exc:
+        logger.debug("synthesis_positions_failed", error=str(exc)[:100])
+
     # / bug e2: inject live strategy performance so synthesis reasons about active strategies
     # / not just symbol scores. paper must mirror live — same feedback that live would give.
     strategy_text = ""
@@ -972,15 +1003,15 @@ async def generate_daily_synthesis(
 
     prompt = f"""You are a senior portfolio analyst. Review today's data across all symbols and produce a structured assessment.
 
-TODAY'S ANALYSIS SCORES ({len(scores)} symbols):
-{score_text}{strategy_text}
+TODAY'S ANALYSIS SCORES ({len(scores)} symbols — these are watchlist screens, NOT positions we own):
+{score_text}{positions_text}{strategy_text}
 
 Produce a JSON response with:
-- "top_buys": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (top 5)
+- "top_buys": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (top 5 from the scores above — these are BUY CANDIDATES, say so explicitly)
 - "top_avoids": array of {{"symbol": "TICKER", "score": N, "reason": "one sentence"}} (bottom 5)
-- "portfolio_risk": "one paragraph about overall market conditions and risk"
+- "portfolio_risk": "one paragraph — ONLY discuss the symbols listed under CURRENT OPEN POSITIONS. If the portfolio is flat, say so. Do NOT reference watchlist symbols as if we own them."
 - "per_symbol_notes": {{"TICKER": "note"}} for any symbol with unusual activity
-- "strategy_commentary": "one paragraph about which strategies are performing well and which need attention"
+- "strategy_commentary": "one paragraph about which strategies are performing well and which need attention (reference LIVE STRATEGY METRICS only — do not invent numbers)"
 
 Output ONLY valid JSON. No explanation outside the JSON."""
 
