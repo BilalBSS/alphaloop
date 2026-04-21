@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -125,6 +125,74 @@ def _compute_technical_score(indicator_data: dict | None) -> float | None:
     return round(base, 1)
 
 
+async def order_symbols_by_staleness(
+    pool, symbols: list[str], min_refresh_interval_s: float = 0.0,
+) -> list[str]:
+    # / order symbols oldest-first by latest analysis_scores.created_at so analyst
+    # / always refreshes the most-stale first. never-scored symbols jump to front.
+    # / symbols scored within min_refresh_interval_s are dropped (anti-thrash).
+    # / pure read, no writes. on db error returns input order unchanged.
+    if not symbols:
+        return []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT symbol, MAX(created_at) AS last_scored
+                FROM analysis_scores
+                WHERE symbol = ANY($1::text[])
+                GROUP BY symbol""",
+                symbols,
+            )
+    except Exception as exc:
+        logger.debug("analyst_staleness_query_failed", error=str(exc)[:120])
+        return list(symbols)
+    last_scored: dict[str, datetime] = {}
+    for r in rows:
+        ts = r["last_scored"]
+        if ts is not None:
+            # / asyncpg returns tz-naive for TIMESTAMP, tz-aware for TIMESTAMPTZ.
+            # / analysis_scores.created_at is TIMESTAMPTZ → always aware, but be defensive.
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            last_scored[r["symbol"]] = ts
+
+    now = datetime.now(tz=timezone.utc)
+    min_interval = timedelta(seconds=max(0.0, min_refresh_interval_s))
+
+    # / never-scored symbols first (in input order so callers can bias universe priority)
+    never_scored = [s for s in symbols if s not in last_scored]
+    # / scored symbols oldest-first, skipping too-recent ones when min_interval > 0
+    scored = [(s, last_scored[s]) for s in symbols if s in last_scored]
+    scored.sort(key=lambda x: x[1])
+    eligible_scored = [
+        s for s, ts in scored
+        if min_interval.total_seconds() == 0 or (now - ts) >= min_interval
+    ]
+    return never_scored + eligible_scored
+
+
+async def get_coverage_pct(pool, symbols: list[str], window_s: float = 3600.0) -> float:
+    # / fraction of `symbols` with an analysis_scores row in the last window_s seconds.
+    # / returned as 0..1. used by /api/phase5-metrics to surface analyst freshness.
+    # / 0.0 on error so the metric visibly flags the problem instead of pretending ok.
+    if not symbols:
+        return 0.0
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT COUNT(DISTINCT symbol) AS fresh
+                FROM analysis_scores
+                WHERE symbol = ANY($1::text[])
+                AND created_at >= NOW() - ($2::int * INTERVAL '1 second')""",
+                symbols, int(window_s),
+            )
+        fresh = int(row["fresh"] or 0)
+        return round(fresh / len(symbols), 4)
+    except Exception as exc:
+        logger.debug("analyst_coverage_query_failed", error=str(exc)[:120])
+        return 0.0
+
+
 class AnalystAgent:
     # / stateless — all persistent state lives in the database
 
@@ -132,40 +200,125 @@ class AnalystAgent:
         self._funding_cache: dict | None = None
         self._macro_cache: dict | None = None
 
-    async def run(self, pool, symbols: list[str], run_deepseek: bool = True) -> dict[str, float | None]:
-        # / run full analysis pipeline for each symbol
-        # / run_deepseek=False: groq only, True: groq + deepseek (dual-LLM consensus)
+    async def run(
+        self,
+        pool,
+        symbols: list[str],
+        run_deepseek: bool = True,
+        wall_clock_budget_s: float | None = None,
+        per_symbol_timeout_s: float = 60.0,
+        min_refresh_interval_s: float = 0.0,
+        inter_symbol_sleep_s: float = 2.0,
+    ) -> dict[str, float | None]:
+        # / batched analysis cycle. processes oldest-scored symbols first until
+        # / wall_clock_budget_s elapses. the orchestrator sets a short budget
+        # / (e.g. 420s) and a 10-min asyncio timeout above, so one stuck symbol
+        # / can't deadlock the loop and one slow cycle can't eat the next.
+        # /
+        # / args:
+        # /   wall_clock_budget_s: abort after N elapsed seconds. None = process all.
+        # /   per_symbol_timeout_s: bound per _analyze_symbol call (prevents one bad
+        # /       symbol eating the full budget).
+        # /   min_refresh_interval_s: skip symbols refreshed within this window
+        # /       (0 = no skip; avoids thrash when same subset keeps bubbling up).
+        # /   inter_symbol_sleep_s: rate-limit gap. groq free tier needs ~2s.
+        # /
+        # / run_deepseek=False → groq only (20-min cadence).
+        # / run_deepseek=True  → dual-llm consensus (30-min cadence).
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
-        self._macro_cache = None  # / reset per cycle
+        self._macro_cache = None    # / reset per cycle
         results: dict[str, float | None] = {}
+        timeouts = 0
+        errors = 0
+        budget_hit = False
         cycle_start = time.monotonic()
 
-        # / social sentiment: stocktwits + fear & greed for all symbols
+        # / pick the subset to process: oldest first, drop too-recent
+        ordered = await order_symbols_by_staleness(
+            pool, symbols, min_refresh_interval_s=min_refresh_interval_s,
+        )
+        skipped_recent = len(symbols) - len(ordered)
+        if not ordered:
+            logger.info(
+                "analyst_run_no_stale_symbols",
+                total=len(symbols), skipped_recent=skipped_recent,
+                min_refresh_s=min_refresh_interval_s,
+            )
+            return results
+
+        # / social sentiment: only for the batch we're going to process this cycle,
+        # / keeps api call volume flat when cadence shortens.
         try:
-            await run_social_sentiment(pool, symbols)
+            await run_social_sentiment(pool, ordered)
         except Exception as exc:
             logger.warning("social_sentiment_batch_failed", error=str(exc))
 
-        for i, symbol in enumerate(symbols):
+        # / budget anchored after per-cycle prelude (social sentiment, staleness
+        # / query) so a slow prelude doesn't starve the per-symbol work.
+        work_start = time.monotonic()
+        deadline = (
+            work_start + wall_clock_budget_s if wall_clock_budget_s else None
+        )
+
+        for i, symbol in enumerate(ordered):
+            if deadline is not None and time.monotonic() >= deadline:
+                budget_hit = True
+                logger.info(
+                    "analyst_budget_reached",
+                    processed=len(results), remaining=len(ordered) - i,
+                    budget_s=wall_clock_budget_s,
+                )
+                break
             try:
-                score = await self._analyze_symbol(pool, symbol)
+                score = await asyncio.wait_for(
+                    self._analyze_symbol(pool, symbol),
+                    timeout=per_symbol_timeout_s,
+                )
                 results[symbol] = score
+            except asyncio.TimeoutError:
+                timeouts += 1
+                logger.warning(
+                    "analyst_symbol_timeout", symbol=symbol,
+                    timeout_s=per_symbol_timeout_s,
+                )
+                results[symbol] = None
             except Exception as exc:
-                logger.warning("analyst_symbol_failed", symbol=symbol, error=str(exc))
-                await tools.log_event(pool, "warning", "analyst", f"analysis failed: {str(exc)[:200]}", symbol=symbol)
+                errors += 1
+                logger.warning(
+                    "analyst_symbol_failed", symbol=symbol, error=str(exc),
+                )
+                await tools.log_event(
+                    pool, "warning", "analyst",
+                    f"analysis failed: {str(exc)[:200]}", symbol=symbol,
+                )
                 results[symbol] = None
             # / throttle between symbols to avoid groq 429 rate limits
-            if i < len(symbols) - 1:
-                await asyncio.sleep(4)
+            if i < len(ordered) - 1:
+                await asyncio.sleep(inter_symbol_sleep_s)
 
         successful = sum(1 for v in results.values() if v is not None)
         duration = round(time.monotonic() - cycle_start, 1)
-        logger.info("analyst_run_complete", symbols_analyzed=len(results), successful=successful)
+        logger.info(
+            "analyst_run_complete",
+            symbols_analyzed=len(results), successful=successful,
+            timeouts=timeouts, errors=errors,
+            budget_hit=budget_hit, skipped_recent=skipped_recent,
+            duration_s=duration,
+        )
         await tools.log_event(
             pool, "info", "analyst",
-            f"cycle complete: {successful}/{len(results)} symbols in {duration}s",
-            details={"successful": successful, "total": len(results), "duration_s": duration},
+            f"cycle complete: {successful}/{len(results)} symbols in {duration}s"
+            + (f" (budget hit, {len(ordered) - len(results)} deferred)" if budget_hit else ""),
+            details={
+                "successful": successful,
+                "total": len(results),
+                "timeouts": timeouts,
+                "errors": errors,
+                "skipped_recent": skipped_recent,
+                "budget_hit": budget_hit,
+                "duration_s": duration,
+            },
         )
         return results
 
