@@ -28,13 +28,13 @@
       {
         "indicator": "rsi",
         "condition": "below",
-        "threshold": 30,
+        "threshold": 35,
         "period": 14
       },
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 1.3,
+        "multiplier": 1.2,
         "period": 20
       },
       {
@@ -85,5 +85,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

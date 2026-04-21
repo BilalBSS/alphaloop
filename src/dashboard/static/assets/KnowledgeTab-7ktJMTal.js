@@ -1,1 +1,0 @@
-import{t as e}from"./tab-knowledge-DHAJ2-ge.js";export{e as default};

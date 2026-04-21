@@ -18,7 +18,7 @@
       {
         "indicator": "sector_relative_strength",
         "condition": "above",
-        "threshold": 0.02,
+        "threshold": 0.0,
         "lookback": 20,
         "sector_etf": "XLK"
       },
@@ -29,8 +29,11 @@
       },
       {
         "indicator": "regime",
-        "condition": "is",
-        "value": "bull"
+        "condition": "in",
+        "values": [
+          "bull",
+          "sideways"
+        ]
       }
     ]
   },
@@ -65,5 +68,7 @@
   },
   "tier": "sector",
   "sector": "mega_tech",
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

@@ -1,1 +1,0 @@
-import{t as e}from"./tab-portfolio-C_DGOhWC.js";export{e as default};

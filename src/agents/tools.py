@@ -1069,6 +1069,29 @@ async def log_event(
         logger.warning("log_event_failed", source=source, error=str(exc))
 
 
+async def log_observation(
+    pool, strategy_id: str, symbol: str, near_miss_type: str,
+    passed_count: int | None = None, total_count: int | None = None,
+    strength: float | None = None, failed_reason: str | None = None,
+    regime: str | None = None,
+) -> None:
+    # / fire-and-forget near-miss log (migration 052). fuels the dashboard's
+    # / "close to firing" panel without polluting trade_signals.
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO observation_log
+                (strategy_id, symbol, near_miss_type, passed_count, total_count,
+                 strength, failed_reason, regime)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                strategy_id, symbol, near_miss_type, passed_count, total_count,
+                Decimal(str(strength)) if strength is not None else None,
+                failed_reason, regime,
+            )
+    except Exception as exc:
+        logger.debug("log_observation_failed", strategy_id=strategy_id, error=str(exc)[:100])
+
+
 async def fetch_recent_pnl(pool, limit: int = 5) -> list[float]:
     # / fetch most recent realized PnL values from trade_log
     async with pool.acquire() as conn:

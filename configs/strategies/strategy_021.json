@@ -56,5 +56,7 @@
   },
   "tier": "sector",
   "sector": "consumer",
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

@@ -8,7 +8,7 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
-    "strict_data": true,
+    "strict_data": false,
     "pe_ratio_max": 60,
     "revenue_growth_min": 0.05
   },
@@ -19,7 +19,7 @@
         "indicator": "earnings_surprise",
         "condition": "above",
         "threshold_pct": 0.05,
-        "max_days_since_report": 3
+        "max_days_since_report": 10
       },
       {
         "indicator": "earnings_revision_momentum",
@@ -31,12 +31,6 @@
         "indicator": "sma",
         "condition": "price_above",
         "period": 50
-      },
-      {
-        "indicator": "volume",
-        "condition": "above_average",
-        "multiplier": 1.5,
-        "period": 20
       }
     ]
   },
@@ -70,5 +64,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

@@ -17,12 +17,12 @@
       {
         "indicator": "gap",
         "condition": "magnitude_above",
-        "threshold_pct": 0.03
+        "threshold_pct": 0.015
       },
       {
         "indicator": "rsi",
         "condition": "above",
-        "threshold": 70,
+        "threshold": 60,
         "period": 14
       },
       {
@@ -63,5 +63,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

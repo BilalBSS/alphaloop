@@ -17,7 +17,7 @@
       {
         "indicator": "volume",
         "condition": "above_average",
-        "multiplier": 3.0,
+        "multiplier": 1.8,
         "period": 20
       },
       {
@@ -62,5 +62,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

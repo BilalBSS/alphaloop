@@ -197,6 +197,39 @@ class StrategyAgent:
         if not entry_signal.should_enter:
             if stats is not None:
                 stats["no_entry"] += 1
+            # / observation_log: surface close-to-firing strategies on the
+            # / dashboard without polluting trade_log. record N-1 of N AND
+            # / passes (real near-miss) and fundamental-gate failures (the
+            # / strict_data silent-drop case). the strategist brief: "add an
+            # / observed_only signal tier that logs near-misses ... costs
+            # / nothing if you're wrong."
+            try:
+                passed_n = entry_signal.passed_count
+                total_n = entry_signal.total_count
+                is_fundamental_fail = (
+                    total_n == 0
+                    and entry_signal.reasons
+                    and any(
+                        kw in (entry_signal.reasons[0] or "").lower()
+                        for kw in ("fundamental", "no fundamental data")
+                    )
+                )
+                is_technical_near_miss = (
+                    total_n > 0 and passed_n == total_n - 1
+                )
+                if is_fundamental_fail or is_technical_near_miss:
+                    failed_str = "; ".join(entry_signal.failed_reasons or entry_signal.reasons)[:500]
+                    nm_type = "fundamental_gate" if is_fundamental_fail else "n_minus_1_technical"
+                    await tools.log_observation(
+                        pool, strategy.strategy_id, symbol,
+                        near_miss_type=nm_type,
+                        passed_count=passed_n, total_count=total_n,
+                        strength=None, failed_reason=failed_str,
+                        regime=(analysis_data.regime if analysis_data else None),
+                    )
+            except Exception as exc:
+                logger.debug("observation_log_failed", strategy_id=strategy.strategy_id,
+                             symbol=symbol, error=str(exc)[:100])
             return None
 
         # / 2h intraday confirmation gate

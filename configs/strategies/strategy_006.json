@@ -26,12 +26,6 @@
         "condition": "above",
         "threshold": 50,
         "period": 14
-      },
-      {
-        "indicator": "volume",
-        "condition": "above_average",
-        "multiplier": 1.2,
-        "period": 20
       }
     ]
   },
@@ -65,5 +59,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

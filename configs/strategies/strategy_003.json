@@ -11,7 +11,7 @@
     "strict_data": false,
     "pe_ratio_max": 40,
     "revenue_growth_min": 0.02,
-    "fcf_margin_min": 0.1,
+    "fcf_margin_min": 0.05,
     "debt_to_equity_max": 1.5,
     "dcf_upside_min": 0.05
   },
@@ -79,5 +79,7 @@
   },
   "tier": "sector",
   "sector": null,
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

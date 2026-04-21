@@ -8,8 +8,8 @@
   "asset_class": "stocks",
   "universe": "all_stocks",
   "fundamental_filters": {
-    "strict_data": true,
-    "pe_ratio_max": 25,
+    "strict_data": false,
+    "pe_ratio_max": 40,
     "fcf_margin_min": 0.15,
     "debt_to_equity_max": 1.5
   },
@@ -22,7 +22,8 @@
         "values": [
           "sideways",
           "bear",
-          "high_vol"
+          "high_vol",
+          "bull"
         ]
       },
       {
@@ -35,7 +36,7 @@
       {
         "indicator": "beta",
         "condition": "below",
-        "threshold": 0.9
+        "threshold": 1.1
       }
     ]
   },
@@ -70,5 +71,7 @@
   },
   "tier": "sector",
   "sector": "health_energy",
-  "symbol": null
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
 }

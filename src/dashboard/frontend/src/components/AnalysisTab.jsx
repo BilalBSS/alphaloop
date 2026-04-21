@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
 import Panel from './Panel'
 import HeroBanner from './HeroBanner'
-import SymbolList, { SynthesisPanel, StrategyEvalPanel, SignalFunnelPanel } from './analysis/SymbolList'
+import SymbolList, { SynthesisPanel, StrategyEvalPanel, SignalFunnelPanel, ObservationLogPanel } from './analysis/SymbolList'
 import SymbolDetail from './analysis/SymbolDetail'
 
 // / relative time — "2h ago" / "34m ago" / "never"
@@ -107,6 +107,9 @@ export default function AnalysisTab() {
       </Panel>
       <Panel title="Signal Funnel">
         <SignalFunnelPanel />
+      </Panel>
+      <Panel title="Close-to-firing (observation log)">
+        <ObservationLogPanel onSelect={selectSymbol} />
       </Panel>
       <Panel title="Symbol Analysis">
         <SymbolList

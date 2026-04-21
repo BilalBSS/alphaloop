@@ -71,5 +71,6 @@
       "revenue_growth_min": -0.15,
       "dcf_upside_min": -0.2
     }
-  }
+  },
+  "signal_threshold_override": 0.12
 }
