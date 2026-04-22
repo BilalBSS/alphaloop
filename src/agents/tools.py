@@ -112,12 +112,24 @@ async def store_trade_signal(
 
 
 async def fetch_pending_signals(pool, limit: int = 50) -> list[dict]:
-    # / get unprocessed trade signals
+    # / get unprocessed trade signals, highest-conviction first.
+    # /
+    # / previously FIFO (ORDER BY created_at ASC), which meant when per-strategy
+    # / or portfolio caps bound on a burst cycle, the caps ate whichever signal
+    # / arrived first — regardless of signal strength. sells are always strength
+    # / 1.0 (forced exits) so they stay at the top; among buys, strongest signal
+    # / wins the scarce slot. ties broken by FIFO so no single strategy can game
+    # / ordering by spamming strength=0.9 — their own max_daily_trades_per_strategy
+    # / and max_positions_per_strategy caps also bind.
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT * FROM trade_signals
             WHERE status = 'pending'
-            ORDER BY created_at ASC LIMIT $1""",
+            ORDER BY
+                CASE WHEN signal_type = 'sell' THEN 0 ELSE 1 END,
+                strength DESC NULLS LAST,
+                created_at ASC
+            LIMIT $1""",
             limit,
         )
     return [dict(r) for r in rows]
