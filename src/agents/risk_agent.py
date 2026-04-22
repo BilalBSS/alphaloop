@@ -14,7 +14,6 @@ import structlog
 from src.agents import tools
 from src.agents import capital_allocator
 from src.brokers.base import BrokerInterface
-from src.data.symbols import get_sector
 
 logger = structlog.get_logger(__name__)
 
@@ -50,11 +49,19 @@ class RiskAgent:
         self.tail_dep_threshold = tail_dep_threshold
         self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
         self._max_daily_trades = rl.get("max_daily_trades", 20)
+        # / per-strategy breadth controls — prevent a single generator (e.g.
+        # / ADX_Trend_Rider firing 9 buys in one cycle) from monopolizing the
+        # / portfolio and starving the other 28 strategies of data. three
+        # / independent guards per research brief: slot count, NAV exposure,
+        # / and activity-scaled position sizing.
+        self._max_daily_trades_per_strategy = rl.get("max_daily_trades_per_strategy", 6)
+        self._max_positions_per_strategy = rl.get("max_positions_per_strategy", 4)
+        self._max_exposure_per_strategy_pct = float(rl.get("max_exposure_per_strategy_pct", 0.08))
+        self._activity_scaling_enabled = bool(rl.get("activity_scaling_enabled", True))
         self._max_open_positions = rl.get("max_open_positions", 15)
         self._max_drawdown_hard_stop = rl.get("max_drawdown_hard_stop", -0.20)
         self._consecutive_loss_pause = rl.get("consecutive_loss_pause_count", 3)
         self._consecutive_loss_seconds = rl.get("consecutive_loss_pause_seconds", 3600)
-        self._max_sector_pct = rl.get("max_sector_concentration_pct", 0.30)
         self._max_liquidity_pct = rl.get("max_liquidity_pct", 0.01)
         self._max_single_trade_loss_pct = float(rl.get("max_single_trade_loss_pct", 0.02))
         self._regime_multipliers = rl.get("regime_sizing_multipliers", {
@@ -196,17 +203,11 @@ class RiskAgent:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "insufficient_liquidity")
                     return {"status": "rejected", "reason": "insufficient_liquidity"}
 
-            # / sector concentration check
-            sector = get_sector(symbol)
-            if sector:
-                sector_value = 0.0
-                for p in positions:
-                    p_sym = p.symbol if hasattr(p, "symbol") else p.get("symbol")
-                    if get_sector(p_sym) == sector:
-                        sector_value += p.market_value if hasattr(p, "market_value") else 0
-                if balance.equity > 0 and sector_value / balance.equity > self._max_sector_pct:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "sector_concentration")
-                    return {"status": "rejected", "reason": f"sector_concentration ({sector})"}
+            # / sector concentration cap removed — this is a trading tool,
+            # / not a portfolio-management tool. GICS labels are arbitrary and
+            # / actual crash co-movement is already handled by the tail-
+            # / dependence copula check. per-strategy caps + evolution engine
+            # / address the runaway-concentration bug case structurally.
 
         # / enforce risk limits for buys
         if side == "buy":
@@ -225,6 +226,45 @@ class RiskAgent:
             if today_count >= self._max_daily_trades:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "max_daily_trades")
                 return {"status": "rejected", "reason": f"max_daily_trades ({self._max_daily_trades}) reached"}
+
+            # / per-strategy breadth controls. three independent guards per the
+            # / deep-researcher brief: daily count, open-position slots, and NAV
+            # / exposure. any one tripping is sufficient to reject — the goal is
+            # / to keep the portfolio diversified across strategies so the
+            # / evolution engine has data on each one.
+            signal_strategy_id = signal.get("strategy_id") or ""
+            if signal_strategy_id and side == "buy":
+                # / a) daily per-strategy cap
+                strat_today = await tools.count_today_approved_trades_for_strategy(
+                    pool, signal_strategy_id,
+                )
+                if strat_today >= self._max_daily_trades_per_strategy:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "strategy_daily_cap")
+                    return {"status": "rejected", "reason": f"strategy_daily_cap ({self._max_daily_trades_per_strategy}) reached for {signal_strategy_id}"}
+
+                # / b) slot count per strategy
+                strat_positions = await tools.get_strategy_positions(
+                    pool, strategy_id=signal_strategy_id,
+                )
+                open_slots = sum(1 for sp in strat_positions if float(sp.get("qty") or 0) > 0)
+                if open_slots >= self._max_positions_per_strategy:
+                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "strategy_slot_cap")
+                    return {"status": "rejected", "reason": f"strategy_slot_cap ({self._max_positions_per_strategy}) reached for {signal_strategy_id}"}
+
+                # / c) NAV exposure per strategy — sum current open notional
+                strat_notional = 0.0
+                for sp in strat_positions:
+                    q = float(sp.get("qty") or 0)
+                    ent = float(sp.get("avg_entry_price") or 0)
+                    strat_notional += q * ent
+                if balance.equity > 0:
+                    strat_exposure = strat_notional / balance.equity
+                    # / pre-check — does THIS trade's worst-case notional push strategy past the cap?
+                    projected_notional = strat_notional + (balance.equity * self.max_position_pct * strength)
+                    projected_exposure = projected_notional / balance.equity
+                    if projected_exposure > self._max_exposure_per_strategy_pct:
+                        await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "strategy_exposure_cap")
+                        return {"status": "rejected", "reason": f"strategy_exposure_cap ({self._max_exposure_per_strategy_pct:.1%}) would be exceeded for {signal_strategy_id} (current {strat_exposure:.1%})"}
 
             # / cross-strategy symbol concentration: cap at 2x single-strategy limit
             all_sym_positions = await tools.get_strategy_positions(pool, symbol=symbol)
@@ -252,7 +292,25 @@ class RiskAgent:
             max_pct = await capital_allocator.get_allocation(
                 pool, strategy_id, max_position_pct_default=self.max_position_pct,
             )
-            qty = (balance.equity * max_pct * strength) / price
+            # / activity scaling: when a strategy fires N pending signals in the
+            # / same cycle (e.g. ADX_Trend_Rider hitting SPY/QQQ/MSFT/... all at
+            # / once), those are near-duplicate bets, not N independent ones.
+            # / López de Prado sample-uniqueness → scale per-trade size by
+            # / 1/√N so total strategy exposure stays bounded regardless of burst.
+            activity_scale = 1.0
+            if self._activity_scaling_enabled and strategy_id:
+                try:
+                    pending_n = await tools.count_pending_signals_for_strategy(
+                        pool, strategy_id,
+                    )
+                    if pending_n > 1:
+                        activity_scale = 1.0 / (pending_n ** 0.5)
+                        logger.debug("activity_scaled", strategy_id=strategy_id,
+                                     pending=pending_n, scale=round(activity_scale, 3))
+                except Exception as exc:
+                    logger.debug("activity_scale_skipped", strategy_id=strategy_id,
+                                 error=str(exc)[:80])
+            qty = (balance.equity * max_pct * strength * activity_scale) / price
             qty = max(0, int(qty))  # / whole shares
 
         # / regime-aware sizing multiplier (buys only)
