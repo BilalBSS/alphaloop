@@ -161,6 +161,36 @@ async def count_today_approved_trades(pool) -> int:
         return int(count or 0)
 
 
+async def count_today_approved_trades_for_strategy(pool, strategy_id: str) -> int:
+    # / per-strategy daily counter — the global cap protects total budget, this
+    # / protects breadth (no one generator monopolizes the day's slots).
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            """SELECT COUNT(*) FROM approved_trades
+            WHERE strategy_id = $1
+            AND created_at >= CURRENT_DATE
+            AND created_at < CURRENT_DATE + INTERVAL '1 day'""",
+            strategy_id,
+        )
+        return int(count or 0)
+
+
+async def count_pending_signals_for_strategy(pool, strategy_id: str) -> int:
+    # / count trade_signals rows this strategy has pending in the current cycle.
+    # / used by the risk agent's activity-scaling logic to shrink per-trade
+    # / position size by 1/sqrt(N) when a single strategy fires a burst on
+    # / multiple symbols (near-duplicate bets per López de Prado uniqueness).
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            """SELECT COUNT(*) FROM trade_signals
+            WHERE strategy_id = $1
+            AND status = 'pending'
+            AND created_at >= NOW() - INTERVAL '10 minutes'""",
+            strategy_id,
+        )
+        return int(count or 0)
+
+
 async def update_trade_status(
     pool, table: str, row_id: int, status: str,
     rejection_reason: str | None = None,
