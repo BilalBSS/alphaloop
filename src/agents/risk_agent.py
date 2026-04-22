@@ -14,7 +14,6 @@ import structlog
 from src.agents import tools
 from src.agents import capital_allocator
 from src.brokers.base import BrokerInterface
-from src.data.symbols import get_sector
 
 logger = structlog.get_logger(__name__)
 
@@ -63,7 +62,6 @@ class RiskAgent:
         self._max_drawdown_hard_stop = rl.get("max_drawdown_hard_stop", -0.20)
         self._consecutive_loss_pause = rl.get("consecutive_loss_pause_count", 3)
         self._consecutive_loss_seconds = rl.get("consecutive_loss_pause_seconds", 3600)
-        self._max_sector_pct = rl.get("max_sector_concentration_pct", 0.30)
         self._max_liquidity_pct = rl.get("max_liquidity_pct", 0.01)
         self._max_single_trade_loss_pct = float(rl.get("max_single_trade_loss_pct", 0.02))
         self._regime_multipliers = rl.get("regime_sizing_multipliers", {
@@ -205,17 +203,11 @@ class RiskAgent:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "insufficient_liquidity")
                     return {"status": "rejected", "reason": "insufficient_liquidity"}
 
-            # / sector concentration check
-            sector = get_sector(symbol)
-            if sector:
-                sector_value = 0.0
-                for p in positions:
-                    p_sym = p.symbol if hasattr(p, "symbol") else p.get("symbol")
-                    if get_sector(p_sym) == sector:
-                        sector_value += p.market_value if hasattr(p, "market_value") else 0
-                if balance.equity > 0 and sector_value / balance.equity > self._max_sector_pct:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "sector_concentration")
-                    return {"status": "rejected", "reason": f"sector_concentration ({sector})"}
+            # / sector concentration cap removed — this is a trading tool,
+            # / not a portfolio-management tool. GICS labels are arbitrary and
+            # / actual crash co-movement is already handled by the tail-
+            # / dependence copula check. per-strategy caps + evolution engine
+            # / address the runaway-concentration bug case structurally.
 
         # / enforce risk limits for buys
         if side == "buy":
