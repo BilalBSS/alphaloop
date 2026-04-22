@@ -482,9 +482,11 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         # / check technical entry conditions. _check_entry_technicals now also
         # / returns a per-clause breakdown so near-miss tracking can fire when
-        # / N-1 of N passed.
+        # / N-1 of N passed. analysis_data is threaded through so indicators
+        # / that need fundamental/macro context (regime, sector RS, earnings,
+        # / insider, etc.) have access.
         passed, strength, tech_reasons, passed_n, total_n, failed = (
-            self._check_entry_technicals(market_data, intraday_df)
+            self._check_entry_technicals(market_data, intraday_df, analysis)
         )
         if not passed:
             return EntrySignal(
@@ -606,6 +608,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_entry_technicals(
         self, market_data: pd.DataFrame, intraday_df: pd.DataFrame | None = None,
+        analysis_data: "AnalysisData | None" = None,
     ) -> tuple[bool, float, list[str], int, int, list[str]]:
         # / evaluate technical entry conditions from config.
         # / returns (overall_passed, strength, reasons, passed_count, total_count, failed_reasons).
@@ -622,12 +625,12 @@ class ConfigDrivenStrategy(StrategyInterface):
             tf = sig.get("timeframe")
             if tf and tf.lower() not in ("1d", "daily", "1day"):
                 if intraday_df is not None and len(intraday_df) >= 14:
-                    passed, strength, reason = self._evaluate_signal(sig, intraday_df)
+                    passed, strength, reason = self._evaluate_signal(sig, intraday_df, analysis_data)
                     results.append((passed, strength, f"[{tf}] {reason}"))
                 else:
                     results.append((False, 0.0, f"{sig.get('indicator', '?')} skipped: no {tf} data"))
                 continue
-            passed, strength, reason = self._evaluate_signal(sig, market_data)
+            passed, strength, reason = self._evaluate_signal(sig, market_data, analysis_data)
             results.append((passed, strength, reason))
 
         passed_count = sum(1 for r in results if r[0])
@@ -686,8 +689,8 @@ class ConfigDrivenStrategy(StrategyInterface):
         from src.indicators.momentum import rsi as rsi_fn
         close = market_data["close"]
         condition = sig.get("condition", "")
-        period = sig.get("period", 14)
-        threshold = sig.get("threshold", 30)
+        period = int(sig.get("period") or 14)
+        threshold = float(sig.get("threshold") or 30)
         rsi_val = rsi_fn(close, period=period)
         last_rsi = float(rsi_val.dropna().iloc[-1]) if not rsi_val.dropna().empty else 50.0
         if condition == "below":
@@ -698,6 +701,11 @@ class ConfigDrivenStrategy(StrategyInterface):
             passed = last_rsi > threshold
             strength = max(0, min(1, (last_rsi - threshold) / (100 - threshold))) if passed else 0.0
             return passed, strength, f"rsi={last_rsi:.1f} {'>' if passed else '<='} {threshold}"
+        elif condition == "between":
+            low = float(sig.get("low") or 40)
+            high = float(sig.get("high") or 60)
+            passed = low <= last_rsi <= high
+            return passed, 0.5 if passed else 0.0, f"rsi={last_rsi:.1f} {'in' if passed else 'outside'} [{low}, {high}]"
         return False, 0.0, f"unknown rsi condition: {condition}"
 
     def _eval_macd(
@@ -710,7 +718,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         # / last N bars". fixes the problem where 5-minute strategy eval cycles
         # / kept missing a bar-close crossover because the eval fired 3 minutes
         # / after the bar. default 3 bars keeps the "just crossed" semantic.
-        lookback = max(1, int(sig.get("lookback", 3)))
+        lookback = max(1, int(sig.get("lookback") or 3))
         hist_series = macd_fn(close).histogram.dropna()
         if len(hist_series) < 2:
             return False, 0.0, "macd: insufficient history"
@@ -753,7 +761,26 @@ class ConfigDrivenStrategy(StrategyInterface):
         from src.indicators.trend import sma as sma_fn
         close = market_data["close"]
         condition = sig.get("condition", "")
-        period = sig.get("period", 50)
+        # / golden-cross / death-cross style conditions that compare two SMAs
+        if condition in ("above", "golden_cross", "fast_above_slow"):
+            fast = int(sig.get("fast_period") or 50)
+            slow = int(sig.get("slow_period") or 200)
+            fast_sma = sma_fn(close, period=fast).dropna()
+            slow_sma = sma_fn(close, period=slow).dropna()
+            if fast_sma.empty or slow_sma.empty:
+                return False, 0.0, f"sma {fast}/{slow}: insufficient history"
+            passed = float(fast_sma.iloc[-1]) > float(slow_sma.iloc[-1])
+            return passed, 0.5 if passed else 0.0, f"sma{fast}={fast_sma.iloc[-1]:.2f} {'>' if passed else '<='} sma{slow}={slow_sma.iloc[-1]:.2f}"
+        if condition in ("below", "death_cross", "fast_below_slow"):
+            fast = int(sig.get("fast_period") or 50)
+            slow = int(sig.get("slow_period") or 200)
+            fast_sma = sma_fn(close, period=fast).dropna()
+            slow_sma = sma_fn(close, period=slow).dropna()
+            if fast_sma.empty or slow_sma.empty:
+                return False, 0.0, f"sma {fast}/{slow}: insufficient history"
+            passed = float(fast_sma.iloc[-1]) < float(slow_sma.iloc[-1])
+            return passed, 0.5 if passed else 0.0, f"sma{fast}={fast_sma.iloc[-1]:.2f} {'<' if passed else '>='} sma{slow}={slow_sma.iloc[-1]:.2f}"
+        period = int(sig.get("period") or 50)
         sma_val = sma_fn(close, period=period)
         last_close = float(close.iloc[-1])
         last_sma = float(sma_val.iloc[-1])
@@ -945,6 +972,238 @@ class ConfigDrivenStrategy(StrategyInterface):
         passed = abs(last_sr) < threshold_val
         return passed, 0.5 if passed else 0.0, f"sr distance={last_sr:.4f}"
 
+    # / ---------------- phase-1 extended indicator handlers ----------------
+    # / added after observation_log exposed 12 strategies failing with
+    # / "unknown indicator: X" — turned out 12 of 29 configs referenced
+    # / indicators with no handler at all. the threshold relaxations never
+    # / mattered for those strategies; they were structurally broken.
+
+    def _eval_macd_histogram(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.trend import macd as macd_fn
+        result = macd_fn(market_data["close"]).histogram.dropna()
+        if result.empty:
+            return False, 0.0, "macd_histogram: insufficient history"
+        last = float(result.iloc[-1])
+        condition = sig.get("condition", "")
+        threshold = float(sig.get("threshold", 0))
+        if condition == "above":
+            return last > threshold, 0.5 if last > threshold else 0.0, f"macd_hist={last:.4f} > {threshold}"
+        if condition == "below":
+            return last < threshold, 0.5 if last < threshold else 0.0, f"macd_hist={last:.4f} < {threshold}"
+        if condition == "positive":
+            return last > 0, 0.5 if last > 0 else 0.0, f"macd_hist={last:.4f}"
+        return False, 0.0, f"unknown macd_histogram condition: {condition}"
+
+    def _eval_donchian(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        from src.indicators.trend import donchian_channel
+        period = int(sig.get("period", 20))
+        if len(market_data) < period + 1:
+            return False, 0.0, f"donchian: need {period + 1} bars"
+        dc = donchian_channel(market_data["high"], market_data["low"], period=period)
+        # / donchian high is the rolling max over [period] bars ENDING with the
+        # / previous bar; a breakout is today's close exceeding that
+        last_close = float(market_data["close"].iloc[-1])
+        prev_high = float(dc.upper.iloc[-2]) if len(dc.upper) >= 2 else float("nan")
+        prev_low = float(dc.lower.iloc[-2]) if len(dc.lower) >= 2 else float("nan")
+        condition = sig.get("condition", "")
+        if condition == "breakout_high":
+            passed = last_close > prev_high
+            return passed, 0.7 if passed else 0.0, f"close={last_close:.2f} {'>' if passed else '<='} donchian_high={prev_high:.2f}"
+        if condition == "breakout_low":
+            passed = last_close < prev_low
+            return passed, 0.7 if passed else 0.0, f"close={last_close:.2f} {'<' if passed else '>='} donchian_low={prev_low:.2f}"
+        return False, 0.0, f"unknown donchian condition: {condition}"
+
+    def _eval_gap(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        if len(market_data) < 2:
+            return False, 0.0, "gap: need 2 bars"
+        prev_close = float(market_data["close"].iloc[-2])
+        today_open = float(market_data["open"].iloc[-1])
+        if prev_close <= 0:
+            return False, 0.0, "gap: zero prev close"
+        gap_pct = (today_open - prev_close) / prev_close
+        condition = sig.get("condition", "")
+        # / SignalConfig pre-fills all known keys with None; `or` guards against
+        # / both missing-key and explicit-None returns.
+        thr = float(sig.get("threshold_pct") or sig.get("threshold") or 0.02)
+        if condition == "magnitude_above":
+            passed = abs(gap_pct) > thr
+            return passed, min(1.0, abs(gap_pct) / thr) if passed else 0.0, f"gap={gap_pct * 100:.2f}% {'>' if passed else '<='} {thr * 100:.2f}%"
+        if condition == "up":
+            passed = gap_pct > thr
+            return passed, min(1.0, gap_pct / thr) if passed else 0.0, f"gap_up={gap_pct * 100:.2f}%"
+        if condition == "down":
+            passed = gap_pct < -thr
+            return passed, min(1.0, abs(gap_pct) / thr) if passed else 0.0, f"gap_down={gap_pct * 100:.2f}%"
+        return False, 0.0, f"unknown gap condition: {condition}"
+
+    def _eval_zscore_return(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        period = int(sig.get("period", 30))
+        if len(market_data) < period + 2:
+            return False, 0.0, f"zscore_return: need {period + 2} bars"
+        returns = market_data["close"].pct_change().dropna()
+        window = returns.iloc[-period:]
+        mean = float(window.mean())
+        std = float(window.std())
+        if std <= 0:
+            return False, 0.0, "zscore_return: zero std"
+        last_return = float(returns.iloc[-1])
+        z = (last_return - mean) / std
+        condition = sig.get("condition", "")
+        thr = float(sig.get("threshold", 0))
+        if condition == "below":
+            passed = z < thr
+            return passed, min(1.0, abs(z / thr)) if (passed and thr != 0) else (0.6 if passed else 0.0), f"zscore={z:.2f} {'<' if passed else '>='} {thr}"
+        if condition == "above":
+            passed = z > thr
+            return passed, min(1.0, abs(z / thr)) if (passed and thr != 0) else (0.6 if passed else 0.0), f"zscore={z:.2f} {'>' if passed else '<='} {thr}"
+        return False, 0.0, f"unknown zscore_return condition: {condition}"
+
+    def _eval_fib_retrace(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+    ) -> tuple[bool, float, str]:
+        # / retrace variant: check whether current close sits within a fib
+        # / band (low..high pulled from the last lookback swing). we compute
+        # / swing high/low on close over lookback bars, then check if close
+        # / sits between fib_low and fib_high (defaults 0.382, 0.500).
+        lookback = int(sig.get("lookback", 30))
+        if len(market_data) < lookback + 1:
+            return False, 0.0, f"fib_retrace: need {lookback + 1} bars"
+        window = market_data["close"].iloc[-lookback:]
+        swing_hi = float(window.max())
+        swing_lo = float(window.min())
+        rng = swing_hi - swing_lo
+        if rng <= 0:
+            return False, 0.0, "fib_retrace: flat range"
+        last = float(market_data["close"].iloc[-1])
+        pct_from_low = (last - swing_lo) / rng  # / 0 at swing_low, 1 at swing_high
+        fib_low = float(sig.get("fib_low", 0.382))
+        fib_high = float(sig.get("fib_high", 0.500))
+        # / for an uptrend retrace the classical entry is within [0.382, 0.500]
+        # / pullback zone measured from the swing high downward, so convert:
+        retrace_pct = 1.0 - pct_from_low  # / 0 at top, 1 at bottom
+        condition = sig.get("condition", "in_zone")
+        if condition == "in_zone":
+            passed = fib_low <= retrace_pct <= fib_high
+            return passed, 0.6 if passed else 0.0, f"fib_retrace={retrace_pct:.3f} in [{fib_low}, {fib_high}]? {passed}"
+        return False, 0.0, f"unknown fib_retrace condition: {condition}"
+
+    # / ---------- analysis-data handlers (need AnalysisData context) ----------
+
+    def _eval_regime(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        if analysis_data is None or not analysis_data.regime:
+            return False, 0.0, "regime: no analysis data"
+        regime = analysis_data.regime
+        condition = sig.get("condition", "")
+        if condition == "is":
+            target = sig.get("value")
+            passed = regime == target
+            return passed, 0.5 if passed else 0.0, f"regime={regime} {'==' if passed else '!='} {target}"
+        if condition == "in":
+            values = sig.get("values") or []
+            passed = regime in values
+            return passed, 0.5 if passed else 0.0, f"regime={regime} {'in' if passed else 'not in'} {values}"
+        return False, 0.0, f"unknown regime condition: {condition}"
+
+    def _eval_sector_relative_strength(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        if analysis_data is None or analysis_data.sector_relative_strength is None:
+            return False, 0.0, "sector_relative_strength: no analysis data"
+        rs = float(analysis_data.sector_relative_strength)
+        thr = float(sig.get("threshold", 0.0))
+        condition = sig.get("condition", "above")
+        if condition == "above":
+            passed = rs > thr
+            return passed, min(1.0, rs / max(thr, 0.01)) if passed else 0.0, f"sector_rs={rs:.4f} {'>' if passed else '<='} {thr}"
+        if condition == "below":
+            passed = rs < thr
+            return passed, 0.5 if passed else 0.0, f"sector_rs={rs:.4f} {'<' if passed else '>='} {thr}"
+        return False, 0.0, f"unknown sector_rs condition: {condition}"
+
+    def _eval_earnings_surprise(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        if analysis_data is None or analysis_data.earnings_surprise_pct is None:
+            return False, 0.0, "earnings_surprise: no analysis data"
+        surprise = float(analysis_data.earnings_surprise_pct)
+        thr = float(sig.get("threshold_pct") or sig.get("threshold") or 0.05)
+        max_days = int(sig.get("max_days_since_report") or 10)
+        # / days_to_earnings is signed: negative = days since, positive = days until
+        days_since = None
+        if analysis_data.days_to_earnings is not None:
+            dte = int(analysis_data.days_to_earnings)
+            days_since = -dte if dte < 0 else None
+        condition = sig.get("condition", "above")
+        if condition == "above":
+            passed = surprise > thr
+            if passed and days_since is not None and days_since > max_days:
+                return False, 0.0, f"earnings_surprise={surprise * 100:.1f}% passed but {days_since}d > max {max_days}d"
+            return passed, 0.6 if passed else 0.0, f"earnings_surprise={surprise * 100:.1f}% {'>' if passed else '<='} {thr * 100:.1f}%"
+        return False, 0.0, f"unknown earnings_surprise condition: {condition}"
+
+    def _eval_earnings_revision(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        if analysis_data is None or analysis_data.earnings_revision_momentum is None:
+            return False, 0.0, "earnings_revision_momentum: no analysis data"
+        mom = float(analysis_data.earnings_revision_momentum)
+        thr = float(sig.get("threshold", 0.0))
+        condition = sig.get("condition", "above")
+        if condition == "above":
+            passed = mom > thr
+            return passed, 0.5 if passed else 0.0, f"earnings_rev_mom={mom:.4f} {'>' if passed else '<='} {thr}"
+        return False, 0.0, f"unknown earnings_revision condition: {condition}"
+
+    def _eval_insider_cluster(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        # / we only have net_buy_ratio (sum positive / sum abs) in analysis_data,
+        # / not the raw insider count. approximate: ratio > 0.6 implies cluster-
+        # / like behaviour; scale confidence by the ratio.
+        if analysis_data is None or analysis_data.insider_net_buy_ratio is None:
+            return False, 0.0, "insider_cluster: no analysis data"
+        ratio = float(analysis_data.insider_net_buy_ratio)
+        # / threshold in config is a count; reinterpret: 2+ insiders ≈ ratio > 0.5
+        # / 3+ insiders ≈ ratio > 0.7. linear-interp.
+        count_threshold = int(sig.get("threshold", 2))
+        implied_ratio_floor = 0.5 + (count_threshold - 2) * 0.1
+        condition = sig.get("condition", "count_above")
+        if condition == "count_above":
+            passed = ratio >= implied_ratio_floor
+            return passed, min(1.0, ratio) if passed else 0.0, f"insider_net_ratio={ratio:.2f} {'>=' if passed else '<'} {implied_ratio_floor:.2f} (proxy for count>={count_threshold})"
+        return False, 0.0, f"unknown insider_cluster condition: {condition}"
+
+    def _eval_insider_net_dollar(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        # / same limitation: analysis_data lacks raw dollars. use net_buy_ratio as
+        # / a permissive proxy (ratio > 0.55 ≈ $100k+ cluster per empirical median).
+        if analysis_data is None or analysis_data.insider_net_buy_ratio is None:
+            return False, 0.0, "insider_net_dollar: no analysis data"
+        ratio = float(analysis_data.insider_net_buy_ratio)
+        threshold_usd = float(sig.get("threshold_usd", 100000))
+        # / rescale: $100k → ratio 0.55; $500k → 0.70
+        implied_ratio_floor = 0.55 + (threshold_usd - 100000) * 0.15 / 400000
+        passed = ratio >= implied_ratio_floor
+        return passed, min(1.0, ratio) if passed else 0.0, f"insider_net_ratio={ratio:.2f} {'>=' if passed else '<'} {implied_ratio_floor:.2f} (proxy for ${threshold_usd:,.0f})"
+
     _SIGNAL_HANDLERS: dict[str, Any] = {
         "bollinger_bands": _eval_bollinger,
         "rsi": _eval_rsi,
@@ -960,14 +1219,69 @@ class ConfigDrivenStrategy(StrategyInterface):
         "pivot_points": _eval_pivot_points,
         "fibonacci": _eval_fibonacci,
         "sr_zone": _eval_sr_zone,
+        # / phase-1 extensions (all pure-price)
+        "macd_histogram": _eval_macd_histogram,
+        "donchian": _eval_donchian,
+        "gap": _eval_gap,
+        "zscore_return": _eval_zscore_return,
+        "fib_retrace": _eval_fib_retrace,
+    }
+
+    # / analysis-data handlers dispatched separately because they take an
+    # / extra AnalysisData argument; keeping them off the main registry avoids
+    # / changing every existing handler signature.
+    def _eval_macro_not_implemented(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        # / yield_curve / yield_curve_slope / vix / beta: macro series not yet
+        # / threaded through to the strategy evaluator. registered so the
+        # / indicator doesn't read as "unknown" in the observation log, and
+        # / so the strategy consistently evaluates rather than randomly
+        # / depending on whether the handler exists.
+        indicator = sig.get("indicator", "?")
+        return False, 0.0, f"{indicator}: macro data not threaded to evaluator (requires data plumbing)"
+
+    def _eval_intermarket_correlation(
+        self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None",
+    ) -> tuple[bool, float, str]:
+        # / we don't have the second series loaded here; use intermarket_score
+        # / from analysis_data as a proxy. score > 0.5 implies strong alignment.
+        if analysis_data is None or analysis_data.intermarket_score is None:
+            return False, 0.0, "intermarket_correlation: no analysis data"
+        score = float(analysis_data.intermarket_score)
+        thr = float(sig.get("threshold") or 0.3)
+        passed = score >= thr
+        return passed, min(1.0, score) if passed else 0.0, f"intermarket_score={score:.2f} {'>=' if passed else '<'} {thr}"
+
+    _ANALYSIS_HANDLERS: dict[str, Any] = {
+        "regime": _eval_regime,
+        "sector_relative_strength": _eval_sector_relative_strength,
+        "earnings_surprise": _eval_earnings_surprise,
+        "earnings_revision_momentum": _eval_earnings_revision,
+        "insider_cluster": _eval_insider_cluster,
+        "insider_net_dollar": _eval_insider_net_dollar,
+        "intermarket_correlation": _eval_intermarket_correlation,
+        # / macro-sourced indicators — registered as no-ops so they don't read
+        # / as "unknown indicator" and so the strategy evaluation is consistent.
+        # / full support pending a macro-series injection into AnalysisData.
+        "yield_curve": _eval_macro_not_implemented,
+        "yield_curve_slope": _eval_macro_not_implemented,
+        "vix": _eval_macro_not_implemented,
+        "beta": _eval_macro_not_implemented,
     }
 
     def _evaluate_signal(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
+        analysis_data: "AnalysisData | None" = None,
     ) -> tuple[bool, float, str]:
         # / evaluate a single technical signal condition
         indicator = sig.get("indicator", "")
         try:
+            analysis_handler = self._ANALYSIS_HANDLERS.get(indicator)
+            if analysis_handler is not None:
+                return analysis_handler(self, sig, market_data, analysis_data)
             handler = self._SIGNAL_HANDLERS.get(indicator)
             if handler is None:
                 # / unknown indicator — skip gracefully
