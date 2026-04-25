@@ -185,6 +185,25 @@ class ExecutorAgent:
             await tools.attach_broker_order_id(pool, trade_id, order.order_id)
 
         if order.status == "filled":
+            if order.filled_price is None or float(order.filled_price) <= 0:
+                await tools.update_trade_status(pool, "approved_trades", trade_id, "pending_reconcile")
+                await tools.log_event(
+                    pool, level="error", source="executor",
+                    message="fill_missing_price",
+                    symbol=symbol,
+                    details={
+                        "trade_id": trade_id, "order_id": order.order_id,
+                        "filled_qty": float(order.filled_qty) if order.filled_qty is not None else None,
+                        "filled_price": order.filled_price,
+                    },
+                )
+                logger.error(
+                    "executor_fill_missing_price",
+                    trade_id=trade_id, order_id=order.order_id,
+                    symbol=symbol, side=side,
+                )
+                return {"status": "failed", "reason": "fill_missing_price"}
+
             # / fetch regime for logging
             regime = await tools.fetch_latest_regime(pool, "equity")
 
@@ -192,7 +211,7 @@ class ExecutorAgent:
             pnl = None
             if side == "buy" and strategy_id:
                 await tools.open_strategy_position(
-                    pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
+                    pool, strategy_id, symbol, order.filled_qty, order.filled_price,
                 )
             elif side == "sell":
                 # / bug e: try strategy close first, fall back to most recent buy lookup
@@ -207,7 +226,7 @@ class ExecutorAgent:
                         entry_price = fallback["entry_price"]
                     else:
                         logger.warning("sell_without_entry_history", symbol=symbol, qty=order.filled_qty)
-                if entry_price is not None and order.filled_price:
+                if entry_price is not None:
                     pnl = (order.filled_price - entry_price) * order.filled_qty
 
             log_id = await tools.store_trade_log(
@@ -216,7 +235,7 @@ class ExecutorAgent:
                 symbol=symbol,
                 side=side,
                 qty=order.filled_qty,
-                price=order.filled_price or 0.0,
+                price=order.filled_price,
                 order_id=order.order_id,
                 broker=type(broker).__name__,
                 regime=regime,
@@ -229,8 +248,8 @@ class ExecutorAgent:
             )
             await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
 
-            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
-            _broadcast_fill(symbol, side, order.filled_qty, order.filled_price or 0,
+            notify_trade_executed(symbol, side, order.filled_qty, order.filled_price, strategy_id, pnl=pnl)
+            _broadcast_fill(symbol, side, order.filled_qty, order.filled_price,
                             strategy_id, log_id, pnl)
             logger.info(
                 "trade_executed",
@@ -282,13 +301,33 @@ class ExecutorAgent:
                     pass
 
             if order.status == "filled":
+                if order.filled_price is None or float(order.filled_price) <= 0:
+                    await tools.update_trade_status(pool, "approved_trades", trade_id, "pending_reconcile")
+                    await tools.log_event(
+                        pool, level="error", source="executor",
+                        message="fill_missing_price",
+                        symbol=symbol,
+                        details={
+                            "trade_id": trade_id, "order_id": order.order_id,
+                            "filled_qty": float(order.filled_qty) if order.filled_qty is not None else None,
+                            "filled_price": order.filled_price,
+                            "polled": True,
+                        },
+                    )
+                    logger.error(
+                        "executor_fill_missing_price",
+                        trade_id=trade_id, order_id=order.order_id,
+                        symbol=symbol, side=side, polled=True,
+                    )
+                    return {"status": "failed", "reason": "fill_missing_price"}
+
                 regime = await tools.fetch_latest_regime(pool, "equity")
 
                 # / track strategy-level position (polled fill)
                 pnl = None
                 if side == "buy" and strategy_id:
                     await tools.open_strategy_position(
-                        pool, strategy_id, symbol, order.filled_qty, order.filled_price or 0.0,
+                        pool, strategy_id, symbol, order.filled_qty, order.filled_price,
                     )
                 elif side == "sell":
                     # / bug e: try strategy close first, fall back to most recent buy lookup
@@ -303,19 +342,19 @@ class ExecutorAgent:
                             entry_price = fallback["entry_price"]
                         else:
                             logger.warning("sell_without_entry_history", symbol=symbol, qty=order.filled_qty)
-                    if entry_price is not None and order.filled_price:
+                    if entry_price is not None:
                         pnl = (order.filled_price - entry_price) * order.filled_qty
 
                 log_id = await tools.store_trade_log(
                     pool, trade_id=trade_id, symbol=symbol, side=side,
-                    qty=order.filled_qty, price=order.filled_price or 0.0,
+                    qty=order.filled_qty, price=order.filled_price,
                     order_id=order.order_id, broker=type(broker).__name__,
                     regime=regime, pnl=pnl, strategy_id=strategy_id,
                     details={"order_status": "filled", "order_type": order_type},
                 )
                 await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
-                notify_trade_executed(symbol, side, order.filled_qty, order.filled_price or 0, strategy_id, pnl=pnl)
-                _broadcast_fill(symbol, side, order.filled_qty, order.filled_price or 0,
+                notify_trade_executed(symbol, side, order.filled_qty, order.filled_price, strategy_id, pnl=pnl)
+                _broadcast_fill(symbol, side, order.filled_qty, order.filled_price,
                                 strategy_id, log_id, pnl)
                 logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
                             symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)

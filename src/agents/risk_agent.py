@@ -40,13 +40,18 @@ class RiskAgent:
         risk_limits: dict | None = None,
     ):
         rl = risk_limits or self._load_risk_limits()
-        self.max_position_pct = max_position_pct or float(
-            os.environ.get("MAX_POSITION_PCT", str(rl.get("max_position_pct", 0.08)))
+        self.max_position_pct = (
+            max_position_pct
+            if max_position_pct is not None
+            else float(os.environ.get("MAX_POSITION_PCT", str(rl.get("max_position_pct", 0.08))))
         )
-        self.max_portfolio_risk = max_portfolio_risk or float(
-            os.environ.get("MAX_PORTFOLIO_RISK", str(rl.get("max_portfolio_risk", 0.25)))
+        self.max_portfolio_risk = (
+            max_portfolio_risk
+            if max_portfolio_risk is not None
+            else float(os.environ.get("MAX_PORTFOLIO_RISK", str(rl.get("max_portfolio_risk", 0.25))))
         )
         self.tail_dep_threshold = tail_dep_threshold
+        self._long_only = os.environ.get("LONG_ONLY", "true").lower() in ("true", "1", "yes")
         self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
         self._max_daily_trades = rl.get("max_daily_trades", 20)
         # / per-strategy breadth controls — prevent a single generator (e.g.
@@ -111,8 +116,7 @@ class RiskAgent:
         strength = max(0.0, min(1.0, float(signal["strength"]) if signal["strength"] else 0.5))
 
         # / long-only guard: reject sells that would create a short
-        long_only = os.environ.get("LONG_ONLY", "true").lower() in ("true", "1", "yes")
-        if long_only and side == "sell":
+        if self._long_only and side == "sell":
             positions_check = await broker.get_positions()
             held = next(
                 (p for p in positions_check
