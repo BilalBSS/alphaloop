@@ -114,8 +114,37 @@ async def _compute_open_position_returns(
             WHERE strategy_id = $1 AND qty > 0 AND avg_entry_price > 0""",
             strategy_id,
         )
-    if not positions:
-        return [], 0.0
+        if not positions:
+            return [], 0.0
+
+        earliest_start = period_start
+        symbols: list[str] = []
+        for p in positions:
+            entry_price = float(p["avg_entry_price"])
+            qty = float(p["qty"])
+            if entry_price <= 0 or qty <= 0:
+                continue
+            opened = p["opened_at"].date() if p["opened_at"] else period_start
+            start = max(opened, period_start)
+            if start > period_end:
+                continue
+            if start < earliest_start:
+                earliest_start = start
+            symbols.append(p["symbol"])
+        if not symbols:
+            return [], 0.0
+
+        bars_rows = await conn.fetch(
+            """SELECT symbol, date, close FROM market_data
+            WHERE symbol = ANY($1::text[]) AND date >= $2 AND date <= $3
+            ORDER BY symbol ASC, date ASC""",
+            symbols, earliest_start, period_end,
+        )
+
+    bars_by_symbol: dict[str, list] = {}
+    for r in bars_rows:
+        bars_by_symbol.setdefault(r["symbol"], []).append(r)
+
     returns: list[float] = []
     total_unrealized = 0.0
     for p in positions:
@@ -128,13 +157,7 @@ async def _compute_open_position_returns(
         start = max(opened, period_start)
         if start > period_end:
             continue
-        async with pool.acquire() as conn:
-            bars = await conn.fetch(
-                """SELECT date, close FROM market_data
-                WHERE symbol = $1 AND date >= $2 AND date <= $3
-                ORDER BY date ASC""",
-                sym, start, period_end,
-            )
+        bars = [b for b in bars_by_symbol.get(sym, []) if b["date"] >= start]
         prev = entry_price
         last_close = entry_price
         for b in bars:
