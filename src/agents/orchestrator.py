@@ -23,6 +23,7 @@ from src.agents.risk_agent import RiskAgent
 from src.agents.strategy_agent import StrategyAgent
 from src.brokers.broker_factory import BrokerFactory
 from src.data.db import close_db, init_db
+from src.data.retention import prune_observation_log, prune_system_events
 from src.data.streams import AlpacaStream, CoinbaseStream, TickBuffer
 from src.data.symbols import FULL_UNIVERSE, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
@@ -41,7 +42,7 @@ ANALYST_MARKET_HOURS = 1200      # / 20 minutes (3 batches/hour, staleness-order
 ANALYST_OFF_HOURS = 1800         # / 30 minutes (slower off-hours)
 ANALYST_BUDGET_S = 420.0         # / 7 min wall-clock budget per batch
 ANALYST_MIN_REFRESH_S = 1800.0   # / skip symbols refreshed within 30 min (anti-thrash)
-ANALYST_PER_SYMBOL_TIMEOUT_S = 60.0
+ANALYST_PER_SYMBOL_TIMEOUT_S = 180.0
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
 DEEPSEEK_INTERVAL = 1800         # / 30 minutes (dual-llm is 2x more expensive)
@@ -123,17 +124,11 @@ class AgentOrchestrator:
         # / init db
         self._pool = await init_db()
 
-        # / prune old system events (keep 30 days). table may not exist on first run.
         try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    "DELETE FROM system_events WHERE timestamp < NOW() - INTERVAL '30 days'"
-                )
+            await prune_system_events(self._pool, max_age_days=30)
+            await prune_observation_log(self._pool, max_age_days=14)
         except Exception as exc:
-            # / explicitly tolerate UndefinedTable on bootstrap; log anything else
-            msg = str(exc).lower()
-            if "does not exist" not in msg and "undefined" not in msg:
-                logger.warning("system_events_prune_failed", error=str(exc)[:120])
+            logger.warning("retention_prune_failed", error=str(exc)[:120])
 
         # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
         try:

@@ -29,6 +29,11 @@ from src.quant import kronos_signal
 logger = structlog.get_logger(__name__)
 
 
+async def _noop():
+    # / placeholder for parallel gather slots that should be skipped (e.g. insider for etfs)
+    return None
+
+
 async def _compute_kronos_score(pool, symbol: str) -> tuple[float | None, dict | None]:
     # / returns (score_0_100, details_dict) — returns (None, None) when disabled or short data
     # / weight 0.15 in the composite when present (see _apply_kronos_to_composite below)
@@ -208,7 +213,7 @@ class AnalystAgent:
         wall_clock_budget_s: float | None = None,
         per_symbol_timeout_s: float = 60.0,
         min_refresh_interval_s: float = 0.0,
-        inter_symbol_sleep_s: float = 2.0,
+        inter_symbol_sleep_s: float = 0.5,
     ) -> dict[str, float | None]:
         # / batched analysis cycle. processes oldest-scored symbols first until
         # / wall_clock_budget_s elapses. the orchestrator sets a short budget
@@ -221,7 +226,9 @@ class AnalystAgent:
         # /       symbol eating the full budget).
         # /   min_refresh_interval_s: skip symbols refreshed within this window
         # /       (0 = no skip; avoids thrash when same subset keeps bubbling up).
-        # /   inter_symbol_sleep_s: rate-limit gap. groq free tier needs ~2s.
+        # /   inter_symbol_sleep_s: rate-limit gap (0.5s default; was 2s, but
+        # /       per-symbol parallelization within the pipeline already serializes
+        # /       LLM calls, so a long inter-symbol pause was double-counting).
         # /
         # / run_deepseek=False → groq only (20-min cadence).
         # / run_deepseek=True  → dual-llm consensus (30-min cadence).
@@ -282,6 +289,10 @@ class AnalystAgent:
                     "analyst_symbol_timeout", symbol=symbol,
                     timeout_s=per_symbol_timeout_s,
                 )
+                await tools.log_event(
+                    pool, "warning", "analyst",
+                    f"timeout after {per_symbol_timeout_s}s", symbol=symbol,
+                )
                 results[symbol] = None
             except Exception as exc:
                 errors += 1
@@ -306,8 +317,9 @@ class AnalystAgent:
             budget_hit=budget_hit, skipped_recent=skipped_recent,
             duration_s=duration,
         )
+        cycle_level = "warning" if successful == 0 and len(results) > 0 else "info"
         await tools.log_event(
-            pool, "info", "analyst",
+            pool, cycle_level, "analyst",
             f"cycle complete: {successful}/{len(results)} symbols in {duration}s"
             + (f" (budget hit, {len(ordered) - len(results)} deferred)" if budget_hit else ""),
             details={
@@ -384,8 +396,11 @@ class AnalystAgent:
                 )
                 if fng_row and fng_row["raw_score"] is not None:
                     fear_greed = float(fng_row["raw_score"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "analyst_enrichment_failed", symbol=symbol,
+                source="fear_greed", error=str(exc)[:120],
+            )
 
         # / llm analysis: same dual-llm path as equities
         # / 30-min cycle: groq only, hourly cycle: groq + deepseek
@@ -510,35 +525,25 @@ class AnalystAgent:
 
     async def _fetch_equity_components(self, pool, symbol: str) -> tuple:
         # / returns (ratio_score, dcf_result, earnings_signal, insider_signal)
-        ratio_score: RatioScore | None = None
-        dcf_result: DCFResult | None = None
-        earnings_signal: EarningsSignal | None = None
-        insider_signal: InsiderSignal | None = None
+        # / fetched in parallel — all four are independent (no shared inputs).
+        from src.data.symbols import get_sector
+        is_etf = get_sector(symbol) == "etfs"
 
-        # / each component independently try/excepted
-        try:
-            ratio_score = await analyze_ratios(pool, symbol)
-        except Exception as exc:
-            logger.warning("analyst_ratio_failed", symbol=symbol, error=str(exc))
-
-        try:
-            dcf_result = await analyze_dcf(pool, symbol)
-        except Exception as exc:
-            logger.warning("analyst_dcf_failed", symbol=symbol, error=str(exc))
-
-        try:
-            earnings_signal = await analyze_earnings(symbol)
-        except Exception as exc:
-            logger.warning("analyst_earnings_failed", symbol=symbol, error=str(exc))
+        async def _safe(coro, label):
+            try:
+                return await coro
+            except Exception as exc:
+                logger.warning(f"analyst_{label}_failed", symbol=symbol, error=str(exc))
+                return None
 
         # / skip insider analysis for etfs — no form 4 filings
-        from src.data.symbols import get_sector
-        if get_sector(symbol) != "etfs":
-            try:
-                insider_signal = await analyze_insider_activity(pool, symbol)
-            except Exception as exc:
-                logger.warning("analyst_insider_failed", symbol=symbol, error=str(exc))
-
+        coros = [
+            _safe(analyze_ratios(pool, symbol), "ratio"),
+            _safe(analyze_dcf(pool, symbol), "dcf"),
+            _safe(analyze_earnings(symbol), "earnings"),
+            _safe(analyze_insider_activity(pool, symbol), "insider") if not is_etf else _noop(),
+        ]
+        ratio_score, dcf_result, earnings_signal, insider_signal = await asyncio.gather(*coros)
         return (ratio_score, dcf_result, earnings_signal, insider_signal)
 
     async def _fetch_equity_enrichment(self, pool, symbol: str) -> tuple:
@@ -561,8 +566,11 @@ class AnalystAgent:
                     sma50 = close_series.rolling(window=50, min_periods=50).mean().iloc[-1]
                     if pd.notna(sma50):
                         symbol_trend = "up" if float(close_series.iloc[-1]) > float(sma50) else "down"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "analyst_enrichment_failed", symbol=symbol,
+                source="symbol_trend_sma50", error=str(exc)[:120],
+            )
 
         # / fetch indicators + sentiment from db for llm prompt enrichment
         # / bug e: lazy compute from market_data if computed_indicators has no row — prevents
@@ -578,8 +586,11 @@ class AnalystAgent:
                 )
                 if ind_row:
                     indicator_data = dict(ind_row)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "analyst_enrichment_failed", symbol=symbol,
+                source="computed_indicators", error=str(exc)[:120],
+            )
         if indicator_data is None:
             try:
                 import pandas as pd
@@ -624,27 +635,31 @@ class AnalystAgent:
                     sentiment_data["social"] = dict(social_row)
                 if not sentiment_data:
                     sentiment_data = None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "analyst_enrichment_failed", symbol=symbol,
+                source="news_social_sentiment", error=str(exc)[:120],
+            )
 
         return (regime, symbol_trend, indicator_data, sentiment_data)
 
     async def _fetch_alternative_data(self, pool, symbol: str) -> dict:
-        # / fetch all alternative data sources for equity symbols
         from src.data.symbols import get_sector
         from src.data.fred_macro import fetch_macro_indicators, get_macro_score
         from src.data.congressional_trades import fetch_congressional_trades, compute_net_buy_ratio
-        from src.data.analyst_ratings import fetch_analyst_ratings, compute_consensus_score, compute_target_upside
+        from src.data.analyst_ratings import fetch_analyst_ratings, compute_target_upside
         from src.data.earnings_revisions import fetch_earnings_estimates, compute_revision_momentum
         from src.data.short_interest import fetch_short_interest
         from src.data.dark_pool import fetch_dark_pool_data
         from src.data.options_data import fetch_options_data
         from src.data.corporate_events import days_to_earnings
+        from src.indicators.intermarket import compute_intermarket
 
         alt: dict = {}
         is_etf = get_sector(symbol) == "etfs"
 
-        # / macro score: fetched once per cycle, cached
+        # / macro_score uses self._macro_cache (per-cycle). hold sequentially so a
+        # / single shared cache doesn't get clobbered by concurrent fetches.
         try:
             if self._macro_cache is None:
                 self._macro_cache = await fetch_macro_indicators(pool)
@@ -653,140 +668,145 @@ class AnalystAgent:
             self._macro_cache = {}
             logger.warning("alt_macro_failed", error=str(exc))
 
-        # / congressional trades (skip etfs)
-        if not is_etf:
+        # / build independent-fetch coro list. each wrapped in _safe_alt to
+        # / guarantee gather doesn't propagate one failure into the others.
+        async def _safe_alt(coro, label):
             try:
-                trades = await fetch_congressional_trades(symbol)
-                alt["congressional_buy_ratio"] = compute_net_buy_ratio(trades)
+                return await coro
             except Exception as exc:
-                logger.warning("alt_congressional_failed", symbol=symbol, error=str(exc))
+                logger.warning(f"alt_{label}_failed", symbol=symbol, error=str(exc))
+                return None
 
-        # / analyst ratings + price target (skip etfs)
-        if not is_etf:
-            try:
-                ratings = await fetch_analyst_ratings(symbol)
-                if ratings:
-                    alt["analyst_consensus"] = ratings.get("consensus_score", 0.0)
-                    # / compute target upside from mean target vs latest close
-                    target_mean = ratings.get("target_mean")
-                    if target_mean is not None:
-                        try:
-                            async with pool.acquire() as conn:
-                                row = await conn.fetchrow(
-                                    """SELECT close FROM market_data
-                                    WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
-                                    symbol,
-                                )
-                                if row:
-                                    current_price = float(row["close"])
-                                    alt["price_target_upside"] = compute_target_upside(target_mean, current_price)
-                        except Exception:
-                            pass
-            except Exception as exc:
-                logger.warning("alt_analyst_ratings_failed", symbol=symbol, error=str(exc))
-
-        # / earnings revisions (skip etfs)
-        if not is_etf:
-            try:
-                estimates = await fetch_earnings_estimates(symbol)
-                alt["earnings_revision_momentum"] = compute_revision_momentum(estimates)
-            except Exception as exc:
-                logger.warning("alt_earnings_revisions_failed", symbol=symbol, error=str(exc))
-
-        # / short interest — prefer yfinance's short_percent_float (fraction of float shorted)
-        # / fall back to short_ratio (days-to-cover) or raw short_interest if that's all we have
-        try:
-            si_data = await fetch_short_interest(symbol)
-            if si_data:
-                alt["short_pct_float"] = (
-                    si_data.get("short_percent_float")
-                    or si_data.get("short_ratio")
-                    or si_data.get("short_interest")
-                )
-        except Exception as exc:
-            logger.warning("alt_short_interest_failed", symbol=symbol, error=str(exc))
-
-        # / dark pool — pass pool so we can compute ratio against market_data total volume
-        try:
-            dp_data = await fetch_dark_pool_data(symbol, pool=pool)
-            if dp_data:
-                alt["dark_pool_ratio"] = dp_data.get("dark_pool_ratio")
-        except Exception as exc:
-            logger.warning("alt_dark_pool_failed", symbol=symbol, error=str(exc))
-
-        # / options data (skip etfs)
-        if not is_etf:
-            try:
-                opt_data = await fetch_options_data(symbol)
-                if opt_data:
-                    alt["iv_rank"] = opt_data.get("iv_rank")
-                    alt["put_call_ratio"] = opt_data.get("put_call_ratio")
-            except Exception as exc:
-                logger.warning("alt_options_failed", symbol=symbol, error=str(exc))
-
-        # / days to earnings
-        try:
-            dte = await days_to_earnings(symbol)
-            alt["days_to_earnings"] = dte
-        except Exception as exc:
-            logger.warning("alt_days_to_earnings_failed", symbol=symbol, error=str(exc))
-
-        # / intermarket signals (requires spy + etf data from db)
-        try:
-            from src.indicators.intermarket import compute_intermarket
-            async with pool.acquire() as conn:
-                spy_rows = await conn.fetch(
-                    "SELECT date, close FROM market_data WHERE symbol = 'SPY' ORDER BY date DESC LIMIT 30"
-                )
-            if spy_rows and len(spy_rows) >= 20:
-                import pandas as pd
-                spy_df = pd.DataFrame([{"close": float(r["close"])} for r in reversed(spy_rows)])
-                # / fetch intermarket etfs
-                etf_dfs = {}
-                for etf in ("TLT", "UUP", "HYG", "GLD"):
-                    try:
-                        async with pool.acquire() as conn:
-                            rows = await conn.fetch(
-                                "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT 30",
-                                etf,
-                            )
-                        if rows and len(rows) >= 20:
-                            etf_dfs[etf.lower()] = pd.DataFrame([{"close": float(r["close"])} for r in reversed(rows)])
-                    except Exception:
-                        pass
-                im = compute_intermarket(spy_df, **etf_dfs)
-                alt["intermarket_score"] = round(im.composite, 4)
-        except Exception as exc:
-            logger.debug("intermarket_fetch_failed", error=str(exc))
-
-        # / sector relative strength
-        try:
-            from src.indicators.sector_rotation import compute_sector_rotation
-            async with pool.acquire() as conn:
-                spy_rows = await conn.fetch(
-                    "SELECT date, close FROM market_data WHERE symbol = 'SPY' ORDER BY date DESC LIMIT 70"
-                )
-            from src.data.symbols import get_sector
-            sym_sector = get_sector(symbol)
-            if spy_rows and sym_sector and len(spy_rows) >= 60:
-                # / fetch symbol's own price data for relative strength
-                async with pool.acquire() as conn:
-                    sym_rows = await conn.fetch(
-                        "SELECT date, close FROM market_data WHERE symbol = $1 ORDER BY date DESC LIMIT 70",
-                        symbol,
+        async def _ratings_with_target():
+            # / analyst_ratings → if target_mean present, also fetch latest close
+            # / for target_upside. price fetch is sequential AFTER ratings come back.
+            ratings = await fetch_analyst_ratings(symbol)
+            if not ratings:
+                return None, None
+            consensus = ratings.get("consensus_score", 0.0)
+            target_mean = ratings.get("target_mean")
+            upside = None
+            if target_mean is not None:
+                try:
+                    async with pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            """SELECT close FROM market_data
+                            WHERE symbol = $1 ORDER BY date DESC LIMIT 1""",
+                            symbol,
+                        )
+                        if row:
+                            upside = compute_target_upside(target_mean, float(row["close"]))
+                except Exception as exc:
+                    logger.warning(
+                        "analyst_enrichment_failed", symbol=symbol,
+                        source="price_target_upside", error=str(exc)[:120],
                     )
-                if sym_rows and len(sym_rows) >= 60:
-                    import pandas as pd
-                    spy_close = pd.Series([float(r["close"]) for r in reversed(spy_rows)])
-                    sym_close = pd.Series([float(r["close"]) for r in reversed(sym_rows)])
-                    # / compute 20-day relative strength: symbol return / spy return
-                    if len(spy_close) >= 20 and len(sym_close) >= 20:
-                        spy_ret = (spy_close.iloc[-1] / spy_close.iloc[-20]) - 1
-                        sym_ret = (sym_close.iloc[-1] / sym_close.iloc[-20]) - 1
-                        rs = sym_ret - spy_ret if spy_ret != 0 else 0.0
-                        alt["sector_relative_strength"] = round(rs, 4)
-        except Exception as exc:
-            logger.debug("sector_rotation_failed", error=str(exc))
+            return consensus, upside
+
+        async def _intermarket():
+            # / fetch SPY + 4 etfs in ONE query (was N+1: 4 separate pool.acquire calls).
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT symbol, date, close FROM market_data
+                    WHERE symbol = ANY($1::text[])
+                    ORDER BY symbol, date DESC""",
+                    ["SPY", "TLT", "UUP", "HYG", "GLD"],
+                )
+            # / bucket by symbol, take the most recent 30 rows per symbol
+            import pandas as pd
+            buckets: dict[str, list] = {}
+            for r in rows:
+                buckets.setdefault(r["symbol"], []).append(r)
+            spy_rows = buckets.get("SPY", [])[:30]
+            if not spy_rows or len(spy_rows) < 20:
+                return None
+            spy_df = pd.DataFrame([{"close": float(r["close"])} for r in reversed(spy_rows)])
+            etf_dfs = {}
+            for etf in ("TLT", "UUP", "HYG", "GLD"):
+                etf_rows = buckets.get(etf, [])[:30]
+                if etf_rows and len(etf_rows) >= 20:
+                    etf_dfs[etf.lower()] = pd.DataFrame(
+                        [{"close": float(r["close"])} for r in reversed(etf_rows)]
+                    )
+            im = compute_intermarket(spy_df, **etf_dfs)
+            return round(im.composite, 4)
+
+        async def _sector_rs():
+            # / sector relative strength: spy + symbol over 70 days, fetched in one query
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT symbol, date, close FROM market_data
+                    WHERE symbol = ANY($1::text[])
+                    ORDER BY symbol, date DESC""",
+                    ["SPY", symbol],
+                )
+            sym_sector = get_sector(symbol)
+            if not sym_sector:
+                return None
+            import pandas as pd
+            buckets: dict[str, list] = {}
+            for r in rows:
+                buckets.setdefault(r["symbol"], []).append(r)
+            spy_rows = buckets.get("SPY", [])[:70]
+            sym_rows = buckets.get(symbol, [])[:70]
+            if len(spy_rows) < 60 or len(sym_rows) < 60:
+                return None
+            spy_close = pd.Series([float(r["close"]) for r in reversed(spy_rows)])
+            sym_close = pd.Series([float(r["close"]) for r in reversed(sym_rows)])
+            if len(spy_close) < 20 or len(sym_close) < 20:
+                return None
+            spy_ret = (spy_close.iloc[-1] / spy_close.iloc[-20]) - 1
+            sym_ret = (sym_close.iloc[-1] / sym_close.iloc[-20]) - 1
+            rs = sym_ret - spy_ret if spy_ret != 0 else 0.0
+            return round(rs, 4)
+
+        # / parallel-safe fetches: short_interest, dark_pool, days_to_earnings,
+        # / intermarket, sector_rs always run. congressional, ratings, earnings_rev,
+        # / options gated on is_etf. None entries skipped without affecting tuple shape.
+        coros = [
+            _safe_alt(fetch_short_interest(symbol), "short_interest"),
+            _safe_alt(fetch_dark_pool_data(symbol, pool=pool), "dark_pool"),
+            _safe_alt(days_to_earnings(symbol), "days_to_earnings"),
+            _safe_alt(_intermarket(), "intermarket"),
+            _safe_alt(_sector_rs(), "sector_rotation"),
+            _safe_alt(fetch_congressional_trades(symbol), "congressional") if not is_etf else _noop(),
+            _safe_alt(_ratings_with_target(), "analyst_ratings") if not is_etf else _noop(),
+            _safe_alt(fetch_earnings_estimates(symbol), "earnings_revisions") if not is_etf else _noop(),
+            _safe_alt(fetch_options_data(symbol), "options") if not is_etf else _noop(),
+        ]
+        (
+            si_data, dp_data, dte, im_score, rs_score,
+            cong_trades, ratings_pair, est_data, opt_data,
+        ) = await asyncio.gather(*coros)
+
+        # / map results into alt dict, preserving original keys + skip-on-None semantics
+        if si_data:
+            alt["short_pct_float"] = (
+                si_data.get("short_percent_float")
+                or si_data.get("short_ratio")
+                or si_data.get("short_interest")
+            )
+        if dp_data:
+            alt["dark_pool_ratio"] = dp_data.get("dark_pool_ratio")
+        if dte is not None:
+            alt["days_to_earnings"] = dte
+        if im_score is not None:
+            alt["intermarket_score"] = im_score
+        if rs_score is not None:
+            alt["sector_relative_strength"] = rs_score
+        if cong_trades is not None:
+            alt["congressional_buy_ratio"] = compute_net_buy_ratio(cong_trades)
+        if ratings_pair is not None:
+            consensus, upside = ratings_pair
+            if consensus is not None:
+                alt["analyst_consensus"] = consensus
+            if upside is not None:
+                alt["price_target_upside"] = upside
+        if est_data is not None:
+            alt["earnings_revision_momentum"] = compute_revision_momentum(est_data)
+        if opt_data:
+            alt["iv_rank"] = opt_data.get("iv_rank")
+            alt["put_call_ratio"] = opt_data.get("put_call_ratio")
 
         return alt
 

@@ -1029,9 +1029,10 @@ class ConfigDrivenStrategy(StrategyInterface):
             return False, 0.0, "gap: zero prev close"
         gap_pct = (today_open - prev_close) / prev_close
         condition = sig.get("condition", "")
-        # / SignalConfig pre-fills all known keys with None; `or` guards against
-        # / both missing-key and explicit-None returns.
-        thr = float(sig.get("threshold_pct") or sig.get("threshold") or 0.02)
+        thr_raw = sig.get("threshold_pct")
+        if thr_raw is None:
+            thr_raw = sig.get("threshold")
+        thr = float(thr_raw) if thr_raw is not None else 0.02
         if condition == "magnitude_above":
             passed = abs(gap_pct) > thr
             return passed, min(1.0, abs(gap_pct) / thr) if passed else 0.0, f"gap={gap_pct * 100:.2f}% {'>' if passed else '<='} {thr * 100:.2f}%"
@@ -1140,8 +1141,12 @@ class ConfigDrivenStrategy(StrategyInterface):
         if analysis_data is None or analysis_data.earnings_surprise_pct is None:
             return False, 0.0, "earnings_surprise: no analysis data"
         surprise = float(analysis_data.earnings_surprise_pct)
-        thr = float(sig.get("threshold_pct") or sig.get("threshold") or 0.05)
-        max_days = int(sig.get("max_days_since_report") or 10)
+        thr_raw = sig.get("threshold_pct")
+        if thr_raw is None:
+            thr_raw = sig.get("threshold")
+        thr = float(thr_raw) if thr_raw is not None else 0.05
+        max_days_raw = sig.get("max_days_since_report")
+        max_days = int(max_days_raw) if max_days_raw is not None else 10
         # / days_to_earnings is signed: negative = days since, positive = days until
         days_since = None
         if analysis_data.days_to_earnings is not None:
@@ -1251,7 +1256,8 @@ class ConfigDrivenStrategy(StrategyInterface):
         if analysis_data is None or analysis_data.intermarket_score is None:
             return False, 0.0, "intermarket_correlation: no analysis data"
         score = float(analysis_data.intermarket_score)
-        thr = float(sig.get("threshold") or 0.3)
+        thr_raw = sig.get("threshold")
+        thr = float(thr_raw) if thr_raw is not None else 0.3
         passed = score >= thr
         return passed, min(1.0, score) if passed else 0.0, f"intermarket_score={score:.2f} {'>=' if passed else '<'} {thr}"
 

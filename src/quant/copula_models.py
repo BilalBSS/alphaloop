@@ -91,12 +91,9 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
             ll += n * (d - 1) * special.gammaln(nu / 2)
             ll -= 0.5 * n * log_det
 
-            for k in range(n):
-                quad = z[k] @ inv_corr @ z[k]
-                ll -= ((nu + d) / 2) * np.log(1 + quad / nu)
-                # / add back marginal t densities
-                for j in range(d):
-                    ll += ((nu + 1) / 2) * np.log(1 + z[k, j] ** 2 / nu)
+            quad = ((z @ inv_corr) * z).sum(axis=1)
+            ll -= ((nu + d) / 2) * np.log1p(quad / nu).sum()
+            ll += ((nu + 1) / 2) * np.log1p(z * z / nu).sum()
 
             return -ll
         except Exception:

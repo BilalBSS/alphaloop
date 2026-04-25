@@ -374,7 +374,12 @@ class StrategyAgent:
             return None
 
         # / smooth with particle filter
-        threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
+        signal_threshold_override = strategy.config.get("signal_threshold_override")
+        threshold = (
+            signal_threshold_override
+            if signal_threshold_override is not None
+            else SIGNAL_THRESHOLD
+        )
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)
 
         # / ml signal modifier (lightgbm probability)

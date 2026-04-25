@@ -2,6 +2,7 @@ import { useState, useEffect, lazy, Suspense } from 'react'
 import { WebSocketProvider, useWebSocketContext } from './contexts/WebSocketContext'
 import { useApiLive } from './hooks/useApiLive'
 import Header from './components/Header'
+import ErrorBoundary from './components/ErrorBoundary'
 
 // / code-split each tab so first paint ships ~header + portfolio only.
 // / vite manualChunks config keeps each tab on its own hashed bundle that loads
@@ -86,31 +87,36 @@ function AppInner() {
         ))}
       </nav>
 
-      {/* tab content — lazy loaded, each inside suspense boundary */}
+      {/* tab content — lazy loaded, each inside its own error boundary so
+          a chunk-load failure or runtime throw in one tab doesn't blank the
+          whole dashboard. error boundary wraps suspense so it catches both
+          lazy-load rejections and render-phase errors. */}
       <main className="flex-1 p-4 md:p-6">
-        <Suspense fallback={<TabLoading />}>
-          {activeTab === 'Portfolio' && (
-            <PortfolioTab
-              portfolio={portfolio.data}
-              trades={trades.data}
-              strategies={strategies.data}
-              loading={loading}
-            />
-          )}
-          {activeTab === 'Trades' && (
-            <TradesTab trades={trades.data} loading={loading.trades} />
-          )}
-          {activeTab === 'Evolution' && (
-            <EvolutionTab evolution={evolution.data} loading={loading.evolution} />
-          )}
-          {activeTab === 'Health' && (
-            <HealthTab health={health.data} loading={loading.health} />
-          )}
-          {activeTab === 'Analysis' && <AnalysisTab />}
-          {activeTab === 'Knowledge' && <KnowledgeTab />}
-          {activeTab === 'Macro' && <MacroTab />}
-          {activeTab === 'System' && <SystemTab />}
-        </Suspense>
+        <ErrorBoundary label={activeTab}>
+          <Suspense fallback={<TabLoading />}>
+            {activeTab === 'Portfolio' && (
+              <PortfolioTab
+                portfolio={portfolio.data}
+                trades={trades.data}
+                strategies={strategies.data}
+                loading={loading}
+              />
+            )}
+            {activeTab === 'Trades' && (
+              <TradesTab trades={trades.data} loading={loading.trades} />
+            )}
+            {activeTab === 'Evolution' && (
+              <EvolutionTab evolution={evolution.data} loading={loading.evolution} />
+            )}
+            {activeTab === 'Health' && (
+              <HealthTab health={health.data} loading={loading.health} />
+            )}
+            {activeTab === 'Analysis' && <AnalysisTab />}
+            {activeTab === 'Knowledge' && <KnowledgeTab />}
+            {activeTab === 'Macro' && <MacroTab />}
+            {activeTab === 'System' && <SystemTab />}
+          </Suspense>
+        </ErrorBoundary>
       </main>
     </div>
   )

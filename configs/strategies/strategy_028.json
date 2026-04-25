@@ -1,7 +1,7 @@
 {
   "id": "strategy_028",
   "name": "Event_Earnings_Beat_Continuation",
-  "version": 1,
+  "version": 2,
   "created_by": "human",
   "parent_id": null,
   "description": "Buy on >5% EPS beat + positive revision momentum within 3 days of report; short hold window",
@@ -24,7 +24,7 @@
       {
         "indicator": "earnings_revision_momentum",
         "condition": "above",
-        "threshold": 0.0,
+        "threshold": -0.5,
         "lookback": 30
       },
       {

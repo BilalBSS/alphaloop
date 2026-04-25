@@ -1,7 +1,7 @@
 {
   "id": "strategy_027",
   "name": "MeanRev_ZScore_Pair",
-  "version": 1,
+  "version": 2,
   "created_by": "human",
   "parent_id": null,
   "description": "2-std z-score deviation from 30-day mean; exit at half-z; avoid structural breakouts",
@@ -17,7 +17,7 @@
       {
         "indicator": "zscore_return",
         "condition": "below",
-        "threshold": -1.5,
+        "threshold": -0.8,
         "period": 30
       },
       {
