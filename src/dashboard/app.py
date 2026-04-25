@@ -5,15 +5,17 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import time
+import traceback
 from pathlib import Path
 
 import asyncpg
 import structlog
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,8 +63,28 @@ _default_origins = [
 ]
 _cors_env = os.environ.get("ALPHALOOP_CORS_ORIGINS", "").strip()
 _parsed = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else []
-# / fall back to defaults when env parses to empty so a misconfigured comma doesn't blackhole cors
 _cors_origins = _parsed or _default_origins
+
+_prod_mode = os.environ.get("PROD", "").strip().lower() in ("1", "true", "yes")
+if _prod_mode and not _cors_env:
+    _has_localhost = any("localhost" in o or "127.0.0.1" in o for o in _cors_origins)
+    if _has_localhost:
+        raise RuntimeError(
+            "PROD=1 but ALPHALOOP_CORS_ORIGINS unset and resolved origins still include "
+            "localhost. set ALPHALOOP_CORS_ORIGINS=<prod hostname(s)> before booting."
+        )
+
+_ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+if _ADMIN_TOKEN and len(_ADMIN_TOKEN) < 32:
+    raise RuntimeError(
+        "ADMIN_TOKEN is set but shorter than 32 chars — refuse to boot. "
+        "generate via `openssl rand -hex 32` or similar."
+    )
+if not _ADMIN_TOKEN:
+    logger.warning(
+        "admin_token_unset",
+        hint="ADMIN_TOKEN env unset — /ws and mutating dashboard endpoints are unauth'd",
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -134,6 +156,41 @@ async def _query_one(sql: str, *args) -> dict | None:
         return dict(row) if row else None
 
 
+def _check_admin_token(supplied: str | None) -> bool:
+    if not _ADMIN_TOKEN:
+        return False
+    if not supplied:
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8"), _ADMIN_TOKEN.encode("utf-8"))
+
+
+def _extract_bearer(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return ""
+
+
+async def require_admin_token(request: Request) -> None:
+    if not _ADMIN_TOKEN:
+        return
+    supplied = _extract_bearer(request)
+    if not _check_admin_token(supplied):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "unhandled_exception",
+        path=request.url.path,
+        method=request.method,
+        error_type=type(exc).__name__,
+        traceback=traceback.format_exc(),
+    )
+    return JSONResponse(status_code=500, content={"detail": "internal error"})
+
+
 # / api endpoints
 
 @app.get("/api/portfolio")
@@ -141,8 +198,10 @@ async def get_portfolio():
     # / pull live data from alpaca, fall back to trade_log
     try:
         broker = _get_broker()
-        balance = await broker.get_account_balance()
-        positions = await broker.get_positions()
+        balance, positions = await asyncio.gather(
+            broker.get_account_balance(),
+            broker.get_positions(),
+        )
         trades_today = _serialize(await _query(
             """SELECT * FROM trade_log
             WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
@@ -447,9 +506,13 @@ async def get_phase5_metrics():
             "kronos": kronos_payload,
         }
     except Exception as exc:
-        logger.warning("phase5_metrics_endpoint_failed", error=str(exc)[:200])
+        logger.warning(
+            "phase5_metrics_endpoint_failed",
+            error=str(exc)[:200],
+            traceback=traceback.format_exc(),
+        )
         return JSONResponse(
-            {"error": "phase5 metrics unavailable", "detail": str(exc)[:200]},
+            {"error": "phase5 metrics unavailable", "detail": "internal error"},
             status_code=500,
         )
 
@@ -587,13 +650,14 @@ async def get_strategies():
     # / compute unrealized pnl from open strategy positions
     try:
         broker = _get_broker()
-        alpaca_positions = await broker.get_positions()
-        price_map = {p.symbol: p.current_price for p in alpaca_positions}
-
-        sp_rows = await _query(
-            """SELECT strategy_id, symbol, qty, avg_entry_price
-            FROM strategy_positions WHERE qty > 0"""
+        alpaca_positions, sp_rows = await asyncio.gather(
+            broker.get_positions(),
+            _query(
+                """SELECT strategy_id, symbol, qty, avg_entry_price
+                FROM strategy_positions WHERE qty > 0"""
+            ),
         )
+        price_map = {p.symbol: p.current_price for p in alpaca_positions}
         unrealized_by_strategy: dict[str, float] = {}
         for sp in sp_rows:
             sid = sp.get("strategy_id")
@@ -709,7 +773,7 @@ async def get_wiki_documents(
 @app.get("/api/wiki/document")
 async def get_wiki_document(path: str):
     # / return raw markdown for a given wiki path; security: must be in wiki_documents table
-    if not path or ".." in path or path.startswith("/"):
+    if not path or ".." in path or path.startswith("/") or "\\" in path or "\x00" in path:
         return JSONResponse({"error": "invalid path"}, status_code=400)
     row = await _query_one(
         "SELECT path, category, title FROM wiki_documents WHERE path = $1", path,
@@ -717,7 +781,12 @@ async def get_wiki_document(path: str):
     if not row:
         return JSONResponse({"error": "not found"}, status_code=404)
     try:
-        from src.knowledge.wiki_writer import WikiWriter
+        from src.knowledge.wiki_writer import WikiWriter, get_wiki_root
+        root = get_wiki_root().resolve()
+        candidate = (root / path).resolve()
+        if not str(candidate).startswith(str(root)):
+            logger.warning("wiki_read_path_escape_blocked", path=path)
+            return JSONResponse({"error": "invalid path"}, status_code=400)
         writer = WikiWriter(pool=_pool)
         content = await writer.read_document(path)
     except Exception as exc:
@@ -1175,7 +1244,7 @@ async def get_chart_state_endpoint(symbol: str):
 
 
 @app.post("/api/chart-state/{symbol}")
-async def upsert_chart_state_endpoint(symbol: str, body: dict):
+async def upsert_chart_state_endpoint(symbol: str, body: dict, _auth: None = Depends(require_admin_token)):
     # / upsert chart state for a symbol — only provided fields are updated
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1227,7 +1296,7 @@ async def list_drawings_endpoint(symbol: str):
 
 
 @app.post("/api/drawings/{symbol}")
-async def create_drawing_endpoint(symbol: str, body: dict):
+async def create_drawing_endpoint(symbol: str, body: dict, _auth: None = Depends(require_admin_token)):
     # / create a drawing from a whitelisted type + opaque jsonb payload
     # / bug e: accept both `drawing_type` (canonical) and `type` (stale-bundle fallback)
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
@@ -1245,7 +1314,7 @@ async def create_drawing_endpoint(symbol: str, body: dict):
 
 
 @app.put("/api/drawings/{symbol}/{drawing_id}")
-async def update_drawing_endpoint(symbol: str, drawing_id: int, body: dict):
+async def update_drawing_endpoint(symbol: str, drawing_id: int, body: dict, _auth: None = Depends(require_admin_token)):
     # / update a drawing's payload — scoped to symbol, 404 on missing or cross-symbol id
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1261,7 +1330,7 @@ async def update_drawing_endpoint(symbol: str, drawing_id: int, body: dict):
 
 
 @app.delete("/api/drawings/{symbol}/{drawing_id}")
-async def delete_drawing_endpoint(symbol: str, drawing_id: int):
+async def delete_drawing_endpoint(symbol: str, drawing_id: int, _auth: None = Depends(require_admin_token)):
     # / delete a single drawing by id — scoped to symbol so a mismatched url cannot bleed across symbols
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1290,7 +1359,7 @@ async def list_alerts_endpoint(symbol: str):
 
 
 @app.post("/api/alerts/{symbol}")
-async def create_alert_endpoint(symbol: str, body: dict):
+async def create_alert_endpoint(symbol: str, body: dict, _auth: None = Depends(require_admin_token)):
     # / create an active alert; 400 on invalid direction/price
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1309,7 +1378,7 @@ async def create_alert_endpoint(symbol: str, body: dict):
 
 
 @app.put("/api/alerts/{symbol}/{alert_id}")
-async def update_alert_endpoint(symbol: str, alert_id: int, body: dict):
+async def update_alert_endpoint(symbol: str, alert_id: int, body: dict, _auth: None = Depends(require_admin_token)):
     # / partial update of an alert row; scoped to symbol, 404 on missing or cross-symbol id
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1325,7 +1394,7 @@ async def update_alert_endpoint(symbol: str, alert_id: int, body: dict):
 
 
 @app.delete("/api/alerts/{symbol}/{alert_id}")
-async def delete_alert_endpoint(symbol: str, alert_id: int):
+async def delete_alert_endpoint(symbol: str, alert_id: int, _auth: None = Depends(require_admin_token)):
     # / hard delete by id — scoped to symbol so a mismatched url cannot bleed across symbols
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
@@ -1900,22 +1969,55 @@ async def get_portfolio_sectors():
         return {"sectors": [], "total_value": 0.0}
 
 
+# / tail-dependence cache: t-copula refit costs 1.6-2.6s per call. cache by
+# / (sorted positions tuple, utc date) so a stable book reads the dashboard
+# / value at near-zero cost. capped at 16 entries — multi-day operation
+# / wouldn't accumulate forever.
+_TAIL_DEP_CACHE: dict[tuple, tuple[dict, float]] = {}
+_TAIL_DEP_TTL_S = 300
+_TAIL_DEP_MAX_ENTRIES = 16
+
+
+def _tail_dep_cache_get(key: tuple) -> dict | None:
+    cached = _TAIL_DEP_CACHE.get(key)
+    if cached is None:
+        return None
+    result, ts = cached
+    if (time.time() - ts) > _TAIL_DEP_TTL_S:
+        _TAIL_DEP_CACHE.pop(key, None)
+        return None
+    return result
+
+
+def _tail_dep_cache_put(key: tuple, value: dict) -> None:
+    if len(_TAIL_DEP_CACHE) >= _TAIL_DEP_MAX_ENTRIES and key not in _TAIL_DEP_CACHE:
+        oldest_key = min(_TAIL_DEP_CACHE.items(), key=lambda kv: kv[1][1])[0]
+        _TAIL_DEP_CACHE.pop(oldest_key, None)
+    _TAIL_DEP_CACHE[key] = (value, time.time())
+
+
 @app.get("/api/portfolio/tail-dependence")
 async def get_portfolio_tail_dependence():
-    # / aggregated t-copula lambda_lower across current positions — computed fresh
-    # / uses the same math as risk_agent._check_tail_dependence but portfolio-wide
     if _pool is None:
         return {"lambda_lower": None, "positions_count": 0, "status": "pool_unavailable"}
     try:
+        from datetime import datetime, timezone
         broker = _get_broker()
         positions = await broker.get_positions()
         if len(positions) < 2:
             return {"lambda_lower": None, "positions_count": len(positions), "status": "insufficient_positions"}
+
+        position_symbols = sorted(p.symbol for p in positions)
+        today = datetime.now(timezone.utc).date()
+        cache_key = (tuple(position_symbols), today)
+        cached = _tail_dep_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         import numpy as np
         from scipy.stats import rankdata
         from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
 
-        position_symbols = [p.symbol for p in positions]
         async with _pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT symbol, date, close FROM market_data
@@ -1940,7 +2042,7 @@ async def get_portfolio_tail_dependence():
         nu, corr = student_t_copula_fit(u_data)
         td = tail_dependence_coefficient("student_t", (nu, corr))
         lam = td.get("lambda_lower", 0.0)
-        return {
+        result = {
             "lambda_lower": round(float(lam), 4),
             "positions_count": len(positions),
             "status": "ok",
@@ -1948,6 +2050,8 @@ async def get_portfolio_tail_dependence():
             "threshold": 0.30,
             "is_concentrated": lam > 0.30,
         }
+        _tail_dep_cache_put(cache_key, result)
+        return result
     except Exception as exc:
         logger.debug("tail_dependence_compute_failed", error=str(exc))
         return {"lambda_lower": None, "positions_count": 0, "status": "compute_failed"}
@@ -2073,16 +2177,14 @@ async def admin_trigger(service: str, request: Request):
     # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
     # / secure-by-default: missing ADMIN_TOKEN → 503, not open access
     from src.agents.loop_registry import enqueue_trigger, LOOP_METADATA
-    expected = os.environ.get("ADMIN_TOKEN")
-    if not expected:
+    if not _ADMIN_TOKEN:
         return JSONResponse(
             {"error": "admin_token_not_configured",
-             "hint": "set ADMIN_TOKEN in .env to enable this endpoint"},
+             "hint": "set ADMIN_TOKEN in .env (>=32 chars) to enable this endpoint"},
             status_code=503,
         )
-    auth = request.headers.get("Authorization", "")
-    supplied = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else ""
-    if supplied != expected:
+    supplied = _extract_bearer(request)
+    if not _check_admin_token(supplied):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if service not in LOOP_METADATA:
         return JSONResponse({"error": "unknown_service", "service": service}, status_code=404)
@@ -2121,7 +2223,27 @@ async def get_env_health():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
+    origin = ws.headers.get("origin")
+    if origin and origin not in _cors_origins:
+        await ws.close(code=1008, reason="origin not allowed")
+        return
+
+    accept_kwargs: dict = {}
+    if _ADMIN_TOKEN:
+        offered = ws.headers.get("sec-websocket-protocol", "")
+        token = ""
+        chosen = None
+        for proto in (p.strip() for p in offered.split(",") if p.strip()):
+            if proto.startswith("bearer."):
+                token = proto[len("bearer."):]
+                chosen = proto
+                break
+        if not _check_admin_token(token):
+            await ws.close(code=1008, reason="unauthorized")
+            return
+        accept_kwargs["subprotocol"] = chosen
+
+    await ws.accept(**accept_kwargs)
     _ws_clients.add(ws)
     try:
         while True:
