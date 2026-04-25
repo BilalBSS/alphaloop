@@ -1,0 +1,1 @@
+import{t as e}from"./tab-system-BGI9aJbt.js";export{e as default};

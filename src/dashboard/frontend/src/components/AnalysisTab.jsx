@@ -63,7 +63,7 @@ function AnalysisHero({ symbols, synthesis, analystLastFire }) {
 // / main tab: synthesis + symbol list or detail view
 export default function AnalysisTab() {
   const [selectedSymbol, setSelectedSymbol] = useState(null)
-  const symbols = useApi('/api/symbols', 60000)
+  const { data: symbols, loading: symbolsLoading } = useApi('/api/symbols', 60000)
   const { data: synthesis } = useApi('/api/synthesis', 120000)
   const { data: loopsData } = useApi('/api/loops', 60000)
   const analystLastFire =
@@ -94,7 +94,7 @@ export default function AnalysisTab() {
   return (
     <div className="space-y-6">
       <AnalysisHero
-        symbols={symbols.data}
+        symbols={symbols}
         synthesis={synthesis}
         analystLastFire={analystLastFire}
       />
@@ -113,8 +113,8 @@ export default function AnalysisTab() {
       </Panel>
       <Panel title="Symbol Analysis">
         <SymbolList
-          symbols={symbols.data}
-          loading={symbols.loading}
+          symbols={symbols}
+          loading={symbolsLoading}
           onSelect={selectSymbol}
         />
       </Panel>

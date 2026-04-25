@@ -1,0 +1,1 @@
+import{t as e}from"./tab-portfolio-C_F8Dc_N.js";export{e as default};

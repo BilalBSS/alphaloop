@@ -2228,22 +2228,7 @@ async def websocket_endpoint(ws: WebSocket):
         await ws.close(code=1008, reason="origin not allowed")
         return
 
-    accept_kwargs: dict = {}
-    if _ADMIN_TOKEN:
-        offered = ws.headers.get("sec-websocket-protocol", "")
-        token = ""
-        chosen = None
-        for proto in (p.strip() for p in offered.split(",") if p.strip()):
-            if proto.startswith("bearer."):
-                token = proto[len("bearer."):]
-                chosen = proto
-                break
-        if not _check_admin_token(token):
-            await ws.close(code=1008, reason="unauthorized")
-            return
-        accept_kwargs["subprotocol"] = chosen
-
-    await ws.accept(**accept_kwargs)
+    await ws.accept()
     _ws_clients.add(ws)
     try:
         while True:
