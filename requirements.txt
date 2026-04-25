@@ -8,7 +8,7 @@ scipy>=1.10.0
 asyncpg>=0.29.0
 httpx>=0.27.0
 websockets>=15.0
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 aiofiles>=23.0.0
 
 # Logging
@@ -34,7 +34,8 @@ lightgbm>=4.0.0
 # / nvidia_* libs we don't use on cpu-only vps). before `pip install -r`, run:
 # /   pip install torch --index-url https://download.pytorch.org/whl/cpu
 # / that forces the ~200 MB cpu-only wheel; the line below is then a no-op.
-transformers>=4.40.0
+# / transformers held at <5 — 5.x is a major rewrite (CVE-2026-1839 fix only in 5.0.0rc3)
+transformers>=4.57.1,<5
 torch>=2.2.0
 psutil>=5.9.0
 # / kronos vendored source deps (src/quant/vendor/kronos/)
@@ -42,7 +43,32 @@ einops>=0.7.0
 huggingface_hub>=0.23.0
 tqdm>=4.65.0
 
+# Security floors for transitive deps (pip-audit 2026-04-25 — 43 CVEs across 17 pkgs)
+# / aiohttp pulled by huggingface_hub/edgartools; CVE fixes land in 3.13.4
+aiohttp>=3.13.5,<4
+# / requests + urllib3 pulled by yfinance/edgartools/transformers
+requests>=2.33.1,<3
+urllib3>=2.6.3,<3
+# / python-multipart pulled by fastapi (form parsing); DoS via crafted multipart
+python-multipart>=0.0.26
+# / pillow pulled by edgartools/streamlit-style deps; 11.x has no patched release for the listed CVEs — bump to 12.x
+pillow>=12.2.0,<13
+# / lxml pulled by edgartools (SEC filing parsing)
+lxml>=6.1.0,<7
+# / tornado pulled by jupyter-style deps if present; harmless floor
+tornado>=6.5.5,<7
+# / pygments pulled by rich/IPython
+pygments>=2.20.0,<3
+# / protobuf pulled by yfinance (peewee→protobuf chain) and tensorboard
+protobuf>=6.33.5,<7
+# / filelock pulled by huggingface_hub
+filelock>=3.20.3
+# / curl-cffi pulled by yfinance for impersonating browsers
+curl-cffi>=0.15.0
+# / setuptools — torch pins <82, CVE fix at >=78.1.1; thread the needle
+setuptools>=78.1.1,<82
+
 # Testing
-pytest>=7.0.0
+pytest>=9.0.3
 pytest-asyncio>=0.21.0
 pytest-timeout>=2.4.0
