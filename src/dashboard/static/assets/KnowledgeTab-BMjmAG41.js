@@ -1,0 +1,1 @@
+import{t as e}from"./tab-knowledge-CWSj20r9.js";export{e as default};

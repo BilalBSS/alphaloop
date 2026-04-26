@@ -1,1 +1,0 @@
-import{t as e}from"./tab-knowledge-CaAuP97e.js";export{e as default};
