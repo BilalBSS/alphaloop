@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from .resilience import api_get, configure_rate_limit, with_retry
+from .symbols import is_crypto
 from src.notifications.notifier import notify_sentiment_shift
 
 logger = structlog.get_logger(__name__)
@@ -18,8 +19,6 @@ logger = structlog.get_logger(__name__)
 APEWISDOM_BASE = "https://apewisdom.io/api/v1.0"
 STOCKTWITS_BASE = "https://api.stocktwits.com/api/2"
 FNG_URL = "https://api.alternative.me/fng/"
-
-from .symbols import is_crypto
 
 configure_rate_limit("apewisdom", max_concurrent=2, delay=1.0)
 configure_rate_limit("stocktwits", max_concurrent=3, delay=1.0)

@@ -340,8 +340,10 @@ async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[di
         for idx, row in df.iterrows():
             ts = idx.to_pydatetime()
             try:
-                o = float(row["Open"]); h = float(row["High"])
-                low = float(row["Low"]); c = float(row["Close"])
+                o = float(row["Open"])
+                h = float(row["High"])
+                low = float(row["Low"])
+                c = float(row["Close"])
             except (ValueError, TypeError, KeyError):
                 continue
             bars.append({

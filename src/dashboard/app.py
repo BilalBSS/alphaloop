@@ -2246,7 +2246,7 @@ async def broadcast(event_type: str, data: dict) -> None:
             await ws.send_text(message)
         except Exception:
             disconnected.add(ws)
-    _ws_clients -= disconnected
+    _ws_clients.difference_update(disconnected)
 
 
 # / serialization helpers for decimal/date/datetime types

@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 
 def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
-    # / sync yfinance call — run via asyncio.to_thread
+    # / sync yfinance call â€” run via asyncio.to_thread
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)

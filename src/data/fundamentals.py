@@ -13,12 +13,10 @@ from typing import Any
 
 import structlog
 
+from .sec_filings import _edgar_semaphore, _edgar_delay
 from .validators import validate_fundamentals
 
 logger = structlog.get_logger(__name__)
-
-# / reuse sec_filings semaphore for edgar rate limiting
-from .sec_filings import _edgar_semaphore, _edgar_delay
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
