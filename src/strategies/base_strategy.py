@@ -497,7 +497,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         reasons = tech_reasons
         if self._requires_fundamentals:
-            reasons = ["fundamentals passed"] + reasons
+            reasons = ["fundamentals passed", *reasons]
 
         return EntrySignal(
             should_enter=True, strength=strength, reasons=reasons,

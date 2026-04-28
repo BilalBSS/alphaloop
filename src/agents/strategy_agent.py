@@ -250,9 +250,8 @@ class StrategyAgent:
                         entry_signal = EntrySignal(
                             should_enter=True,
                             strength=entry_signal.strength * 0.5,
-                            reasons=entry_signal.reasons + [
-                                f"2h misaligned (rsi={rsi_val:.0f}, macd_ok={macd_aligned}), halved",
-                            ],
+                            reasons=[*entry_signal.reasons,
+                                f"2h misaligned (rsi={rsi_val:.0f}, macd_ok={macd_aligned}), halved"],
                         )
                         logger.debug("intraday_gate_halved", symbol=symbol, rsi_2h=rsi_val, macd_aligned=macd_aligned)
                     elif rsi_val < 30 and macd_aligned:
@@ -260,9 +259,8 @@ class StrategyAgent:
                         entry_signal = EntrySignal(
                             should_enter=True,
                             strength=min(1.0, entry_signal.strength * 1.2),
-                            reasons=entry_signal.reasons + [
-                                f"2h confirms entry (rsi={rsi_val:.0f}, macd aligned), boosted 1.2x",
-                            ],
+                            reasons=[*entry_signal.reasons,
+                                f"2h confirms entry (rsi={rsi_val:.0f}, macd aligned), boosted 1.2x"],
                         )
                 except Exception as e:
                     logger.debug("intraday_gate_error", symbol=symbol, error=str(e))
@@ -291,9 +289,8 @@ class StrategyAgent:
                 entry_signal = EntrySignal(
                     should_enter=True,
                     strength=entry_signal.strength * 0.5,
-                    reasons=entry_signal.reasons + [
-                        "ai_consensus: bearish, but symbol uptrend, halved",
-                    ],
+                    reasons=[*entry_signal.reasons,
+                        "ai_consensus: bearish, but symbol uptrend, halved"],
                 )
                 _reason_code = "kept_bearish_uptrend_softened"
                 logger.debug(
@@ -306,9 +303,8 @@ class StrategyAgent:
                 entry_signal = EntrySignal(
                     should_enter=True,
                     strength=entry_signal.strength * 0.4,
-                    reasons=entry_signal.reasons + [
-                        "ai_consensus: bearish, loose mode 0.4x",
-                    ],
+                    reasons=[*entry_signal.reasons,
+                        "ai_consensus: bearish, loose mode 0.4x"],
                 )
                 _reason_code = "kept_bearish_loose_mode"
             else:
@@ -326,7 +322,7 @@ class StrategyAgent:
             entry_signal = EntrySignal(
                 should_enter=True,
                 strength=entry_signal.strength * 0.7,
-                reasons=entry_signal.reasons + ["ai_consensus: disagree, reduced 0.7x"],
+                reasons=[*entry_signal.reasons, "ai_consensus: disagree, reduced 0.7x"],
             )
             _reason_code = "kept_disagree_softened"
         elif consensus == "disagree" and bypass_consensus:
