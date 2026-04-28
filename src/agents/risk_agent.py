@@ -7,11 +7,13 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import pandas as pd
 import structlog
 
 from src.agents import capital_allocator, tools
 from src.agents.circuit_breaker import CircuitBreakerState
 from src.brokers.base import BrokerInterface
+from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
 
 logger = structlog.get_logger(__name__)
 
@@ -361,27 +363,33 @@ class RiskAgent:
     async def _compute_buy_size(
         self, pool, signal: dict, balance, price: float, strength: float,
     ) -> int:
-        # / kelly-weighted sizing + López de Prado activity scaling
+        # / kelly-weighted x activity-scaled
         strategy_id = signal.get("strategy_id") or ""
         max_pct = await capital_allocator.get_allocation(
             pool, strategy_id, max_position_pct_default=self.max_position_pct,
         )
-        activity_scale = 1.0
-        if self._activity_scaling_enabled and strategy_id:
-            try:
-                pending_n = await tools.count_pending_signals_for_strategy(pool, strategy_id)
-                if pending_n > 1:
-                    activity_scale = 1.0 / (pending_n ** 0.5)
-                    logger.debug(
-                        "activity_scaled", strategy_id=strategy_id,
-                        pending=pending_n, scale=round(activity_scale, 3),
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "activity_scale_skipped", strategy_id=strategy_id, error=str(exc)[:80],
-                )
+        activity_scale = await self._get_activity_scale(pool, strategy_id)
         qty_raw = (balance.equity * max_pct * strength * activity_scale) / price
         return max(0, int(qty_raw))
+
+    async def _get_activity_scale(self, pool, strategy_id: str) -> float:
+        # / lópez de prado 1/√n damp on concurrent pending signals
+        if not (self._activity_scaling_enabled and strategy_id):
+            return 1.0
+        try:
+            pending_n = await tools.count_pending_signals_for_strategy(pool, strategy_id)
+            if pending_n > 1:
+                scale = 1.0 / (pending_n ** 0.5)
+                logger.debug(
+                    "activity_scaled", strategy_id=strategy_id,
+                    pending=pending_n, scale=round(scale, 3),
+                )
+                return scale
+        except Exception as exc:
+            logger.debug(
+                "activity_scale_skipped", strategy_id=strategy_id, error=str(exc)[:80],
+            )
+        return 1.0
 
     async def _apply_regime_multiplier(self, pool, symbol: str, qty: int) -> int:
         try:
@@ -512,16 +520,12 @@ class RiskAgent:
         self, pool, symbol: str, positions: list,
     ) -> float | None:
         # / fit t-copula to portfolio returns; returns lambda_lower or None
-        from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
-
         position_symbols = [p.symbol for p in positions] + [symbol]
         rows = await tools.fetch_close_history_batch(
             pool, position_symbols, bars_per_symbol=252,
         )
         if not rows:
             return None
-
-        import pandas as pd
         df = pd.DataFrame([dict(r) for r in rows])
         if len(df) == 0:
             return None
