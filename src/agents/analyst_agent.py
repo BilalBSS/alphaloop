@@ -7,14 +7,20 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import structlog
 
 from src.agents import tools
-from src.analysis.ai_summary import generate_dual_analysis, generate_summary
-from src.analysis.dcf_model import DCFResult, analyze_dcf
+from src.analysis.ai_summary import (
+    DualAnalysis,
+    _build_fallback_summary,
+    generate_dual_analysis,
+    generate_summary,
+)
+from src.analysis.dcf_model import DCFResult, analyze_dcf, store_dcf_result
 from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
 from src.analysis.ratio_analysis import RatioScore, analyze_ratios
@@ -26,6 +32,20 @@ from src.notifications.notifier import notify_analysis_highlight
 from src.quant import kronos_signal
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class DetailContext:
+    # / inputs to _build_full_details; replaces 9-positional-arg signature
+    ratio_score: Any
+    dcf_result: Any
+    earnings_signal: Any
+    insider_signal: Any
+    dual: Any
+    regime: Any
+    symbol_trend: str
+    vix_level: float | None
+    alt_data: dict
 
 
 async def _noop():
@@ -813,10 +833,12 @@ class AnalystAgent:
         fundamental_score = self._compute_fundamental_score(
             ratio_score, dcf_result, earnings_signal, insider_signal,
         )
-        details = self._build_full_details(
-            ratio_score, dcf_result, earnings_signal, insider_signal,
-            dual, regime, symbol_trend, vix_level, alt_data,
-        )
+        details = self._build_full_details(DetailContext(
+            ratio_score=ratio_score, dcf_result=dcf_result,
+            earnings_signal=earnings_signal, insider_signal=insider_signal,
+            dual=dual, regime=regime, symbol_trend=symbol_trend,
+            vix_level=vix_level, alt_data=alt_data,
+        ))
 
         technical_score = _compute_technical_score(indicator_data)
         kronos_score, kronos_details = await _compute_kronos_score(pool, symbol)
@@ -872,7 +894,6 @@ class AnalystAgent:
         if not dcf_result:
             return
         try:
-            from src.analysis.dcf_model import store_dcf_result
             await store_dcf_result(pool, dcf_result, regime=regime)
         except Exception as exc:
             logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
@@ -924,56 +945,56 @@ class AnalystAgent:
                 indicators=indicator_data, sentiment=sentiment_data,
                 positions=strat_positions,
             )
-            from src.analysis.ai_summary import DualAnalysis
             return DualAnalysis(
                 groq=groq_only, deepseek=None,
                 consensus=groq_only.signal, consensus_confidence=groq_only.confidence,
             )
         except Exception as exc:
             logger.warning("analyst_llm_failed", symbol=symbol, error=str(exc))
-            from src.analysis.ai_summary import DualAnalysis, _build_fallback_summary
             fallback = _build_fallback_summary(symbol, ratio_score, dcf_result, earnings_signal, insider_signal)
             return DualAnalysis(
                 groq=fallback, deepseek=None,
                 consensus=fallback.signal, consensus_confidence=fallback.confidence,
             )
 
-    def _build_full_details(
-        self, ratio_score, dcf_result, earnings_signal, insider_signal,
-        dual, regime, symbol_trend: str, vix_level, alt_data: dict,
-    ) -> dict:
+    def _build_full_details(self, ctx: DetailContext) -> dict:
         # / compose the analysis_scores.details jsonb payload
-        details = self._build_details(ratio_score, dcf_result, earnings_signal, insider_signal, dual.groq)
-        if ratio_score and ratio_score.composite_score is not None:
-            details["ratio_score_100"] = ratio_score.composite_score
-        if dcf_result and dcf_result.upside_pct is not None:
-            details["dcf_score_100"] = round(max(0.0, min(100.0, (dcf_result.upside_pct + 0.5) / 1.0 * 100)), 1)
-        if earnings_signal and earnings_signal.strength is not None:
-            details["earnings_score_100"] = earnings_signal.strength
-        if insider_signal and insider_signal.strength is not None:
-            details["insider_score_100"] = insider_signal.strength
-            details["insider_signed_strength"] = insider_signal.signed_strength
-        details["ai_consensus"] = dual.consensus
-        details["ai_consensus_confidence"] = dual.consensus_confidence if hasattr(dual, "consensus_confidence") else 0.0
-        details["symbol_trend"] = symbol_trend
-        details["llm_analysis_groq"] = dual.groq.summary
-        details["llm_signal_groq"] = dual.groq.signal
-        details["llm_model_groq"] = dual.groq.model_used
-        if dual.deepseek:
-            details["llm_analysis_deepseek"] = dual.deepseek.summary
-            details["llm_signal_deepseek"] = dual.deepseek.signal
-            details["llm_model_deepseek"] = dual.deepseek.model_used
-        details["regime"] = regime
-        if vix_level is not None:
-            details["vix"] = vix_level
+        details = self._build_details(
+            ctx.ratio_score, ctx.dcf_result, ctx.earnings_signal,
+            ctx.insider_signal, ctx.dual.groq,
+        )
+        if ctx.ratio_score and ctx.ratio_score.composite_score is not None:
+            details["ratio_score_100"] = ctx.ratio_score.composite_score
+        if ctx.dcf_result and ctx.dcf_result.upside_pct is not None:
+            details["dcf_score_100"] = round(max(0.0, min(100.0, (ctx.dcf_result.upside_pct + 0.5) / 1.0 * 100)), 1)
+        if ctx.earnings_signal and ctx.earnings_signal.strength is not None:
+            details["earnings_score_100"] = ctx.earnings_signal.strength
+        if ctx.insider_signal and ctx.insider_signal.strength is not None:
+            details["insider_score_100"] = ctx.insider_signal.strength
+            details["insider_signed_strength"] = ctx.insider_signal.signed_strength
+        details["ai_consensus"] = ctx.dual.consensus
+        details["ai_consensus_confidence"] = (
+            ctx.dual.consensus_confidence if hasattr(ctx.dual, "consensus_confidence") else 0.0
+        )
+        details["symbol_trend"] = ctx.symbol_trend
+        details["llm_analysis_groq"] = ctx.dual.groq.summary
+        details["llm_signal_groq"] = ctx.dual.groq.signal
+        details["llm_model_groq"] = ctx.dual.groq.model_used
+        if ctx.dual.deepseek:
+            details["llm_analysis_deepseek"] = ctx.dual.deepseek.summary
+            details["llm_signal_deepseek"] = ctx.dual.deepseek.signal
+            details["llm_model_deepseek"] = ctx.dual.deepseek.model_used
+        details["regime"] = ctx.regime
+        if ctx.vix_level is not None:
+            details["vix"] = ctx.vix_level
         for key in (
             "macro_score", "congressional_buy_ratio", "analyst_consensus",
             "price_target_upside", "earnings_revision_momentum", "short_pct_float",
             "dark_pool_ratio", "iv_rank", "put_call_ratio", "days_to_earnings",
             "intermarket_score", "sector_relative_strength",
         ):
-            if key in alt_data and alt_data[key] is not None:
-                details[key] = alt_data[key]
+            if key in ctx.alt_data and ctx.alt_data[key] is not None:
+                details[key] = ctx.alt_data[key]
         return details
 
     def _compute_composite(
