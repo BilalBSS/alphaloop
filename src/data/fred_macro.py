@@ -124,7 +124,7 @@ async def fetch_macro_indicators(pool: Any) -> dict[str, Any]:
 
 def get_macro_score(indicators: dict[str, Any]) -> float:
     scores: list[float] = []
-    for key, data in indicators.items():
+    for data in indicators.values():
         if isinstance(data, dict) and "normalized" in data:
             scores.append(data["normalized"])
     if not scores:

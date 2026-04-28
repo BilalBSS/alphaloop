@@ -433,7 +433,7 @@ def _compute_sector_averages(data: list[dict[str, Any]]) -> None:
         sector = d.get("sector", "Unknown")
         sectors.setdefault(sector, []).append(d)
 
-    for sector, items in sectors.items():
+    for items in sectors.values():
         pe_values = [d["pe_ratio"] for d in items if d.get("pe_ratio") is not None]
         ps_values = [d["ps_ratio"] for d in items if d.get("ps_ratio") is not None]
         fcf_values = [d["fcf_margin"] for d in items if d.get("fcf_margin") is not None]

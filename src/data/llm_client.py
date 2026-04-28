@@ -150,7 +150,7 @@ async def get_llm_client(provider: str) -> httpx.AsyncClient:
 
 async def close_llm_clients() -> None:
     # / call on shutdown to cleanly close all llm clients
-    for name, client in list(_clients.items()):
+    for client in list(_clients.values()):
         if client is not None and not client.is_closed:
             await client.aclose()
     _clients.clear()

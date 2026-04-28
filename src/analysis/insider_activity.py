@@ -74,7 +74,7 @@ def _detect_cluster(trades: list[dict[str, Any]], window_days: int = CLUSTER_WIN
         return False
 
     # / check for cluster: N+ unique insiders buying within window
-    for i, trade in enumerate(buys):
+    for trade in buys:
         trade_date = trade.get("filing_date")
         if not trade_date:
             continue

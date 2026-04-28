@@ -167,7 +167,7 @@ def get_funding_rate(funding_data: dict[str, Any], symbol: str) -> dict[str, Any
     sym = symbol.upper().replace("-USD", "")
     rates = funding_data.get("funding_rates", {})
     values = []
-    for exchange, exchange_rates in rates.items():
+    for exchange_rates in rates.values():
         if not isinstance(exchange_rates, dict):
             continue
         val = exchange_rates.get(sym)
