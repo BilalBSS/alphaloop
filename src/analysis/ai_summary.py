@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -1058,14 +1059,12 @@ Output ONLY valid JSON. No explanation outside the JSON."""
         fallback_body = "\n".join(raw_attempts) + ("\n--errors--\n" + "; ".join(errors) if errors else "")
         if not fallback_body.strip():
             fallback_body = raw or "; ".join(errors) or "<no response>"
-        try:
+        with contextlib.suppress(Exception):
             await store_daily_synthesis(
                 pool, today, "deepseek-reasoner",
                 None, None, None, None,
                 fallback_body[:2000],
             )
-        except Exception:
-            pass
         return None
 
     try:

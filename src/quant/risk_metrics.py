@@ -154,7 +154,7 @@ def evt_tail_estimation(
 
     # / fit GPD to exceedances
     try:
-        shape, loc, scale = stats.genpareto.fit(exceedances, floc=0)
+        shape, _, scale = stats.genpareto.fit(exceedances, floc=0)
     except Exception as e:
         logger.warning("gpd_fit_failed", error=str(e))
         return {

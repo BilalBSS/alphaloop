@@ -35,6 +35,7 @@ logger = structlog.get_logger(__name__)
 _pool: asyncpg.Pool | None = None
 _ws_clients: set[WebSocket] = set()
 _broker = None
+_feature_bench_cache: dict = {}
 
 STATIC_DIR = Path(__file__).parent / "static"
 STRATEGY_CONFIGS_DIR = (Path(__file__).parent.parent.parent / "configs" / "strategies").resolve()
@@ -1653,11 +1654,6 @@ async def get_feature_benchmark(symbol: str = "SPY"):
     # / phase 6 step 9: run the handbuilt vs alpha158 a/b on one symbol's 5y daily bars
     # / cached per symbol for an hour so the button is cheap to press repeatedly
     import time as _time
-    global _feature_bench_cache
-    try:
-        _feature_bench_cache  # type: ignore[name-defined]
-    except NameError:
-        _feature_bench_cache = {}
     cache_key = symbol.upper()
     now = _time.time()
     hit = _feature_bench_cache.get(cache_key)

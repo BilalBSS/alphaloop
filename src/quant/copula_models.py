@@ -43,7 +43,7 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
     if u_data.shape[0] < 5:
         raise ValueError(f"need at least 5 observations, got {u_data.shape[0]}")
 
-    n_samples, n_vars = u_data.shape
+    _, n_vars = u_data.shape
     u_clipped = np.clip(u_data, 1e-10, 1 - 1e-10)
 
     # / step 1: estimate correlation matrix via Kendall's tau (nu-independent)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -89,10 +90,8 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         needs_xbrl = (shares is None or total_cash is None or operating_cf is None
                       or total_liabilities is None or total_equity is None)
         if needs_xbrl:
-            try:
+            with contextlib.suppress(Exception):
                 facts = company.get_facts()
-            except Exception:
-                pass
 
         if shares is None:
             shares = _xbrl_fact(facts, [

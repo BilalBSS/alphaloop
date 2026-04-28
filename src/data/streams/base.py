@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from abc import ABC, abstractmethod
 from collections import deque
@@ -248,10 +249,8 @@ class StreamBase(ABC):
         for task in (self._run_task, self._watchdog_task):
             if task is not None and not task.done():
                 task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
         logger.info("stream_stopped", stream=self.name,
                     ticks=self.state.total_ticks,
                     reconnects=self.state.reconnect_attempts)
@@ -318,10 +317,8 @@ class StreamBase(ABC):
                 # / cancel the current connect task — the run loop will reconnect
                 if self._run_task and not self._run_task.done():
                     self._run_task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await self._run_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
                     self._run_task = asyncio.create_task(
                         self._run_loop(), name=f"{self.name}_stream",
                     )

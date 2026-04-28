@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -544,10 +545,8 @@ async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
                 pass
         return result
 
-    try:
+    with contextlib.suppress(Exception):
         prices = await asyncio.to_thread(_fetch_batch)
-    except Exception:
-        pass
     return prices
 
 
