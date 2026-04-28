@@ -1,16 +1,5 @@
-# / phase 5 success-criteria metrics
-# / measure whether the flywheel actually spins
-# /
-# / all phase 5 success criteria from plans/phase5-activation.md are measurable
-# / via SQL over our own tables. this module computes them in one shot so the
-# / dashboard Health tab can render a "flywheel health" panel.
-# /
-# / success criteria (from plan):
-# /   - at least 1 strategy killed+replaced in 30d via evolution
-# /   - brier populated for >= 3 strategies
-# /   - cerebras call count > 0 weekly
-# /   - wiki "established" docs > 15
-# /   - regime diversity > 2 per asset class
+# / flywheel health metrics
+# / sql-only, surfaced via dashboard health tab
 
 from __future__ import annotations
 

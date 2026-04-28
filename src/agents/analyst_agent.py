@@ -214,23 +214,7 @@ class AnalystAgent:
         min_refresh_interval_s: float = 0.0,
         inter_symbol_sleep_s: float = 0.5,
     ) -> dict[str, float | None]:
-        # / batched analysis cycle. processes oldest-scored symbols first until
-        # / wall_clock_budget_s elapses. the orchestrator sets a short budget
-        # / (e.g. 420s) and a 10-min asyncio timeout above, so one stuck symbol
-        # / can't deadlock the loop and one slow cycle can't eat the next.
-        # /
-        # / args:
-        # /   wall_clock_budget_s: abort after N elapsed seconds. None = process all.
-        # /   per_symbol_timeout_s: bound per _analyze_symbol call (prevents one bad
-        # /       symbol eating the full budget).
-        # /   min_refresh_interval_s: skip symbols refreshed within this window
-        # /       (0 = no skip; avoids thrash when same subset keeps bubbling up).
-        # /   inter_symbol_sleep_s: rate-limit gap (0.5s default; was 2s, but
-        # /       per-symbol parallelization within the pipeline already serializes
-        # /       LLM calls, so a long inter-symbol pause was double-counting).
-        # /
-        # / run_deepseek=False → groq only (20-min cadence).
-        # / run_deepseek=True  → dual-llm consensus (30-min cadence).
+        # / batched cycle, oldest-scored first, time-budgeted
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
         self._macro_cache = None    # / reset per cycle

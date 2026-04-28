@@ -1,15 +1,5 @@
-# / shared primitives for websocket streams: buffer, circuit breaker, lifecycle.
-# /
-# / any vendor-specific stream module subclasses StreamBase and implements:
-# /   - _connect_and_consume(): coroutine that opens the ws and emits ticks
-# /   - name: short identifier for logs/metrics (e.g. "alpaca", "coinbase")
-# /
-# / the base class wraps that coroutine with:
-# /   - exponential backoff reconnect (1s → 2s → 4s → ... cap 60s)
-# /   - circuit breaker (3 disconnects within 5 min → open → fallback)
-# /   - tick watchdog (force reconnect if no tick received for N seconds)
-# /   - graceful shutdown on .stop()
-# /   - bounded in-memory tick buffer per symbol (drop-oldest past max_size)
+# / shared ws stream base
+# / reconnect, circuit breaker, watchdog, bounded buffer
 
 from __future__ import annotations
 

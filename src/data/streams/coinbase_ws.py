@@ -1,14 +1,5 @@
-# / coinbase advanced-trade-ws public ticker stream (no auth required)
-# /
-# / protocol: wss://advanced-trade-ws.coinbase.com
-# /   client sends {type:"subscribe", product_ids:[...], channel:"ticker"}
-# /   server streams messages of shape:
-# /     {channel:"ticker", timestamp:"...", events:[{type:"update", tickers:[{
-# /         product_id:"BTC-USD", price:"70123.45", volume_24_h:"...", best_bid, best_ask, ...
-# /     }]}]}
-# /
-# / product ids match internal symbol format exactly (BTC-USD, ETH-USD, ...),
-# / no translation needed.
+# / coinbase advanced-trade ticker stream
+# / no auth, product_ids match internal symbols
 
 from __future__ import annotations
 

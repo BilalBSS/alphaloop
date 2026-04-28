@@ -1,17 +1,5 @@
 # / kronos candle-sequence signal
-# / orthogonal signal source to lightgbm
-# /
-# / real kronos (shiyu-coder/Kronos, AAAI 2026) is a transformer that tokenizes
-# / ohlcv candles and predicts the next-candle distribution. ~100m-1b params.
-# /
-# / this module exposes a predict() interface that:
-# /   - uses the real HF model if KRONOS_ENABLED=true AND transformers is available
-# /   - otherwise returns a statistical-baseline probability (honest fallback, not
-# /     pretending to be the neural model)
-# /
-# / the fallback is a weighted combination of momentum, volatility compression,
-# / and short-term mean reversion — useful on its own and a reasonable floor
-# / while the real model is being set up on the vps.
+# / hf model when enabled, statistical fallback otherwise
 
 from __future__ import annotations
 

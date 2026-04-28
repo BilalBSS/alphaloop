@@ -1,17 +1,5 @@
-# / alpaca iex stream — paper/free tier stocks websocket
-# /
-# / protocol: wss://stream.data.alpaca.markets/v2/iex
-# /   1. connect
-# /   2. server sends [{T:"success", msg:"connected"}]
-# /   3. client sends {action:"auth", key, secret}
-# /   4. server sends [{T:"success", msg:"authenticated"}]
-# /   5. client sends {action:"subscribe", trades:[...], quotes:[...]}
-# /   6. server streams arrays of event objects:
-# /      - trade  {T:"t", S:"AAPL", p:182.34, s:100, t:"2026-04-20T13:30:00.123456789Z"}
-# /      - quote  {T:"q", S:"AAPL", bp:182.33, ap:182.35, bs:1, as:2, t:"..."}
-# /      - subscription/success/error frames
-# /
-# / reconnect + watchdog live in StreamBase; this module handles protocol only.
+# / alpaca iex websocket — protocol only
+# / reconnect/watchdog handled by StreamBase
 
 from __future__ import annotations
 

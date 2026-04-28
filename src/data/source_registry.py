@@ -1,13 +1,5 @@
-# / central registry for alternative data sources
-# / adding a new alt-data source = one register() call, no core-file edits
-# / each source declares how to fetch, store, and surface its value:
-# /   - fetch: async(symbol, pool?) -> dict|None (or async(pool) -> dict for global sources)
-# /   - store: async(pool, data, symbol?) -> None (or async(pool, symbol, data))
-# /   - table: postgres table name (for endpoints + tests)
-# /   - analysis_field: AnalysisData field name to populate
-# /   - filter_config_key: base_strategy filter config key
-# /   - cadence_seconds: how often the orchestrator refreshes this source
-# / modeled on src/dashboard/indicator_registry.py
+# / central registry for alt-data sources
+# / one register() call adds a source
 
 from __future__ import annotations
 

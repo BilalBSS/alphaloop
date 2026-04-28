@@ -1,19 +1,5 @@
 # / kelly-weighted capital allocator
-# /
-# / the risk agent used to size every position as a fixed pct of equity.
-# / with 30+ strategies competing for the same $100k, that sizing ignores
-# / performance differences — top-quartile strategies get the same dollars
-# / as bottom-quartile ones.
-# /
-# / this allocator computes a per-strategy weight that blends:
-# /   - kelly_fraction from the strategy config (a preference signal)
-# /   - a rank_weight derived from composite_score (top quartile = 2.0,
-# /     middle = 1.0, bottom = 0.5) — punishes drift, rewards edge
-# /   - a trade_count floor so we don't engage kelly until we have 30 trades
-# /     of history; thin samples blow up kelly
-# /
-# / refreshed weekly via the orchestrator. writes to strategy_allocations.
-# / risk_agent reads this table when sizing positions.
+# / writes strategy_allocations weekly
 
 from __future__ import annotations
 

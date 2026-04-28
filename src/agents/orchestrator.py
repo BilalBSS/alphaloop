@@ -32,10 +32,7 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
-# / analyst + deepseek switched to batched staleness-ordered runs.
-# / each cycle is time-budgeted (ANALYST_BUDGET_S / DEEPSEEK_BUDGET_S) so the
-# / 10-min loop_registry timeout acts as a hard ceiling, not the usual case.
-# / full-universe refresh = 3 batches/hour for analyst, 2/hour for deepseek.
+# / batched staleness-ordered runs, time-budgeted
 ANALYST_MARKET_HOURS = 1200      # / 20 minutes (3 batches/hour, staleness-ordered)
 ANALYST_OFF_HOURS = 1800         # / 30 minutes (slower off-hours)
 ANALYST_BUDGET_S = 420.0         # / 7 min wall-clock budget per batch

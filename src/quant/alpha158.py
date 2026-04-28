@@ -1,17 +1,5 @@
-# / alpha158 feature set — port of microsoft qlib's reference feature library
-# / benchmark feature set for ml_signals.py
-# /
-# / qlib's Alpha158 defines ~158 features across 9 families. this module
-# / implements a representative subset covering every family, computed in pure
-# / pandas/numpy so we don't vendor qlib.
-# /
-# / usage:
-# /   from src.quant.alpha158 import compute_alpha158
-# /   features = compute_alpha158(ohlcv_df)  # -> dataframe with ~60 feature cols
-# /
-# / then: cross-validate lightgbm on alpha158 features vs our hand-built features
-# / in ml_signals.build_features(). whichever has better brier score on held-out
-# / data wins. alpha158 is the floor we must beat to keep using our custom set.
+# / alpha158 feature set port from qlib
+# / pure pandas/numpy, ~60 features
 
 from __future__ import annotations
 
