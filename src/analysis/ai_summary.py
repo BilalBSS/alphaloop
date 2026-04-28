@@ -872,23 +872,9 @@ async def generate_dual_analysis(
     )
 
 
-async def generate_daily_synthesis(
-    pool: Any,
-    symbols: list[str],
-) -> dict[str, Any] | None:
-    # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
-    # / reads all today's data, produces top buys/avoids/risk assessment
-    from src.agents.tools import store_daily_synthesis
-
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-    if not deepseek_key:
-        logger.info("no_deepseek_key_skipping_synthesis")
-        return None
-
-    # / gather latest analysis scores — use today, fall back to most recent day
+async def _fetch_synthesis_scores(pool, today: date) -> list[dict]:
+    # / today's scores, fall back to last 3 days
     from datetime import timedelta as _td
-    today = date.today()
-    scores = []
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -900,7 +886,6 @@ async def generate_daily_synthesis(
                 today,
             )
             scores = [dict(r) for r in rows]
-            # / if no scores today (weekend/holiday/timing), grab most recent day
             if not scores:
                 rows = await conn.fetch(
                     """SELECT symbol, composite_score, regime,
@@ -913,93 +898,110 @@ async def generate_daily_synthesis(
                 scores = [dict(r) for r in rows]
                 if scores:
                     logger.info("synthesis_using_recent_scores", count=len(scores), lookback_days=3)
+            return scores
     except Exception as exc:
         logger.warning("synthesis_fetch_scores_failed", error=str(exc))
+        return []
 
-    if not scores:
-        logger.info("synthesis_no_data_recent")
-        return None
 
-    # / build the prompt
+def _format_score_lines(scores: list[dict]) -> str:
     top_scores = scores[:30]
     bottom_scores = scores[-20:] if len(scores) > 30 else []
-    score_lines = []
-    for s in top_scores:
-        score_lines.append(
+    lines = [
+        f"  {s.get('symbol', '?')}: score={s.get('composite_score', 0)}, "
+        f"consensus={s.get('ai_consensus', '--')}, regime={s.get('regime', '--')}"
+        for s in top_scores
+    ]
+    if bottom_scores:
+        lines.append("\n  --- BOTTOM PERFORMERS ---")
+        lines.extend(
             f"  {s.get('symbol', '?')}: score={s.get('composite_score', 0)}, "
             f"consensus={s.get('ai_consensus', '--')}, regime={s.get('regime', '--')}"
+            for s in bottom_scores
         )
-    if bottom_scores:
-        score_lines.append("\n  --- BOTTOM PERFORMERS ---")
-        for s in bottom_scores:
-            score_lines.append(
-                f"  {s.get('symbol', '?')}: score={s.get('composite_score', 0)}, "
-                f"consensus={s.get('ai_consensus', '--')}, regime={s.get('regime', '--')}"
-            )
-    score_text = "\n".join(score_lines)
+    return "\n".join(lines)
 
-    # / ground the narrative in actual holdings. without this the LLM's
-    # / "portfolio_risk" paragraph referenced arbitrary scored tickers as if we
-    # / owned them — user flagged it as "synthesis shows stuff that never
-    # / happened". the prompt now separates OWNED positions from watchlist scores.
-    positions_text = ""
-    owned_symbols: set[str] = set()
+
+async def _fetch_positions_text(pool) -> str:
+    # / ground the narrative in actual holdings, not watchlist scores
     try:
         async with pool.acquire() as conn:
-            pos_rows = await conn.fetch(
-                """SELECT strategy_id, symbol, qty, avg_entry_price, updated_at
+            rows = await conn.fetch(
+                """SELECT strategy_id, symbol, qty, avg_entry_price
                 FROM strategy_positions WHERE qty > 0
                 ORDER BY symbol"""
             )
-        if pos_rows:
-            lines = []
-            for r in pos_rows:
-                owned_symbols.add(r["symbol"])
-                lines.append(
-                    f"  {r['symbol']}: qty={float(r['qty']):.2f} "
-                    f"entry=${float(r['avg_entry_price'] or 0):.2f} "
-                    f"strategy={r['strategy_id']}"
-                )
-            positions_text = (
-                "\n\nCURRENT OPEN POSITIONS (ground truth — these are the ONLY symbols we actually own):\n"
-                + "\n".join(lines)
-            )
-        else:
-            positions_text = "\n\nCURRENT OPEN POSITIONS: none (flat portfolio)."
+        if not rows:
+            return "\n\nCURRENT OPEN POSITIONS: none (flat portfolio)."
+        lines = [
+            f"  {r['symbol']}: qty={float(r['qty']):.2f} "
+            f"entry=${float(r['avg_entry_price'] or 0):.2f} "
+            f"strategy={r['strategy_id']}"
+            for r in rows
+        ]
+        return (
+            "\n\nCURRENT OPEN POSITIONS (ground truth — these are the ONLY symbols we actually own):\n"
+            + "\n".join(lines)
+        )
     except Exception as exc:
         logger.debug("synthesis_positions_failed", error=str(exc)[:100])
+        return ""
 
-    # / inject live strategy performance so synthesis reasons about active strategies
-    # / not just symbol scores. paper must mirror live — same feedback that live would give.
-    strategy_text = ""
+
+async def _fetch_strategy_metrics_text(pool, today: date) -> str:
+    from datetime import timedelta as _td
     try:
         async with pool.acquire() as conn:
-            strat_rows = await conn.fetch(
-                """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio, sortino_ratio,
-                    win_rate, max_drawdown, composite_score, total_trades, regime_breakdown
+            rows = await conn.fetch(
+                """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio,
+                    win_rate, max_drawdown, total_trades
                 FROM strategy_scores
                 WHERE period_end >= $1
                 ORDER BY strategy_id, created_at DESC""",
                 today - _td(days=7),
             )
-        if strat_rows:
-            lines = []
-            for r in strat_rows:
-                sharpe = float(r["sharpe_ratio"]) if r["sharpe_ratio"] is not None else None
-                wr = float(r["win_rate"]) if r["win_rate"] is not None else None
-                dd = float(r["max_drawdown"]) if r["max_drawdown"] is not None else None
-                parts_ = []
-                if sharpe is not None:
-                    parts_.append(f"sharpe {sharpe:.2f}")
-                if wr is not None:
-                    parts_.append(f"win {wr * 100:.0f}%")
-                if dd is not None:
-                    parts_.append(f"maxdd {dd * 100:.1f}%")
-                parts_.append(f"{r['total_trades'] or 0} closed")
-                lines.append(f"  {r['strategy_id']}: {', '.join(parts_)}")
-            strategy_text = "\n\nLIVE STRATEGY METRICS (last 7d, paper + live combined):\n" + "\n".join(lines)
+        if not rows:
+            return ""
+        lines = []
+        for r in rows:
+            sharpe = float(r["sharpe_ratio"]) if r["sharpe_ratio"] is not None else None
+            wr = float(r["win_rate"]) if r["win_rate"] is not None else None
+            dd = float(r["max_drawdown"]) if r["max_drawdown"] is not None else None
+            parts_ = []
+            if sharpe is not None:
+                parts_.append(f"sharpe {sharpe:.2f}")
+            if wr is not None:
+                parts_.append(f"win {wr * 100:.0f}%")
+            if dd is not None:
+                parts_.append(f"maxdd {dd * 100:.1f}%")
+            parts_.append(f"{r['total_trades'] or 0} closed")
+            lines.append(f"  {r['strategy_id']}: {', '.join(parts_)}")
+        return "\n\nLIVE STRATEGY METRICS (last 7d, paper + live combined):\n" + "\n".join(lines)
     except Exception as exc:
         logger.debug("synthesis_strategy_metrics_failed", error=str(exc)[:100])
+        return ""
+
+
+async def generate_daily_synthesis(
+    pool: Any,
+    symbols: list[str],
+) -> dict[str, Any] | None:
+    # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
+    from src.agents.tools import store_daily_synthesis
+
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        logger.info("no_deepseek_key_skipping_synthesis")
+        return None
+
+    today = date.today()
+    scores = await _fetch_synthesis_scores(pool, today)
+    if not scores:
+        logger.info("synthesis_no_data_recent")
+        return None
+
+    score_text = _format_score_lines(scores)
+    positions_text = await _fetch_positions_text(pool)
+    strategy_text = await _fetch_strategy_metrics_text(pool, today)
 
     prompt = f"""You are a senior portfolio analyst. Review today's data across all symbols and produce a structured assessment.
 
