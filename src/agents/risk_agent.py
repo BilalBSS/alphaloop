@@ -116,17 +116,13 @@ class RiskAgent:
         # / long-only guard: reject sells that would create a short
         if self._long_only and side == "sell":
             positions_check = await broker.get_positions()
-            held = next(
-                (p for p in positions_check
-                 if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol),
-                None,
-            )
+            held = next((p for p in positions_check if p.symbol == symbol), None)
             if not held:
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "long_only_no_position")
                 logger.info("long_only_rejected", symbol=symbol, signal_id=signal_id)
                 return {"status": "rejected", "reason": "long_only_no_position"}
             # / cap sell qty to actual alpaca position — never go short
-            held_qty = held.qty if hasattr(held, "qty") else float(held.get("qty", 0))
+            held_qty = held.qty
             signal_qty = float(signal.get("details", {}).get("qty", 0)) if signal.get("details") else 0
             if signal_qty > held_qty:
                 signal["details"] = signal.get("details") or {}
@@ -158,8 +154,7 @@ class RiskAgent:
                     return {"status": "rejected", "reason": "already_holding"}
             else:
                 # / fallback for signals without strategy_id
-                existing_pos = [p for p in positions
-                               if (p.symbol if hasattr(p, "symbol") else p.get("symbol")) == symbol]
+                existing_pos = [p for p in positions if p.symbol == symbol]
                 if existing_pos:
                     await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "already_holding")
                     return {"status": "rejected", "reason": "already_holding"}

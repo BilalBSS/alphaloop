@@ -412,8 +412,8 @@ class AgentOrchestrator:
                             account = await broker.get_account_balance()
                             positions = await broker.get_positions()
                             portfolio = {
-                                "value": account.get("portfolio_value", 0),
-                                "daily_pnl": account.get("daily_pnl", 0),
+                                "value": account.portfolio_value,
+                                "daily_pnl": 0,
                                 "positions": len(positions),
                                 "strategies": self._strategy_pool.size,
                             }
@@ -1105,13 +1105,13 @@ class AgentOrchestrator:
 
     async def _run_alternative_data_registry_cycle(self) -> None:
         # / canonical path — iterate registered alt-data sources
-        from src.data.source_registry import all_sources
+        from src.data.source_registry import AltDataSource, all_sources
         from src.data.symbols import get_sector
 
         sources = all_sources()
         # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
         # / (for two fields) but we only want to hit yfinance once per symbol
-        by_name_deduped: dict[str, AltDataSource] = {}  # noqa: F821
+        by_name_deduped: dict[str, AltDataSource] = {}
         for src in sources:
             by_name_deduped.setdefault(src.name, src)
 
