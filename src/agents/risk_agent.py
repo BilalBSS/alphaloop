@@ -5,28 +5,15 @@
 from __future__ import annotations
 
 import os
-import time
 
 import numpy as np
 import structlog
 
 from src.agents import capital_allocator, tools
+from src.agents.circuit_breaker import CircuitBreakerState
 from src.brokers.base import BrokerInterface
 
 logger = structlog.get_logger(__name__)
-
-# / circuit breaker state (module-level)
-_peak_equity: float = 0.0
-_circuit_breaker_until: float = 0.0
-
-
-async def _init_peak_equity(pool) -> None:
-    # / restore peak equity from db on startup
-    global _peak_equity
-    restored = await tools.fetch_peak_equity(pool)
-    if restored > 0:
-        _peak_equity = restored
-        logger.info("peak_equity_restored", peak=restored)
 
 
 class RiskAgent:
@@ -70,6 +57,10 @@ class RiskAgent:
         self._regime_multipliers = rl.get("regime_sizing_multipliers", {
             "bull": 1.0, "sideways": 0.75, "bear": 0.5, "high_vol": 0.5, "insufficient_data": 0.5,
         })
+        self._cb = CircuitBreakerState(
+            max_drawdown=self._max_drawdown_hard_stop,
+            loss_pause_seconds=int(self._consecutive_loss_seconds),
+        )
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -139,9 +130,8 @@ class RiskAgent:
             return {"status": "rejected", "reason": "zero_equity"}
 
         # / lazy-init peak equity from db on first call
-        global _peak_equity, _circuit_breaker_until
-        if _peak_equity == 0.0 and balance.equity > 0:
-            await _init_peak_equity(pool)
+        if balance.equity > 0:
+            await self._cb.init_from_db(pool)
 
         # / reject buy if this strategy already holds this symbol
         # / different strategies can hold the same symbol independently
@@ -168,25 +158,20 @@ class RiskAgent:
 
         # / circuit breaker: drawdown from peak
         if side == "buy":
-            _peak_equity = max(_peak_equity, balance.equity)
-            try:
-                await tools.store_peak_equity(pool, balance.equity, _peak_equity)
-            except Exception as exc:
-                logger.debug("store_peak_equity_failed", error=str(exc)[:80])
-            if _peak_equity > 0:
-                drawdown = (balance.equity - _peak_equity) / _peak_equity
-                if drawdown < self._max_drawdown_hard_stop:
-                    await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_drawdown")
-                    logger.warning("circuit_breaker_drawdown", drawdown=drawdown, threshold=self._max_drawdown_hard_stop)
-                    return {"status": "rejected", "reason": f"circuit_breaker_drawdown ({drawdown:.2%})"}
+            await self._cb.update_peak(pool, balance.equity)
+            if self._cb.hard_stop_breached(balance.equity):
+                drawdown = self._cb.current_drawdown(balance.equity)
+                await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_drawdown")
+                logger.warning("circuit_breaker_drawdown", drawdown=drawdown, threshold=self._max_drawdown_hard_stop)
+                return {"status": "rejected", "reason": f"circuit_breaker_drawdown ({drawdown:.2%})"}
 
             # / circuit breaker: consecutive losses
-            if time.time() < _circuit_breaker_until:
+            if self._cb.is_paused():
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_losses")
                 return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
             recent_pnl = await tools.fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
             if len(recent_pnl) >= self._consecutive_loss_pause and all(p < 0 for p in recent_pnl):
-                _circuit_breaker_until = time.time() + self._consecutive_loss_seconds
+                self._cb.record_loss_pause()
                 await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", "circuit_breaker_losses")
                 logger.warning("circuit_breaker_consecutive_losses", count=len(recent_pnl))
                 return {"status": "rejected", "reason": "circuit_breaker_consecutive_losses"}
