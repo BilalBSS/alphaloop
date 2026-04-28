@@ -209,7 +209,7 @@ def compute_alpha158(
 
     returns:
         dataframe indexed the same as ohlcv, with ~60 feature columns when using
-        the default 5 windows (9 candle features + 26 rolling features × 5 windows
+        the default 5 windows (9 candle features + 26 rolling features * 5 windows
         = 139 columns, trimmed to the most useful ~60 in practice).
 
     features are NOT normalized per-symbol — the caller is responsible for

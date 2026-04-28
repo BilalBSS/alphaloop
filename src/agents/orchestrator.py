@@ -1345,7 +1345,7 @@ class AgentOrchestrator:
 
     async def _compute_strategy_metrics(self) -> None:
         # / bug a: delegate to richer live_strategy_metrics module
-        # / writes rolling sharpe/sortino/maxdd/win rate/composite per strategy × window
+        # / writes rolling sharpe/sortino/maxdd/win rate/composite per strategy/window
         from src.analysis.live_strategy_metrics import compute_live_strategy_metrics
         updated = await compute_live_strategy_metrics(self._pool)
         logger.info("strategy_metrics_computed", strategies=updated)

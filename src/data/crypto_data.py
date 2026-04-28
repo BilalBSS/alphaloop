@@ -155,7 +155,7 @@ configure_rate_limit("loris", max_concurrent=1, delay=60.0)
 
 @with_retry(source="loris", max_retries=1, base_delay=5.0)
 async def fetch_funding_rates() -> dict[str, Any]:
-    # / fetch funding rates across all exchanges, rates ×10000
+    # / fetch funding rates across all exchanges, rates *10000
     # / attribution: funding rate data provided by loris.tools
     resp = await api_get(f"{LORIS_BASE}/funding", source="loris")
     data = resp.json()
@@ -172,7 +172,7 @@ def get_funding_rate(funding_data: dict[str, Any], symbol: str) -> dict[str, Any
             continue
         val = exchange_rates.get(sym)
         if val is not None and isinstance(val, (int, float)):
-            values.append(val / 10000.0)  # / convert from ×10000 to decimal
+            values.append(val / 10000.0)  # / convert from *10000 to decimal
     if not values:
         return None
     avg_rate = sum(values) / len(values)

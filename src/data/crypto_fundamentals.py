@@ -216,7 +216,7 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
         fr_data = await fetch_funding_rates()
         fr = get_funding_rate(fr_data, symbol) if fr_data else None
         if fr and fr.get("funding_rate") is not None:
-            # / convert to annualized % (8h funding × 3 × 365 ≈ 1095)
+            # / convert to annualized % (8h funding * 3 * 365 ~ 1095)
             annualized = float(fr["funding_rate"]) * 1095
             out["funding_rate"] = round(annualized, 6)
             if "loris" not in sources:

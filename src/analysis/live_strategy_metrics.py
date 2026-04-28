@@ -38,7 +38,7 @@ async def compute_live_strategy_metrics(
     pool, windows_days: list[int] | None = None,
     base_capital: float = DEFAULT_BASE_CAPITAL,
 ) -> int:
-    # / compute rolling metrics per strategy × window, upsert into strategy_scores
+    # / compute rolling metrics per strategy/window, upsert into strategy_scores
     # / returns number of (strategy_id, window) rows upserted
     windows_days = windows_days or [30, 90]
     today = date.today()
@@ -167,7 +167,7 @@ async def _compute_open_position_returns(
             returns.append((close - prev) / prev)
             prev = close
             last_close = close
-        # / unrealized p&l = latest close vs entry price × qty
+        # / unrealized p&l = latest close vs entry price * qty
         total_unrealized += (last_close - entry_price) * qty
     return returns, total_unrealized
 
