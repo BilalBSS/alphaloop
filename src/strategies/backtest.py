@@ -96,40 +96,6 @@ class BacktestResult:
 
 
 @dataclass
-class SlippageModel:
-    fixed_bps: int = 5
-    volume_impact: bool = True
-    volume_threshold_pct: float = 0.01
-    volume_impact_bps_per_pct: int = 10
-
-
-@dataclass
-class CostModel:
-    slippage: SlippageModel = field(default_factory=SlippageModel)
-    sec_fee_per_million: float = 8.0
-    taf_fee_per_share: float = 0.000166
-    crypto_spread_bps: int = 15
-
-
-def apply_slippage(price: float, side: str, qty: float, volume: float,
-                   model: SlippageModel | None = None, is_crypto: bool = False) -> float:
-    # / apply slippage to fill price
-    if model is None:
-        return price
-    bps = model.fixed_bps
-    if is_crypto:
-        bps = max(bps, 15)
-    if model.volume_impact and volume > 0:
-        pct_of_vol = qty / volume
-        if pct_of_vol > model.volume_threshold_pct:
-            bps += int(pct_of_vol * 100 * model.volume_impact_bps_per_pct)
-    slip = bps / 10000
-    if side == "buy":
-        return price * (1 + slip)
-    return price * (1 - slip)
-
-
-@dataclass
 class OpenPosition:
     symbol: str
     qty: float
@@ -145,8 +111,6 @@ async def run_backtest(
     initial_cash: float = 100_000.0,
     max_open_positions: int = 10,
     intraday_data: dict[str, pd.DataFrame] | None = None,
-    cost_model: CostModel | None = None,
-    benchmark_data: pd.DataFrame | None = None,
 ) -> BacktestResult:
     # / run a full backtest of a strategy against historical data
     # / market_data: dict of symbol -> daily ohlcv dataframe (index=datetime, cols=open,high,low,close,volume)

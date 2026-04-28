@@ -344,7 +344,7 @@ class _LoopTracker:
         await record_fire_start(self._pool, self._name)
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type, exc, _tb) -> bool:
         import asyncio as _asyncio
         import time
         duration_ms = int((time.monotonic() - self._started) * 1000)
