@@ -146,7 +146,7 @@ async def check_and_fire(
         return_exceptions=True,
     )
     prices: dict[str, float] = {}
-    for sym, res in zip(symbols, price_results):
+    for sym, res in zip(symbols, price_results, strict=False):
         if isinstance(res, Exception):
             logger.debug("alert_price_fetch_failed", symbol=sym, error=str(res))
             continue

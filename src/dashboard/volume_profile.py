@@ -133,7 +133,7 @@ def _build_profile(
 
     step = (price_max - price_min) / bins
     volume_buckets = [0.0] * bins
-    for c, v in zip(closes, vols):
+    for c, v in zip(closes, vols, strict=False):
         idx = int((c - price_min) / step)
         if idx >= bins:
             idx = bins - 1

@@ -154,7 +154,7 @@ async def train_and_predict(
         model = lgb.LGBMClassifier(**params)
         model.fit(X_train, y_train)
         prob = model.predict_proba(X_latest)[0][1]
-        importance = dict(zip(feature_cols, model.feature_importances_.tolist()))
+        importance = dict(zip(feature_cols, model.feature_importances_.tolist(), strict=False))
         top5 = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5])
         return prob, top5
 

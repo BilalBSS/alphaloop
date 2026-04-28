@@ -108,7 +108,7 @@ class OllamaEmbedder:
                         got=len(vecs), expected=len(payload_texts),
                     )
                     continue
-                for local_i, vec in zip(indices, vecs):
+                for local_i, vec in zip(indices, vecs, strict=False):
                     if isinstance(vec, list) and len(vec) == EMBED_DIM:
                         results[start + local_i] = [float(v) for v in vec]
             except Exception as exc:

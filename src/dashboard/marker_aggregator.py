@@ -334,7 +334,7 @@ async def build_markers(
         return {}
     results = await asyncio.gather(*coros, return_exceptions=True)
     out: dict[str, list[dict]] = {}
-    for kind, result in zip(job_order, results):
+    for kind, result in zip(job_order, results, strict=False):
         if isinstance(result, Exception):
             logger.debug("marker_fetch_failed", kind=kind, error=str(result))
             out[kind] = []

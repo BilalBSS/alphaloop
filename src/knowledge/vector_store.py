@@ -42,7 +42,7 @@ class VectorStore:
                 "DELETE FROM wiki_embeddings WHERE document_id = $1",
                 document_id,
             )
-            for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings)):
+            for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings, strict=False)):
                 if vec is None or not chunk_text.strip():
                     continue
                 await conn.execute(

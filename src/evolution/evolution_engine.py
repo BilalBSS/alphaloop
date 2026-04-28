@@ -445,7 +445,7 @@ class EvolutionEngine:
         mutated_configs: list[dict] = []
         if mutation_tasks:
             results = await asyncio.gather(*mutation_tasks, return_exceptions=True)
-            for meta, result in zip(mutation_meta, results):
+            for meta, result in zip(mutation_meta, results, strict=False):
                 if isinstance(result, Exception):
                     logger.error(
                         "mutation_failed",
@@ -492,7 +492,7 @@ class EvolutionEngine:
                 backtest_tasks.append(run_backtest(strategy, market_data))
 
             bt_results = await asyncio.gather(*backtest_tasks, return_exceptions=True)
-            for config, bt_result in zip(mutated_configs, bt_results):
+            for config, bt_result in zip(mutated_configs, bt_results, strict=False):
                 if isinstance(bt_result, Exception):
                     logger.error("backtest_failed", strategy_id=config.get("id"), error=str(bt_result))
                     summary["errors"].append(f"backtest failed for {config.get('id')}: {bt_result}")

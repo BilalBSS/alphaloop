@@ -283,7 +283,7 @@ async def run_social_sentiment(
             if scores:
                 total_weight = sum(weights)
                 results[symbol] = max(-1.0, min(1.0,
-                    sum(s * w for s, w in zip(scores, weights)) / total_weight
+                    sum(s * w for s, w in zip(scores, weights, strict=False)) / total_weight
                 ))
             else:
                 results[symbol] = 0.0

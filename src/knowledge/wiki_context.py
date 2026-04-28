@@ -150,7 +150,7 @@ class WikiContext:
 
         out_parts: list[str] = []
         remaining = budget
-        for (heading, content, _req), alloc in zip(sections, allocations):
+        for (heading, content, _req), alloc in zip(sections, allocations, strict=False):
             alloc = min(alloc, remaining)
             if alloc <= 20:
                 break
