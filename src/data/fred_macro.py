@@ -55,9 +55,7 @@ def _normalize(series_id: str, value: float) -> float:
 
 @with_retry(source="fred", max_retries=2, base_delay=1.0)
 async def _fetch_series(series_id: str) -> list[dict[str, Any]]:
-    # / returns every valid observation in the lookback window (old->new).
-    # / phase 6 fix: previously returned only the newest point so sparklines and
-    # / monthly series (CPI/FEDFUNDS/UNRATE) had nothing to draw.
+    # / returns every valid observation in window, oldest first
     if not os.environ.get("FRED_API_KEY"):
         return []
     params = _fred_params(series_id)

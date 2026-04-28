@@ -841,11 +841,8 @@ async def get_health():
     except Exception:
         pass
 
-    # / parallel fetch — all remaining queries are independent
-    # / last_analysis is no longer queried here; canonical source is
-    # / describe_loops("analyst").last_fire_ts (same value the Health tab
-    # / reads). previously system_events + describe_loops disagreed, so
-    # / Analysis tab and Health tab showed different "last analyst pass" ages.
+    # / parallel fetch — independent queries
+    # / last_analysis comes from describe_loops
     (
         last_trade, last_evolution, last_synthesis, last_eval,
         symbols_analyzed, last_llm, db_size, tables, conn_stats, active,

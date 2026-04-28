@@ -709,9 +709,7 @@ class AgentOrchestrator:
             logger.warning("regime_shift_write_failed", market=market, error=str(exc)[:200])
 
     async def _intraday_backfill_loop(self) -> None:
-        # / fetch 1h intraday bars for all symbols, then aggregate 1h into 2h bars
-        # / 2h timeframe previously had zero rows; aggregate after 1h backfill
-        # / also emits cycle_ok events so /api/health surfaces this loop
+        # / fetch 1h bars, aggregate to 2h
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "intraday_backfill"):

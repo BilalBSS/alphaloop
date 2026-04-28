@@ -18,15 +18,10 @@ from src.quant.risk_metrics import max_drawdown
 
 logger = structlog.get_logger(__name__)
 
-# / paper-mode mirror of live — emit metrics once a strategy has >=3 data points
-# / across closed trades AND daily mark-to-market observations from open positions combined.
-# / previously this required 3 CLOSED trades, which meant strategy_011 paper-trading 10 open
-# / positions with no sells yet showed no metrics at all. now open positions contribute daily
-# / returns so the feedback loop to the llm works in paper mode.
+# / emit metrics once strategy has >=3 data points
+# / counts closed trades + daily mtm of open positions
 MIN_TRADES = 3
-# / annualization factor (us equity trading days)
-# / note: sharpe/sortino are computed on per-trade returns and annualized by sqrt(252)
-# / matches src/strategies/backtest.py:439 so live metrics match backtest metrics
+# / matches backtest sharpe annualization
 ANNUAL_TRADING_DAYS = 252
 # / default paper trading account base; used as denominator for max drawdown %
 DEFAULT_BASE_CAPITAL = 100_000.0
