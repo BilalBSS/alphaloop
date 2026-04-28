@@ -7,22 +7,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import structlog
 
-from src.agents import loop_registry, tools
+from src.agents import tools
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent
 from src.agents.risk_agent import RiskAgent
 from src.agents.strategy_agent import StrategyAgent
+from src.agents.stream_manager import StreamManager
 from src.brokers.broker_factory import BrokerFactory
+from src.data import loop_registry
 from src.data.db import close_db, init_db
 from src.data.retention import prune_observation_log, prune_system_events
-from src.data.streams import AlpacaStream, CoinbaseStream, TickBuffer
 from src.data.symbols import FULL_UNIVERSE, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
 from src.notifications.notifier import notify_system_error
@@ -86,19 +86,8 @@ class AgentOrchestrator:
         # / track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
-        # / websocket streams — shared tick buffer + per-vendor handles
-        self._tick_buffer: TickBuffer | None = None
-        self._alpaca_stream: AlpacaStream | None = None
-        self._coinbase_stream: CoinbaseStream | None = None
-        self._last_tick_broadcast: dict[str, float] = {}
-        # / equity symbols passed to the alpaca stream (capped at 30 on free tier).
-        # / overflow symbols are rest-polled every 5 min via _price_refresh_loop.
-        self._streamed_equity_symbols: set[str] = set()
-        # / bound the in-flight broadcast task count so a slow dashboard client
-        # / can't let fire-and-forget ws sends pile up unbounded under tick storms.
-        self._broadcast_semaphore = asyncio.Semaphore(50)
-        self._broadcast_dropped = 0
-        self._broadcast_drop_log_next = 0.0
+        # / stream manager owns alpaca + coinbase ws + tick buffer + broadcast fan-out
+        self._streams = StreamManager(broadcast_semaphore_size=50)
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -113,21 +102,32 @@ class AgentOrchestrator:
         return {}
 
     async def start(self) -> None:
-        # / initialize resources and start all agent loops
+        # / coordinated startup: db -> sync -> broker -> strategies -> kronos -> streams -> loops
         logger.info("orchestrator_starting", mode=self._mode)
+        await self._bootstrap_db()
+        await self._bootstrap_alpaca_sync()
+        self._bootstrap_broker()
+        self._bootstrap_strategies()
+        await self._bootstrap_kronos()
+        await self._start_streams()
+        self._spawn_loops()
+        try:
+            await asyncio.gather(*self._tasks)
+        except asyncio.CancelledError:
+            logger.info("orchestrator_tasks_cancelled")
 
-        # / init db
+    async def _bootstrap_db(self) -> None:
+        # / init pool + prune retention tables
         self._pool = await init_db()
-
         try:
             await prune_system_events(self._pool, max_age_days=30)
             await prune_observation_log(self._pool, max_age_days=14)
         except Exception as exc:
             logger.warning("retention_prune_failed", error=str(exc)[:120])
 
-        # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
+    async def _bootstrap_alpaca_sync(self) -> None:
+        # / clean ghost paper trades, sync filled orders, bootstrap untracked positions
         try:
-            # / remove ghost trades from in-memory PaperBroker (order_id is a uuid, alpaca uses different format)
             async with self._pool.acquire() as conn:
                 cleaned = await conn.execute(
                     """DELETE FROM trade_log WHERE broker = 'PaperBroker'
@@ -138,21 +138,20 @@ class AgentOrchestrator:
             synced = await tools.sync_trades_from_alpaca(self._pool)
             if synced:
                 logger.info("startup_alpaca_sync", trades_synced=synced)
-            # / bootstrap strategy positions from alpaca for pre-existing holdings
             pos_synced = await tools.sync_strategy_positions_from_alpaca(self._pool)
             if pos_synced:
                 logger.info("startup_position_sync", positions_synced=pos_synced)
-            # / bug e one-shot: backfill historical trade_log pnl for sells with null pnl
             backfilled = await tools.backfill_trade_pnl(self._pool)
             if backfilled:
                 logger.info("startup_pnl_backfill", updated=backfilled)
         except Exception:
             logger.debug("startup_sync_failed", exc_info=True)
 
-        # / init broker
+    def _bootstrap_broker(self) -> None:
         self._broker_factory = BrokerFactory(mode=self._mode)
 
-        # / load strategy configs
+    def _bootstrap_strategies(self) -> None:
+        # / load configs filtered by status, register in pool
         strategies = load_all_configs(
             status_filter={"backtest_pending", "paper_trading", "live"},
         )
@@ -161,28 +160,26 @@ class AgentOrchestrator:
             if hasattr(strat, "config") and strat.config.get("metadata", {}).get("status"):
                 status = strat.config["metadata"]["status"]
             self._strategy_pool.add(strat, status=status)
-
         logger.info(
             "orchestrator_initialized",
             strategies=self._strategy_pool.size,
             mode=self._mode,
         )
 
-        # / warm kronos HF model + record status to loop_activity so the dashboard
-        # / reads orchestrator ground truth (not its own stale module-level globals).
+    async def _bootstrap_kronos(self) -> None:
+        # / warm hf model + record status so dashboard reads ground truth
         try:
             from src.quant.kronos_signal import ensure_loaded_and_record_status
             kronos_status = await ensure_loaded_and_record_status(self._pool)
-            logger.info("kronos_startup_status", **{k: v for k, v in kronos_status.items() if k != "fallback_reason"})
+            logger.info(
+                "kronos_startup_status",
+                **{k: v for k, v in kronos_status.items() if k != "fallback_reason"},
+            )
         except Exception as exc:
             logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
 
-        # / websocket streams for live prices. alpaca iex for stocks,
-        # / coinbase advanced-trade-ws for crypto. aggregator loop drains → latest_prices.
-        # / _price_refresh_loop stays put as fallback when the stream circuit breaker opens.
-        await self._start_streams()
-
-        # / launch all loops
+    def _spawn_loops(self) -> None:
+        # / launch every periodic loop as an asyncio task
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
             asyncio.create_task(self._deepseek_loop(), name="deepseek"),
@@ -205,23 +202,13 @@ class AgentOrchestrator:
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
             asyncio.create_task(self._alert_loop(), name="alert"),
             asyncio.create_task(self._regime_loop(), name="regime_backfill"),
-            # / knowledge base upkeep
             asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
-            # / daily symbol wiki hydration (writes stubs back as playbooks)
             asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
-            # / pull trigger_requests rows posted by dashboard /api/admin/trigger
             asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
-            # / weekly kelly-weighted capital allocation refresh
             asyncio.create_task(self._capital_allocator_loop(), name="capital_allocator"),
-            # / drain tick buffer → latest_prices every minute
             asyncio.create_task(self._stream_aggregator_loop(), name="stream_aggregator"),
         ]
-
-        try:
-            await asyncio.gather(*self._tasks)
-        except asyncio.CancelledError:
-            logger.info("orchestrator_tasks_cancelled")
 
     async def stop(self) -> None:
         # / graceful shutdown
@@ -233,16 +220,17 @@ class AgentOrchestrator:
             task.cancel()
 
         # / stop streams first (they sit outside self._tasks)
-        for stream in (self._alpaca_stream, self._coinbase_stream):
-            if stream is not None:
-                try:
-                    await stream.stop()
-                except Exception as exc:
-                    logger.debug("stream_stop_failed", error=str(exc)[:120])
+        await self._streams.stop()
 
         # / wait for tasks to finish (with timeout)
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # / drain executor's fire-and-forget post-mortem tasks
+        try:
+            await self._executor.tasks.drain(timeout=10)
+        except Exception as exc:
+            logger.debug("executor_task_drain_failed", error=str(exc)[:120])
 
         # / close shared http clients (best-effort, may already be torn down)
         try:
@@ -412,8 +400,8 @@ class AgentOrchestrator:
                             account = await broker.get_account_balance()
                             positions = await broker.get_positions()
                             portfolio = {
-                                "value": account.get("portfolio_value", 0),
-                                "daily_pnl": account.get("daily_pnl", 0),
+                                "value": account.portfolio_value,
+                                "daily_pnl": 0,
                                 "positions": len(positions),
                                 "strategies": self._strategy_pool.size,
                             }
@@ -775,8 +763,8 @@ class AgentOrchestrator:
                     else:
                         from src.data.market_data import fetch_latest_prices, store_latest_prices
                         symbols = self._get_symbols()
-                        equity_healthy = self._streams_healthy_equity()
-                        crypto_healthy = self._streams_healthy_crypto()
+                        equity_healthy = self._streams.is_equity_healthy()
+                        crypto_healthy = self._streams.is_crypto_healthy()
 
                         poll_syms: list[str] = []
                         for s in symbols:
@@ -787,7 +775,7 @@ class AgentOrchestrator:
                                 # / equity: poll if stream unhealthy OR the symbol
                                 # / isn't in the streamed set (overflow past 30 cap)
                                 if (not equity_healthy
-                                        or s not in self._streamed_equity_symbols):
+                                        or s not in self._streams.streamed_equity_symbols):
                                     poll_syms.append(s)
 
                         if not poll_syms:
@@ -814,146 +802,16 @@ class AgentOrchestrator:
                 break
 
     async def _start_streams(self) -> None:
-        # / split universe → equity (alpaca) + crypto (coinbase); start both streams.
-        # / alpaca iex free tier caps at 30 symbols per connection. if the equity
-        # / universe is larger we stream the first N (preserves FULL_UNIVERSE order:
-        # / etfs + mega-caps + semis take priority) and the overflow falls back to
-        # / 5-min rest polling via _price_refresh_loop.
-        symbols = self._get_symbols()
-        equity_all = [s for s in symbols if not is_crypto(s)]
-        crypto_syms = [s for s in symbols if is_crypto(s)]
-        try:
-            stream_cap = int(os.environ.get("ALPACA_STREAM_MAX_SYMBOLS", "30"))
-        except ValueError:
-            stream_cap = 30
-        equity_streamed = equity_all[:stream_cap]
-        equity_overflow = equity_all[stream_cap:]
-        self._streamed_equity_symbols: set[str] = set(equity_streamed)
-        if equity_overflow:
-            logger.info("alpaca_stream_symbol_cap",
-                        cap=stream_cap, streamed=len(equity_streamed),
-                        overflow=len(equity_overflow),
-                        overflow_symbols=equity_overflow,
-                        note="overflow symbols use 5-min rest poll fallback")
-
-        self._tick_buffer = TickBuffer(max_per_symbol=1000)
-
-        if equity_streamed:
-            self._alpaca_stream = AlpacaStream(
-                equity_streamed, self._tick_buffer, on_tick=self._on_tick_broadcast,
-            )
-            try:
-                await self._alpaca_stream.start()
-            except Exception as exc:
-                logger.warning("alpaca_stream_start_failed", error=str(exc)[:200])
-        if crypto_syms:
-            self._coinbase_stream = CoinbaseStream(
-                crypto_syms, self._tick_buffer, on_tick=self._on_tick_broadcast,
-            )
-            try:
-                await self._coinbase_stream.start()
-            except Exception as exc:
-                logger.warning("coinbase_stream_start_failed", error=str(exc)[:200])
-
-    def _on_tick_broadcast(self, tick) -> None:
-        # / fan each tick out to dashboard ws clients, rate-limited per symbol.
-        # / fire-and-forget — buffering is already done by _emit before us.
-        # / bounded by self._broadcast_semaphore so the task queue can't grow
-        # / unbounded if a dashboard client stops reading.
-        import time as _t
-        now = _t.monotonic()
-        last = self._last_tick_broadcast.get(tick.symbol, 0.0)
-        if (now - last) < PRICE_TICK_BROADCAST_MIN_INTERVAL:
-            return
-        self._last_tick_broadcast[tick.symbol] = now
-        try:
-            from src.dashboard.app import _ws_clients
-            if not _ws_clients:
-                return
-            if self._broadcast_semaphore.locked():
-                # / drop silently — the tick is stale anyway once we're backlogged.
-                # / aggregate count + log at most once per minute.
-                self._broadcast_dropped += 1
-                if now >= self._broadcast_drop_log_next:
-                    logger.warning(
-                        "price_tick_broadcast_dropped",
-                        dropped_total=self._broadcast_dropped,
-                    )
-                    self._broadcast_drop_log_next = now + 60.0
-                return
-            payload = {
-                "symbol": tick.symbol,
-                "price": tick.price,
-                "timestamp_ms": tick.timestamp_ms,
-                "vendor": tick.vendor,
-            }
-            tools.fire_and_forget(self._bounded_broadcast("price_tick", payload))
-        except Exception:
-            pass  # / dashboard not mounted in this process
-
-    async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
-        async with self._broadcast_semaphore:
-            try:
-                from src.dashboard.app import broadcast
-                await broadcast(event_type, payload)
-            except Exception as exc:
-                logger.debug("bounded_broadcast_failed",
-                             event=event_type, error=str(exc)[:120])
-
-    @staticmethod
-    def _stream_healthy(s) -> bool:
-        if s is None or s.state.circuit_breaker.is_open or s.state.last_tick_at is None:
-            return False
-        return (time.monotonic() - s.state.last_tick_at) < STREAM_FRESH_TICK_S
-
-    def _streams_healthy_equity(self) -> bool:
-        return self._stream_healthy(self._alpaca_stream)
-
-    def _streams_healthy_crypto(self) -> bool:
-        return self._stream_healthy(self._coinbase_stream)
+        # / delegate stream lifecycle to StreamManager
+        await self._streams.start(self._get_symbols())
 
     async def _stream_aggregator_loop(self) -> None:
-        # / every 60s, drain the tick buffer and write the newest tick per symbol
-        # / into latest_prices. gives downstream consumers (analyst, risk, dashboard
-        # / refresh) a fresh pointer even between manual refreshes.
-        # / escalates to a visible error after N consecutive upsert failures so the
-        # / operator sees "aggregator stuck" on /api/loops instead of silent staleness.
-        if self._tick_buffer is None:
+        # / every 60s, drain tick buffer and write latest_prices via StreamManager
+        if self._streams.tick_buffer is None:
             return
-        from src.data.market_data import store_latest_prices
-        consecutive_failures = 0
-        escalation_threshold = 3
+        consecutive_failures = [0]
         while not self._stop_event.is_set():
-            try:
-                drained = await self._tick_buffer.drain_all()
-                if drained:
-                    latest = {
-                        sym: float(ticks[-1].price)
-                        for sym, ticks in drained.items()
-                        if ticks
-                    }
-                    if latest and self._pool is not None:
-                        await store_latest_prices(self._pool, latest)
-                        logger.debug("stream_aggregator_upserted", n=len(latest))
-                if consecutive_failures > 0:
-                    consecutive_failures = 0
-                    await loop_registry.upsert_service_state(
-                        self._pool, "stream_aggregator", "ok", error=None,
-                    )
-            except Exception as exc:
-                consecutive_failures += 1
-                logger.warning(
-                    "stream_aggregator_error",
-                    error=str(exc)[:200],
-                    consecutive_failures=consecutive_failures,
-                )
-                if consecutive_failures >= escalation_threshold:
-                    await loop_registry.upsert_service_state(
-                        self._pool,
-                        "stream_aggregator",
-                        "error",
-                        error=f"aggregator stuck ({consecutive_failures} consecutive failures): {str(exc)[:200]}",
-                    )
+            await self._streams.aggregate_once(self._pool, consecutive_failures)
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
@@ -1105,13 +963,13 @@ class AgentOrchestrator:
 
     async def _run_alternative_data_registry_cycle(self) -> None:
         # / canonical path — iterate registered alt-data sources
-        from src.data.source_registry import all_sources
+        from src.data.source_registry import AltDataSource, all_sources
         from src.data.symbols import get_sector
 
         sources = all_sources()
         # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
         # / (for two fields) but we only want to hit yfinance once per symbol
-        by_name_deduped: dict[str, AltDataSource] = {}  # noqa: F821
+        by_name_deduped: dict[str, AltDataSource] = {}
         for src in sources:
             by_name_deduped.setdefault(src.name, src)
 
@@ -1279,33 +1137,38 @@ class AgentOrchestrator:
                 break
 
     async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:
-        # / load daily ohlcv from db for all symbols, used by evolution backtesting
+        # / load daily ohlcv for all symbols in one query, bucket per symbol
         symbols = self._get_symbols()
         market_data: dict[str, pd.DataFrame] = {}
-        async with self._pool.acquire() as conn:
-            for symbol in symbols:
-                try:
-                    rows = await conn.fetch(
-                        """SELECT date, open, high, low, close, volume
-                        FROM market_data WHERE symbol = $1
-                        ORDER BY date ASC""",
-                        symbol,
-                    )
-                    if len(rows) < 50:
-                        continue
-                    df = pd.DataFrame(
-                        [{
-                            "open": float(r["open"]) if r["open"] else 0,
-                            "high": float(r["high"]) if r["high"] else 0,
-                            "low": float(r["low"]) if r["low"] else 0,
-                            "close": float(r["close"]) if r["close"] else 0,
-                            "volume": int(r["volume"]) if r["volume"] else 0,
-                        } for r in rows],
-                        index=pd.DatetimeIndex([r["date"] for r in rows]),
-                    )
-                    market_data[symbol] = df
-                except Exception as exc:
-                    logger.warning("evolution_market_data_failed", symbol=symbol, error=str(exc))
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT symbol, date, open, high, low, close, volume
+                    FROM market_data
+                    WHERE symbol = ANY($1::text[])
+                    ORDER BY symbol, date ASC""",
+                    symbols,
+                )
+        except Exception as exc:
+            logger.warning("evolution_market_data_query_failed", error=str(exc))
+            return market_data
+        by_symbol: dict[str, list[dict]] = {}
+        for r in rows:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+        for symbol, sym_rows in by_symbol.items():
+            if len(sym_rows) < 50:
+                continue
+            df = pd.DataFrame(
+                [{
+                    "open": float(r["open"]) if r["open"] else 0,
+                    "high": float(r["high"]) if r["high"] else 0,
+                    "low": float(r["low"]) if r["low"] else 0,
+                    "close": float(r["close"]) if r["close"] else 0,
+                    "volume": int(r["volume"]) if r["volume"] else 0,
+                } for r in sym_rows],
+                index=pd.DatetimeIndex([r["date"] for r in sym_rows]),
+            )
+            market_data[symbol] = df
         logger.info("evolution_market_data_loaded", symbols=len(market_data))
         return market_data
 
@@ -1596,106 +1459,144 @@ class AgentOrchestrator:
             await loop_registry.complete_trigger(self._pool, trigger_id, "error", str(exc))
 
     async def _run_service_once(self, service: str) -> None:
-        # / dispatch a service name to its one-shot work (same work as the loop body)
-        from src.data.symbols import get_sector as _get_sector
-        from src.data.symbols import is_crypto as _is_crypto
-        symbols = self._get_symbols()
-        if service == "macro_backfill":
-            from src.data.fred_macro import fetch_macro_indicators
-            await fetch_macro_indicators(self._pool)
-        elif service == "fundamentals_backfill":
-            from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
-            syms = [s for s in symbols if not _is_crypto(s)]
-            data = await fetch_all_fundamentals(syms)
-            if data:
-                await store_fundamentals(self._pool, data)
-        elif service == "insider_backfill":
-            from src.data.sec_filings import fetch_insider_trades, store_insider_trades
-            syms = [s for s in symbols if not _is_crypto(s) and _get_sector(s) != "etfs"]
-            for sym in syms:
-                try:
-                    trades = await fetch_insider_trades(sym)
-                    if trades:
-                        await store_insider_trades(self._pool, trades)
-                except Exception as exc:
-                    logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
-        elif service == "regime_backfill":
-            from src.data.regime_detector import (
-                backfill_regimes,
-                backfill_regimes_per_sector,
-                snapshot_regime_daily,
-            )
-            await backfill_regimes(self._pool, "SPY", "equity")
-            await backfill_regimes(self._pool, "BTC-USD", "crypto")
-            try:
-                await backfill_regimes_per_sector(self._pool)
-            except Exception as exc:
-                logger.warning("trigger_sector_regime_failed", error=str(exc)[:120])
-            try:
-                eq = await tools.fetch_latest_regime(self._pool, "equity")
-                cr = await tools.fetch_latest_regime(self._pool, "crypto")
-                if eq:
-                    await snapshot_regime_daily(self._pool, "equity", eq)
-                if cr:
-                    await snapshot_regime_daily(self._pool, "crypto", cr)
-            except Exception as exc:
-                logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
-        elif service == "daily_bar_backfill":
-            from src.data.market_data import backfill
-            await backfill(self._pool, symbols, years=1)
-        elif service == "intraday_backfill":
-            from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
-            await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
-            await aggregate_intraday_to_2h(self._pool, symbols, days=10)
-        elif service == "crypto_backfill":
-            from src.data.market_data import backfill
-            crypto = [s for s in symbols if _is_crypto(s)]
-            if crypto:
-                await backfill(self._pool, crypto, years=1)
-        elif service == "price_refresh":
-            from src.data.market_data import fetch_latest_prices, store_latest_prices
-            prices = await fetch_latest_prices(symbols)
-            if prices:
-                await store_latest_prices(self._pool, prices)
-        elif service == "alternative_data":
-            await self._run_alternative_data_registry_cycle()
-        elif service == "analyst":
-            await self._analyst.run(self._pool, symbols, run_deepseek=False)
-        elif service == "deepseek":
-            await self._analyst.run(self._pool, symbols, run_deepseek=True)
-        elif service == "strategy":
-            broker = self._broker_factory.get_broker()
-            await self._strategy.run(self._pool, self._strategy_pool, broker)
-        elif service == "strategy_metrics":
-            await self._compute_strategy_metrics()
-        elif service == "wiki_embedding":
-            from src.knowledge.loops import _embed_backfill_once
-            await _embed_backfill_once(self._pool)
-        elif service == "knowledge_hydration":
-            cap = self._hydration_daily_cap()
-            picks = await self._fetch_hydration_candidates(cap)
-            if picks:
-                from src.knowledge.wiki_writer import enrich_symbol_doc
-                for sym in picks:
-                    try:
-                        bundle = await self._load_hydration_bundle(sym)
-                        await enrich_symbol_doc(self._pool, sym, *bundle)
-                    except Exception as exc:
-                        logger.warning("trigger_hydration_symbol_failed", symbol=sym, error=str(exc)[:120])
-        elif service == "evolution":
-            if self._strategy_pool.size >= 3:
-                market_data = await self._fetch_evolution_market_data()
-                regime = await tools.fetch_latest_regime(self._pool, "equity")
-                await self._evolution.run(
-                    self._pool, self._strategy_pool,
-                    market_data=market_data, regime=regime,
-                )
-        elif service == "cost_flush":
-            from src.data.cost_tracker import flush_to_db
-            await flush_to_db(self._pool)
-        elif service == "capital_allocator":
-            from src.agents.capital_allocator import compute_allocations
-            mpp = float(self._risk_limits.get("max_position_pct", 0.04))
-            await compute_allocations(self._pool, max_position_pct=mpp)
-        else:
+        # / dispatch via service registry; each handler does the one-shot work
+        handler = self._service_registry().get(service)
+        if handler is None:
             raise ValueError(f"service not triggerable: {service}")
+        await handler()
+
+    def _service_registry(self) -> dict:
+        # / build once on demand; method-bound, no class-level surprises
+        return {
+            "macro_backfill": self._svc_macro_backfill,
+            "fundamentals_backfill": self._svc_fundamentals_backfill,
+            "insider_backfill": self._svc_insider_backfill,
+            "regime_backfill": self._svc_regime_backfill,
+            "daily_bar_backfill": self._svc_daily_bar_backfill,
+            "intraday_backfill": self._svc_intraday_backfill,
+            "crypto_backfill": self._svc_crypto_backfill,
+            "price_refresh": self._svc_price_refresh,
+            "alternative_data": self._run_alternative_data_registry_cycle,
+            "analyst": self._svc_analyst,
+            "deepseek": self._svc_deepseek,
+            "strategy": self._svc_strategy,
+            "strategy_metrics": self._compute_strategy_metrics,
+            "wiki_embedding": self._svc_wiki_embedding,
+            "knowledge_hydration": self._svc_knowledge_hydration,
+            "evolution": self._svc_evolution,
+            "cost_flush": self._svc_cost_flush,
+            "capital_allocator": self._svc_capital_allocator,
+        }
+
+    async def _svc_macro_backfill(self) -> None:
+        from src.data.fred_macro import fetch_macro_indicators
+        await fetch_macro_indicators(self._pool)
+
+    async def _svc_fundamentals_backfill(self) -> None:
+        from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+        syms = [s for s in self._get_symbols() if not is_crypto(s)]
+        data = await fetch_all_fundamentals(syms)
+        if data:
+            await store_fundamentals(self._pool, data)
+
+    async def _svc_insider_backfill(self) -> None:
+        from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+        from src.data.symbols import get_sector
+        syms = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
+        for sym in syms:
+            try:
+                trades = await fetch_insider_trades(sym)
+                if trades:
+                    await store_insider_trades(self._pool, trades)
+            except Exception as exc:
+                logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
+
+    async def _svc_regime_backfill(self) -> None:
+        from src.data.regime_detector import (
+            backfill_regimes,
+            backfill_regimes_per_sector,
+            snapshot_regime_daily,
+        )
+        await backfill_regimes(self._pool, "SPY", "equity")
+        await backfill_regimes(self._pool, "BTC-USD", "crypto")
+        try:
+            await backfill_regimes_per_sector(self._pool)
+        except Exception as exc:
+            logger.warning("trigger_sector_regime_failed", error=str(exc)[:120])
+        try:
+            eq = await tools.fetch_latest_regime(self._pool, "equity")
+            cr = await tools.fetch_latest_regime(self._pool, "crypto")
+            if eq:
+                await snapshot_regime_daily(self._pool, "equity", eq)
+            if cr:
+                await snapshot_regime_daily(self._pool, "crypto", cr)
+        except Exception as exc:
+            logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
+
+    async def _svc_daily_bar_backfill(self) -> None:
+        from src.data.market_data import backfill
+        await backfill(self._pool, self._get_symbols(), years=1)
+
+    async def _svc_intraday_backfill(self) -> None:
+        from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
+        symbols = self._get_symbols()
+        await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
+        await aggregate_intraday_to_2h(self._pool, symbols, days=10)
+
+    async def _svc_crypto_backfill(self) -> None:
+        from src.data.market_data import backfill
+        crypto = [s for s in self._get_symbols() if is_crypto(s)]
+        if crypto:
+            await backfill(self._pool, crypto, years=1)
+
+    async def _svc_price_refresh(self) -> None:
+        from src.data.market_data import fetch_latest_prices, store_latest_prices
+        prices = await fetch_latest_prices(self._get_symbols())
+        if prices:
+            await store_latest_prices(self._pool, prices)
+
+    async def _svc_analyst(self) -> None:
+        await self._analyst.run(self._pool, self._get_symbols(), run_deepseek=False)
+
+    async def _svc_deepseek(self) -> None:
+        await self._analyst.run(self._pool, self._get_symbols(), run_deepseek=True)
+
+    async def _svc_strategy(self) -> None:
+        broker = self._broker_factory.get_broker()
+        await self._strategy.run(self._pool, self._strategy_pool, broker)
+
+    async def _svc_wiki_embedding(self) -> None:
+        from src.knowledge.loops import _embed_backfill_once
+        await _embed_backfill_once(self._pool)
+
+    async def _svc_knowledge_hydration(self) -> None:
+        cap = self._hydration_daily_cap()
+        picks = await self._fetch_hydration_candidates(cap)
+        if not picks:
+            return
+        from src.knowledge.wiki_writer import enrich_symbol_doc
+        for sym in picks:
+            try:
+                bundle = await self._load_hydration_bundle(sym)
+                await enrich_symbol_doc(self._pool, sym, *bundle)
+            except Exception as exc:
+                logger.warning("trigger_hydration_symbol_failed", symbol=sym, error=str(exc)[:120])
+
+    async def _svc_evolution(self) -> None:
+        if self._strategy_pool.size < 3:
+            return
+        market_data = await self._fetch_evolution_market_data()
+        regime = await tools.fetch_latest_regime(self._pool, "equity")
+        await self._evolution.run(
+            self._pool, self._strategy_pool,
+            market_data=market_data, regime=regime,
+        )
+
+    async def _svc_cost_flush(self) -> None:
+        from src.data.cost_tracker import flush_to_db
+        await flush_to_db(self._pool)
+
+    async def _svc_capital_allocator(self) -> None:
+        from src.agents.capital_allocator import compute_allocations
+        mpp = float(self._risk_limits.get("max_position_pct", 0.04))
+        await compute_allocations(self._pool, max_position_pct=mpp)

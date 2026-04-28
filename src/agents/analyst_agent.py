@@ -794,180 +794,38 @@ class AnalystAgent:
         return alt
 
     async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
-        # / run all analysis components, compute composite, store to db
+        # / orchestrate all analysis components, compute composite, store to db
         ratio_score, dcf_result, earnings_signal, insider_signal = await self._fetch_equity_components(pool, symbol)
-
-        # / news sentiment (phase 8)
-        sentiment_score: float | None = None
-        try:
-            sentiment_score = await compute_sentiment_score(symbol)
-            if sentiment_score != 0.0:
-                await store_sentiment(pool, symbol, sentiment_score)
-        except Exception as exc:
-            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
-
+        await self._fetch_and_store_news_sentiment(pool, symbol)
         regime, symbol_trend, indicator_data, sentiment_data = await self._fetch_equity_enrichment(pool, symbol)
-
-        # / fetch alternative data sources (macro, congressional, analyst ratings, etc.)
         alt_data = await self._fetch_alternative_data(pool, symbol)
+        vix_level = await self._fetch_vix_level(pool)
 
-        # / fetch vix level for equity details
-        vix_level: float | None = None
-        try:
-            async with pool.acquire() as conn:
-                vix_row = await conn.fetchrow(
-                    """SELECT raw_score FROM social_sentiment
-                    WHERE source = 'vix'
-                    ORDER BY date DESC LIMIT 1""",
-                )
-                if vix_row and vix_row["raw_score"] is not None:
-                    # / reverse normalize: raw_vix = 30 - (normalized * 20)
-                    vix_level = round(30.0 - float(vix_row["raw_score"]) * 20.0, 1)
-        except Exception:
-            logger.debug("vix_fetch_for_details_failed", exc_info=True)
-
-        # / store dcf result to dcf_valuations table (regime known at this point)
-        if dcf_result:
-            try:
-                from src.analysis.dcf_model import store_dcf_result
-                await store_dcf_result(pool, dcf_result, regime=regime)
-            except Exception as exc:
-                logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
-
-        # / fetch strategy positions for llm context
+        await self._store_dcf_safe(pool, dcf_result, regime, symbol)
         strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+        await self._enrich_position_metrics(pool, strat_positions, symbol)
 
-        # / enrich each position with its strategy's latest quant metrics so the llm
-        # / sees paper-mode performance (sharpe/sortino/win rate/maxdd) and can reason about
-        # / which strategies are actually working vs which need adjustment
-        if strat_positions:
-            try:
-                async with pool.acquire() as conn:
-                    score_rows = await conn.fetch(
-                        """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio, sortino_ratio,
-                            win_rate, max_drawdown, composite_score, total_trades, regime_breakdown
-                        FROM strategy_scores
-                        WHERE strategy_id = ANY($1::varchar[])
-                        ORDER BY strategy_id, created_at DESC""",
-                        [p["strategy_id"] for p in strat_positions],
-                    )
-                score_by_id = {r["strategy_id"]: dict(r) for r in score_rows}
-                for p in strat_positions:
-                    sc = score_by_id.get(p["strategy_id"])
-                    if sc:
-                        p["sharpe"] = float(sc["sharpe_ratio"]) if sc.get("sharpe_ratio") is not None else None
-                        p["win_rate"] = float(sc["win_rate"]) if sc.get("win_rate") is not None else None
-                        p["max_drawdown"] = float(sc["max_drawdown"]) if sc.get("max_drawdown") is not None else None
-                        p["total_trades"] = int(sc["total_trades"] or 0)
-            except Exception as exc:
-                logger.debug("analyst_position_metrics_enrich_failed", symbol=symbol, error=str(exc)[:100])
+        dual = await self._run_dual_llm(
+            symbol, ratio_score, dcf_result, earnings_signal, insider_signal,
+            regime, symbol_trend, indicator_data, sentiment_data, strat_positions,
+        )
 
-        # / llm analysis: groq every cycle, deepseek only on hourly cycle
-        regime_with_trend = regime
-        if symbol_trend != "unknown":
-            regime_with_trend = f"{regime} | This stock's trend: {symbol_trend} (close vs SMA50)"
-        try:
-            if getattr(self, "_run_deepseek", True):
-                dual = await generate_dual_analysis(
-                    symbol, ratio=ratio_score, dcf=dcf_result,
-                    earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
-                    indicators=indicator_data, sentiment=sentiment_data,
-                    positions=strat_positions,
-                )
-            else:
-                # / groq only, skip deepseek call
-                groq_only = await generate_summary(
-                    symbol, ratio=ratio_score, dcf=dcf_result,
-                    earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
-                    indicators=indicator_data, sentiment=sentiment_data,
-                    positions=strat_positions,
-                )
-                from src.analysis.ai_summary import DualAnalysis
-                dual = DualAnalysis(groq=groq_only, deepseek=None, consensus=groq_only.signal, consensus_confidence=groq_only.confidence)
-        except Exception as exc:
-            logger.warning("analyst_llm_failed", symbol=symbol, error=str(exc))
-            from src.analysis.ai_summary import DualAnalysis, _build_fallback_summary
-            fallback = _build_fallback_summary(symbol, ratio_score, dcf_result, earnings_signal, insider_signal)
-            dual = DualAnalysis(groq=fallback, deepseek=None, consensus=fallback.signal, consensus_confidence=fallback.confidence)
-
-        # / compute fundamental score as weighted average of available components
         fundamental_score = self._compute_fundamental_score(
             ratio_score, dcf_result, earnings_signal, insider_signal,
         )
-
-        # / build details dict for JSONB storage
-        details = self._build_details(
-            ratio_score, dcf_result, earnings_signal, insider_signal, dual.groq,
+        details = self._build_full_details(
+            ratio_score, dcf_result, earnings_signal, insider_signal,
+            dual, regime, symbol_trend, vix_level, alt_data,
         )
-        # / store individual 0-100 component scores for dashboard breakdown
-        if ratio_score and ratio_score.composite_score is not None:
-            details["ratio_score_100"] = ratio_score.composite_score
-        if dcf_result and dcf_result.upside_pct is not None:
-            details["dcf_score_100"] = round(max(0.0, min(100.0, (dcf_result.upside_pct + 0.5) / 1.0 * 100)), 1)
-        if earnings_signal and earnings_signal.strength is not None:
-            details["earnings_score_100"] = earnings_signal.strength
-        if insider_signal and insider_signal.strength is not None:
-            details["insider_score_100"] = insider_signal.strength
-            details["insider_signed_strength"] = insider_signal.signed_strength
-        # / add dual-llm fields
-        details["ai_consensus"] = dual.consensus
-        details["ai_consensus_confidence"] = dual.consensus_confidence if hasattr(dual, 'consensus_confidence') else 0.0
-        details["symbol_trend"] = symbol_trend
-        details["llm_analysis_groq"] = dual.groq.summary
-        details["llm_signal_groq"] = dual.groq.signal
-        details["llm_model_groq"] = dual.groq.model_used
-        if dual.deepseek:
-            details["llm_analysis_deepseek"] = dual.deepseek.summary
-            details["llm_signal_deepseek"] = dual.deepseek.signal
-            details["llm_model_deepseek"] = dual.deepseek.model_used
-        details["regime"] = regime
-        if vix_level is not None:
-            details["vix"] = vix_level
 
-        # / add alternative data fields
-        for key in (
-            "macro_score", "congressional_buy_ratio", "analyst_consensus",
-            "price_target_upside", "earnings_revision_momentum", "short_pct_float",
-            "dark_pool_ratio", "iv_rank", "put_call_ratio", "days_to_earnings",
-            "intermarket_score", "sector_relative_strength",
-        ):
-            if key in alt_data and alt_data[key] is not None:
-                details[key] = alt_data[key]
-
-        # / compute technical_score from indicator_data so composite != fundamental
-        # / rsi midline, macd histogram sign, adx trend strength, bb position — all 0-100
         technical_score = _compute_technical_score(indicator_data)
-
-        # / kronos candle-sequence score (0..100), blended into composite.
-        # / degrades silently to None when model is off / data too short / psutil guard trips.
         kronos_score, kronos_details = await _compute_kronos_score(pool, symbol)
         if kronos_details is not None:
             details["kronos_probability"] = kronos_details.get("probability")
             details["kronos_confidence"] = kronos_details.get("confidence")
             details["kronos_source"] = kronos_details.get("source")
+        composite_score = self._compute_composite(fundamental_score, technical_score, kronos_score)
 
-        # / 70/30 blend when both fundamental+technical exist; drop to whichever side exists.
-        # / then pull the composite toward kronos_score at weight _kronos_weight() (default 0.15).
-        if fundamental_score is not None and technical_score is not None:
-            base_composite = 0.7 * fundamental_score + 0.3 * technical_score
-        elif technical_score is not None:
-            base_composite = technical_score
-        elif fundamental_score is not None:
-            base_composite = fundamental_score
-        else:
-            base_composite = None
-
-        if kronos_score is not None and base_composite is not None:
-            kw = _kronos_weight()
-            composite_score = round((1.0 - kw) * base_composite + kw * kronos_score, 1)
-        elif base_composite is not None:
-            composite_score = round(base_composite, 1)
-        elif kronos_score is not None:
-            composite_score = kronos_score
-        else:
-            composite_score = None
-
-        # / store to analysis_scores
         used_fundamentals = ratio_score is not None or dcf_result is not None
         await tools.store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
@@ -979,27 +837,181 @@ class AnalystAgent:
             used_fundamentals=used_fundamentals,
             details=details,
         )
-
         logger.info(
             "analyst_symbol_complete",
             symbol=symbol, fundamental=fundamental_score,
             technical=technical_score, composite=composite_score,
         )
-
-        # / notify discord on strong consensus
-        if dual.consensus in ("bullish", "bearish") and fundamental_score is not None:
-            notify_details = {
-                "pe_ratio": details.get("pe_ratio"),
-                "dcf_upside": details.get("dcf_upside"),
-                "earnings_surprise_pct": details.get("earnings_surprise_pct"),
-                "consecutive_beats": details.get("consecutive_beats"),
-                "insider_signal": details.get("insider_signal"),
-                "regime": regime,
-                "ai_excerpt": dual.groq.summary if dual.groq and hasattr(dual.groq, "summary") else None,
-            }
-            notify_analysis_highlight(symbol, dual.consensus, fundamental_score, details=notify_details)
-
+        self._notify_strong_consensus(symbol, dual, fundamental_score, regime, details)
         return fundamental_score
+
+    async def _fetch_and_store_news_sentiment(self, pool, symbol: str) -> None:
+        try:
+            score = await compute_sentiment_score(symbol)
+            if score != 0.0:
+                await store_sentiment(pool, symbol, score)
+        except Exception as exc:
+            logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
+
+    async def _fetch_vix_level(self, pool) -> float | None:
+        # / reverse-normalized vix from social_sentiment.raw_score
+        try:
+            async with pool.acquire() as conn:
+                vix_row = await conn.fetchrow(
+                    """SELECT raw_score FROM social_sentiment
+                    WHERE source = 'vix'
+                    ORDER BY date DESC LIMIT 1""",
+                )
+                if vix_row and vix_row["raw_score"] is not None:
+                    return round(30.0 - float(vix_row["raw_score"]) * 20.0, 1)
+        except Exception:
+            logger.debug("vix_fetch_for_details_failed", exc_info=True)
+        return None
+
+    async def _store_dcf_safe(self, pool, dcf_result, regime, symbol: str) -> None:
+        if not dcf_result:
+            return
+        try:
+            from src.analysis.dcf_model import store_dcf_result
+            await store_dcf_result(pool, dcf_result, regime=regime)
+        except Exception as exc:
+            logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
+
+    async def _enrich_position_metrics(self, pool, strat_positions: list, symbol: str) -> None:
+        # / annotate each position with its strategy's latest quant metrics for llm context
+        if not strat_positions:
+            return
+        try:
+            async with pool.acquire() as conn:
+                score_rows = await conn.fetch(
+                    """SELECT DISTINCT ON (strategy_id) strategy_id, sharpe_ratio, sortino_ratio,
+                        win_rate, max_drawdown, composite_score, total_trades, regime_breakdown
+                    FROM strategy_scores
+                    WHERE strategy_id = ANY($1::varchar[])
+                    ORDER BY strategy_id, created_at DESC""",
+                    [p["strategy_id"] for p in strat_positions],
+                )
+            score_by_id = {r["strategy_id"]: dict(r) for r in score_rows}
+            for p in strat_positions:
+                sc = score_by_id.get(p["strategy_id"])
+                if sc:
+                    p["sharpe"] = float(sc["sharpe_ratio"]) if sc.get("sharpe_ratio") is not None else None
+                    p["win_rate"] = float(sc["win_rate"]) if sc.get("win_rate") is not None else None
+                    p["max_drawdown"] = float(sc["max_drawdown"]) if sc.get("max_drawdown") is not None else None
+                    p["total_trades"] = int(sc["total_trades"] or 0)
+        except Exception as exc:
+            logger.debug("analyst_position_metrics_enrich_failed", symbol=symbol, error=str(exc)[:100])
+
+    async def _run_dual_llm(
+        self, symbol: str, ratio_score, dcf_result, earnings_signal, insider_signal,
+        regime, symbol_trend: str, indicator_data, sentiment_data, strat_positions,
+    ):
+        # / dual-llm or groq-only on cheap cycles, fallback summary on llm failure
+        regime_with_trend = regime
+        if symbol_trend != "unknown":
+            regime_with_trend = f"{regime} | This stock's trend: {symbol_trend} (close vs SMA50)"
+        try:
+            if getattr(self, "_run_deepseek", True):
+                return await generate_dual_analysis(
+                    symbol, ratio=ratio_score, dcf=dcf_result,
+                    earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
+                    indicators=indicator_data, sentiment=sentiment_data,
+                    positions=strat_positions,
+                )
+            groq_only = await generate_summary(
+                symbol, ratio=ratio_score, dcf=dcf_result,
+                earnings=earnings_signal, insider=insider_signal, regime=regime_with_trend,
+                indicators=indicator_data, sentiment=sentiment_data,
+                positions=strat_positions,
+            )
+            from src.analysis.ai_summary import DualAnalysis
+            return DualAnalysis(
+                groq=groq_only, deepseek=None,
+                consensus=groq_only.signal, consensus_confidence=groq_only.confidence,
+            )
+        except Exception as exc:
+            logger.warning("analyst_llm_failed", symbol=symbol, error=str(exc))
+            from src.analysis.ai_summary import DualAnalysis, _build_fallback_summary
+            fallback = _build_fallback_summary(symbol, ratio_score, dcf_result, earnings_signal, insider_signal)
+            return DualAnalysis(
+                groq=fallback, deepseek=None,
+                consensus=fallback.signal, consensus_confidence=fallback.confidence,
+            )
+
+    def _build_full_details(
+        self, ratio_score, dcf_result, earnings_signal, insider_signal,
+        dual, regime, symbol_trend: str, vix_level, alt_data: dict,
+    ) -> dict:
+        # / compose the analysis_scores.details jsonb payload
+        details = self._build_details(ratio_score, dcf_result, earnings_signal, insider_signal, dual.groq)
+        if ratio_score and ratio_score.composite_score is not None:
+            details["ratio_score_100"] = ratio_score.composite_score
+        if dcf_result and dcf_result.upside_pct is not None:
+            details["dcf_score_100"] = round(max(0.0, min(100.0, (dcf_result.upside_pct + 0.5) / 1.0 * 100)), 1)
+        if earnings_signal and earnings_signal.strength is not None:
+            details["earnings_score_100"] = earnings_signal.strength
+        if insider_signal and insider_signal.strength is not None:
+            details["insider_score_100"] = insider_signal.strength
+            details["insider_signed_strength"] = insider_signal.signed_strength
+        details["ai_consensus"] = dual.consensus
+        details["ai_consensus_confidence"] = dual.consensus_confidence if hasattr(dual, "consensus_confidence") else 0.0
+        details["symbol_trend"] = symbol_trend
+        details["llm_analysis_groq"] = dual.groq.summary
+        details["llm_signal_groq"] = dual.groq.signal
+        details["llm_model_groq"] = dual.groq.model_used
+        if dual.deepseek:
+            details["llm_analysis_deepseek"] = dual.deepseek.summary
+            details["llm_signal_deepseek"] = dual.deepseek.signal
+            details["llm_model_deepseek"] = dual.deepseek.model_used
+        details["regime"] = regime
+        if vix_level is not None:
+            details["vix"] = vix_level
+        for key in (
+            "macro_score", "congressional_buy_ratio", "analyst_consensus",
+            "price_target_upside", "earnings_revision_momentum", "short_pct_float",
+            "dark_pool_ratio", "iv_rank", "put_call_ratio", "days_to_earnings",
+            "intermarket_score", "sector_relative_strength",
+        ):
+            if key in alt_data and alt_data[key] is not None:
+                details[key] = alt_data[key]
+        return details
+
+    def _compute_composite(
+        self, fundamental_score, technical_score, kronos_score,
+    ) -> float | None:
+        # / 70/30 fundamental/technical blend, then pull toward kronos at _kronos_weight()
+        if fundamental_score is not None and technical_score is not None:
+            base = 0.7 * fundamental_score + 0.3 * technical_score
+        elif technical_score is not None:
+            base = technical_score
+        elif fundamental_score is not None:
+            base = fundamental_score
+        else:
+            base = None
+        if kronos_score is not None and base is not None:
+            kw = _kronos_weight()
+            return round((1.0 - kw) * base + kw * kronos_score, 1)
+        if base is not None:
+            return round(base, 1)
+        if kronos_score is not None:
+            return kronos_score
+        return None
+
+    def _notify_strong_consensus(
+        self, symbol: str, dual, fundamental_score, regime, details: dict,
+    ) -> None:
+        if dual.consensus not in ("bullish", "bearish") or fundamental_score is None:
+            return
+        notify_details = {
+            "pe_ratio": details.get("pe_ratio"),
+            "dcf_upside": details.get("dcf_upside"),
+            "earnings_surprise_pct": details.get("earnings_surprise_pct"),
+            "consecutive_beats": details.get("consecutive_beats"),
+            "insider_signal": details.get("insider_signal"),
+            "regime": regime,
+            "ai_excerpt": dual.groq.summary if dual.groq and hasattr(dual.groq, "summary") else None,
+        }
+        notify_analysis_highlight(symbol, dual.consensus, fundamental_score, details=notify_details)
 
     def _compute_fundamental_score(
         self,
@@ -1048,19 +1060,27 @@ class AnalystAgent:
         # / build jsonb details for strategy agent to reconstruct AnalysisData
         d: dict[str, Any] = {}
         if ratio:
-            d["pe_ratio"] = float(ratio.details.get("pe_ratio")) if ratio.details.get("pe_ratio") else None
-            d["ps_ratio"] = float(ratio.details.get("ps_ratio")) if ratio.details.get("ps_ratio") else None
-            # / peg=0 means unknown/divide-by-zero — never display as 0.00
-            _peg = ratio.details.get("peg_ratio")
+            rd = ratio.details
+            _pe = rd.get("pe_ratio")
+            d["pe_ratio"] = float(_pe) if _pe else None
+            _ps = rd.get("ps_ratio")
+            d["ps_ratio"] = float(_ps) if _ps else None
+            # / peg=0 means unknown/divide-by-zero
+            _peg = rd.get("peg_ratio")
             try:
                 d["peg_ratio"] = float(_peg) if _peg and float(_peg) > 0 else None
             except (TypeError, ValueError):
                 d["peg_ratio"] = None
-            d["fcf_margin"] = float(ratio.details.get("fcf_margin")) if ratio.details.get("fcf_margin") else None
-            d["debt_to_equity"] = float(ratio.details.get("debt_to_equity")) if ratio.details.get("debt_to_equity") else None
-            d["revenue_growth"] = float(ratio.details.get("revenue_growth_1y")) if ratio.details.get("revenue_growth_1y") else None
-            d["sector_pe_avg"] = float(ratio.details.get("sector_pe_avg")) if ratio.details.get("sector_pe_avg") else None
-            d["sector_ps_avg"] = float(ratio.details.get("sector_ps_avg")) if ratio.details.get("sector_ps_avg") else None
+            _fcf = rd.get("fcf_margin")
+            d["fcf_margin"] = float(_fcf) if _fcf else None
+            _de = rd.get("debt_to_equity")
+            d["debt_to_equity"] = float(_de) if _de else None
+            _rg = rd.get("revenue_growth_1y")
+            d["revenue_growth"] = float(_rg) if _rg else None
+            _spe = rd.get("sector_pe_avg")
+            d["sector_pe_avg"] = float(_spe) if _spe else None
+            _sps = rd.get("sector_ps_avg")
+            d["sector_ps_avg"] = float(_sps) if _sps else None
             d["ratio_composite"] = ratio.composite_score
         if dcf:
             d["dcf_upside"] = dcf.upside_pct

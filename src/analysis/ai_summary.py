@@ -1016,7 +1016,7 @@ async def generate_daily_synthesis(
     symbols: list[str],
 ) -> dict[str, Any] | None:
     # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
-    from src.agents.tools import store_daily_synthesis
+    from src.data.synthesis import store_daily_synthesis
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
         logger.info("no_deepseek_key_skipping_synthesis")

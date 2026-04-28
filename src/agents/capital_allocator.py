@@ -33,19 +33,32 @@ def _rank_weight(rank_pct: float) -> float:
     return 1.0
 
 
+def _load_kelly_fractions_from_disk() -> dict[str, float]:
+    # / kelly_fraction lives in configs/strategies/<id>.json position_sizing block
+    # / strategy_scores table has no `config` column; read from disk source of truth
+    from src.strategies.strategy_loader import load_all_configs
+    out: dict[str, float] = {}
+    try:
+        for strat in load_all_configs():
+            kelly = strat.config.get("position_sizing", {}).get("kelly_fraction", 0.25)
+            try:
+                out[strat.strategy_id] = float(kelly)
+            except (TypeError, ValueError):
+                out[strat.strategy_id] = 0.25
+    except Exception as exc:
+        logger.warning("kelly_fraction_load_failed", error=str(exc)[:200])
+    return out
+
+
 async def _fetch_strategy_rows(pool: asyncpg.Pool) -> list[dict]:
-    # / pull every strategy's composite score + kelly_fraction from config + trade count
+    # / pull each strategy's latest composite score + trade count
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT s.strategy_id, s.composite_score,
-                       s.config->'position_sizing'->>'kelly_fraction' AS kelly_raw
-                FROM (
-                    SELECT DISTINCT ON (strategy_id) strategy_id, composite_score, config
-                    FROM strategy_scores
-                    ORDER BY strategy_id, updated_at DESC
-                ) s
+                SELECT DISTINCT ON (strategy_id) strategy_id, composite_score
+                FROM strategy_scores
+                ORDER BY strategy_id, created_at DESC
                 """,
             )
             trade_counts = await conn.fetch(
@@ -59,13 +72,10 @@ async def _fetch_strategy_rows(pool: asyncpg.Pool) -> list[dict]:
         return []
 
     counts = {r["strategy_id"]: int(r["n"]) for r in trade_counts}
+    kelly_map = _load_kelly_fractions_from_disk()
     out: list[dict] = []
     for r in rows:
-        kelly_raw = r.get("kelly_raw")
-        try:
-            kelly = float(kelly_raw) if kelly_raw is not None else 0.25
-        except (TypeError, ValueError):
-            kelly = 0.25
+        kelly = kelly_map.get(r["strategy_id"], 0.25)
         out.append({
             "strategy_id": r["strategy_id"],
             "composite_score": float(r["composite_score"]) if r["composite_score"] is not None else None,

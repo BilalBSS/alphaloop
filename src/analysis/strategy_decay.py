@@ -24,21 +24,8 @@ class DecaySignal:
     recommendation: str
 
 
-async def check_strategy_decay(pool, strategy_id: str) -> DecaySignal | None:
-    # / check if a strategy is decaying based on recent trade performance
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """SELECT pnl, created_at FROM trade_log
-            WHERE strategy_id = $1 AND pnl IS NOT NULL
-            ORDER BY created_at DESC LIMIT 100""",
-            strategy_id,
-        )
-
-    if len(rows) < MIN_TRADES:
-        return None
-
-    pnls = [float(r["pnl"]) for r in reversed(rows)]
-    pnl_arr = np.array(pnls)
+def _score_decay(pnl_arr: np.ndarray, strategy_id: str) -> DecaySignal | None:
+    # / pure scoring; takes pre-fetched pnl array oldest-first
 
     # / rolling sharpe (annualized)
     window = pnl_arr[-ROLLING_WINDOW:] if len(pnl_arr) >= ROLLING_WINDOW else pnl_arr
@@ -88,6 +75,46 @@ async def check_strategy_decay(pool, strategy_id: str) -> DecaySignal | None:
         cusum_triggered=cusum_triggered,
         recommendation=rec,
     )
+
+
+async def check_strategy_decay(pool, strategy_id: str) -> DecaySignal | None:
+    # / single-strategy decay check
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT pnl FROM trade_log
+            WHERE strategy_id = $1 AND pnl IS NOT NULL
+            ORDER BY created_at DESC LIMIT 100""",
+            strategy_id,
+        )
+    if len(rows) < MIN_TRADES:
+        return None
+    pnl_arr = np.array([float(r["pnl"]) for r in reversed(rows)])
+    return _score_decay(pnl_arr, strategy_id)
+
+
+async def check_all_decay(pool) -> list[DecaySignal]:
+    # / batch: one query, bucket per strategy_id, score each
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT strategy_id, pnl FROM (
+                SELECT strategy_id, pnl, created_at,
+                       ROW_NUMBER() OVER (PARTITION BY strategy_id ORDER BY created_at DESC) AS rn
+                FROM trade_log
+                WHERE strategy_id IS NOT NULL AND pnl IS NOT NULL
+            ) t WHERE rn <= 100
+            ORDER BY strategy_id, rn DESC"""
+        )
+    by_strategy: dict[str, list[float]] = {}
+    for r in rows:
+        by_strategy.setdefault(r["strategy_id"], []).append(float(r["pnl"]))
+    signals: list[DecaySignal] = []
+    for sid, pnls in by_strategy.items():
+        if len(pnls) < MIN_TRADES:
+            continue
+        sig = _score_decay(np.array(pnls), sid)
+        if sig:
+            signals.append(sig)
+    return signals
 
 
 async def check_all_strategies(pool, strategy_pool) -> list[DecaySignal]:

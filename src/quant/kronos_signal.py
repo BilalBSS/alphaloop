@@ -317,7 +317,7 @@ async def ensure_loaded_and_record_status(pool) -> dict:
     status = get_load_status()
     if pool is not None:
         try:
-            from src.agents.loop_registry import upsert_service_state
+            from src.data.loop_registry import upsert_service_state
             if status["hf_loaded"]:
                 await upsert_service_state(
                     pool, "kronos_hf_load", "success", error=None, duration_ms=duration_ms,

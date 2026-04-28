@@ -568,7 +568,7 @@ async def store_latest_prices(pool, prices: dict[str, float]) -> int:
     return len(prices)
 
 
-def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any]:
+def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any] | None:
     # / normalize alpaca bar response to our format
     timestamp = bar.get("t", "")
     if isinstance(timestamp, str) and "T" in timestamp:

@@ -73,27 +73,26 @@ async def _safe_fetch_val(pool, query: str, *args) -> Any:
 
 async def _evolution_stats(pool) -> tuple[int | None, int]:
     # / (days_since_last_kill, kills_in_last_30d)
-    # / evolution_log has killed_count column — read from there
+    # / evolution_log uses action='kill'; no killed_count column exists
     days = None
     last_kill_row = await _safe_fetch_one(
         pool,
         """SELECT created_at FROM evolution_log
-        WHERE killed_count > 0
+        WHERE action = 'kill'
         ORDER BY created_at DESC LIMIT 1""",
     )
     if last_kill_row is not None and last_kill_row[0] is not None:
         last = last_kill_row[0]
         if isinstance(last, datetime):
             now = datetime.now(timezone.utc)
-            # / normalize for naive datetime in db
             if last.tzinfo is None:
                 last = last.replace(tzinfo=timezone.utc)
             days = (now - last).days
 
     kills_30d = await _safe_fetch_val(
         pool,
-        """SELECT COALESCE(SUM(killed_count), 0) FROM evolution_log
-        WHERE created_at >= NOW() - INTERVAL '30 days'""",
+        """SELECT COUNT(*) FROM evolution_log
+        WHERE action = 'kill' AND created_at >= NOW() - INTERVAL '30 days'""",
     )
     return days, int(kills_30d or 0)
 
@@ -113,14 +112,15 @@ async def _brier_stats(pool) -> tuple[int, int]:
 
 async def _llm_split_stats(pool) -> tuple[int, int, float]:
     # / (cerebras_calls_7d, groq_calls_7d, cerebras_pct)
+    # / api_costs uses call_count, not request_count
     cerebras = await _safe_fetch_val(
         pool,
-        """SELECT COALESCE(SUM(request_count), 0) FROM api_costs
+        """SELECT COALESCE(SUM(call_count), 0) FROM api_costs
         WHERE source = 'cerebras' AND date >= CURRENT_DATE - INTERVAL '7 days'""",
     )
     groq = await _safe_fetch_val(
         pool,
-        """SELECT COALESCE(SUM(request_count), 0) FROM api_costs
+        """SELECT COALESCE(SUM(call_count), 0) FROM api_costs
         WHERE source = 'groq' AND date >= CURRENT_DATE - INTERVAL '7 days'""",
     )
     cerebras = int(cerebras or 0)
