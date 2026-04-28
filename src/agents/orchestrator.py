@@ -765,12 +765,8 @@ class AgentOrchestrator:
                 break
 
     async def _price_refresh_loop(self) -> None:
-        # / price refresh — phase 7 behavior:
-        # /   1. if streams are healthy, ONLY poll equity symbols not in the stream
-        # /      (the overflow past alpaca iex's 30-symbol cap). without this, the
-        # /      non-streamed 16 symbols get stale latest_prices rows.
-        # /   2. if streams are unhealthy, poll the full universe for that asset
-        # /      class (legacy fallback behavior).
+        # / poll only stream-overflow symbols when healthy
+        # / poll full universe when streams unhealthy
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():

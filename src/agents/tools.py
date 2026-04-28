@@ -125,15 +125,7 @@ async def store_trade_signal(
 
 
 async def fetch_pending_signals(pool, limit: int = 50) -> list[dict]:
-    # / get unprocessed trade signals, highest-conviction first.
-    # /
-    # / previously FIFO (ORDER BY created_at ASC), which meant when per-strategy
-    # / or portfolio caps bound on a burst cycle, the caps ate whichever signal
-    # / arrived first — regardless of signal strength. sells are always strength
-    # / 1.0 (forced exits) so they stay at the top; among buys, strongest signal
-    # / wins the scarce slot. ties broken by FIFO so no single strategy can game
-    # / ordering by spamming strength=0.9 — their own max_daily_trades_per_strategy
-    # / and max_positions_per_strategy caps also bind.
+    # / pending signals, strongest first, fifo on ties
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT * FROM trade_signals
@@ -393,13 +385,7 @@ async def reconcile_strategy_positions(
             for symbol, alpaca_qty in alpaca_map.items():
                 entries = db_by_symbol.pop(symbol, [])
                 if not entries:
-                    # / new position not in db — recover strategy attribution from
-                    # / the most recent buy in trade_log before falling back to
-                    # / untracked. fixes the case where a broker fill landed before
-                    # / executor's open_strategy_position committed and the next
-                    # / reconciler tick wrote the row as untracked even though
-                    # / trade_log already had the real strategy_id.
-                    # / avg_entry_price was hardcoded 0, now pulled from price_map
+                    # / recover strategy from trade_log before falling to untracked
                     avg_price = price_map.get(symbol, 0)
                     recovered = await conn.fetchrow(
                         """SELECT strategy_id FROM trade_log
@@ -419,12 +405,7 @@ async def reconcile_strategy_positions(
                     )
                     continue
 
-                # / if total tracked qty matches alpaca, no drift for this symbol —
-                # / but before skipping, heal stale attribution: if the sole
-                # / owner is 'untracked' and trade_log carries a real strategy_id
-                # / for a recent buy, re-attribute the row. this repairs the
-                # / race where the reconciler's untracked insert won a tie
-                # / against the executor's attributed insert.
+                # / matched qty: heal untracked attribution from trade_log
                 total_tracked = sum(float(e["qty"]) for e in entries)
                 if abs(total_tracked - alpaca_qty) < 0.0001:
                     untracked_rows = [e for e in entries if e["strategy_id"] == "untracked"]

@@ -1,10 +1,5 @@
-# / observation-mode replay — read-only snapshot of bars + markers + signals + trades
-# / within the window [min_t, cutoff]. zero re-simulation. zero side effects on agents.
-# / full re-sim is deferred; see phase1-max-scope.md strategist decision.
-# /
-# / this module MUST NOT import or call any agent, broker, llm client, particle filter
-# / or anything that mutates live state. every query is a pure SELECT against read-only rows.
-# / anyone extending this file with re-sim logic violates the phase 1 scope contract.
+# / read-only replay snapshot
+# / pure SELECT — never call agents, brokers, llm, or any state mutator
 
 from __future__ import annotations
 

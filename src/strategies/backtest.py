@@ -1,12 +1,5 @@
-# / backtesting engine — simulates strategy against historical data
-# / correctness is critical: no lookahead bias, realistic fills via paper broker
-# / the evolution engine will optimize for whatever this rewards, including bugs
-#
-# / anti-lookahead rules:
-# /   - strategy only sees data up to and including current bar
-# /   - entry signals evaluated at bar close, filled at next bar open
-# /   - exit signals evaluated at bar close, filled at next bar open
-# /   - no future prices, volumes, or indicators leak into decisions
+# / backtesting engine
+# / no lookahead: signal at close, fill at next open
 
 from __future__ import annotations
 
@@ -112,18 +105,7 @@ async def run_backtest(
     max_open_positions: int = 10,
     intraday_data: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
-    # / run a full backtest of a strategy against historical data
-    # / market_data: dict of symbol -> daily ohlcv dataframe (index=datetime, cols=open,high,low,close,volume)
-    # / analysis_data: optional dict of symbol -> AnalysisData for fundamental checks
-    # / intraday_data: optional dict of symbol -> 2h ohlcv for multi-timeframe strategies
-    #
-    # / flow per bar:
-    # /   1. update broker prices to current bar
-    # /   2. check exit signals for open positions (uses data up to current bar)
-    # /   3. execute pending exits at current bar open (filled at open price)
-    # /   4. check entry signals for universe (uses data up to PREVIOUS bar)
-    # /   5. execute entries at current bar open
-
+    # / signals at close, fills at next open
     broker = PaperBroker(initial_cash=initial_cash)
     universe = list(market_data.keys())
 

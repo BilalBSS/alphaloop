@@ -118,14 +118,7 @@ def _try_load_hf_model() -> bool:
 
 
 def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, float, dict]:
-    # / statistical baseline — honest fallback, not pretending to be kronos.
-    # /
-    # / returns (prob_up, confidence, components)
-    # /
-    # / combines three orthogonal signals, each in [-1, 1], then sigmoid to [0,1]:
-    # /   momentum: normalized 20-day return (winsorized)
-    # /   vol_compression: current vol < median vol suggests breakout coming
-    # /   short_term_reversion: extreme 1-day moves tend to mean-revert
+    # / momentum + vol-compression + short-term reversion, sigmoid blend
     window = ohlcv.tail(lookback).copy()
     if len(window) < 20:
         return 0.5, 0.0, {"reason": "insufficient_data", "bars": len(window)}
@@ -179,15 +172,7 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
 def _run_hf_inference(
     ohlcv: pd.DataFrame, lookback: int
 ) -> tuple[float, float, dict] | None:
-    # / runs real Kronos inference via the KronosPredictor API. Returns None on
-    # / failure so the caller can gracefully fall back.
-    # /
-    # / KronosPredictor.predict averages across its internal `sample_count` paths
-    # / before returning a single-row df (see vendor/kronos/kronos.py:auto_regressive_inference
-    # / where `preds = np.mean(preds, axis=1)`). passing sample_count=30 therefore
-    # / collapses to a single averaged close — deterministic direction → prob ∈ {0,0.5,1}.
-    # / to recover a true probability we loop sample_count=1 N times; the stochastic
-    # / decoder (T=1.0, top_p=0.9) produces a different draw each call.
+    # / loop sample_count=1 N times; predictor averages internally
     global _predictor
     if _predictor is None:
         return None

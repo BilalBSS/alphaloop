@@ -197,12 +197,7 @@ class StrategyAgent:
         if not entry_signal.should_enter:
             if stats is not None:
                 stats["no_entry"] += 1
-            # / observation_log: surface close-to-firing strategies on the
-            # / dashboard without polluting trade_log. record N-1 of N AND
-            # / passes (real near-miss) and fundamental-gate failures (the
-            # / strict_data silent-drop case). the strategist brief: "add an
-            # / observed_only signal tier that logs near-misses ... costs
-            # / nothing if you're wrong."
+            # / log near-misses to observation_log, not trade_log
             try:
                 passed_n = entry_signal.passed_count
                 total_n = entry_signal.total_count

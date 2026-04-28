@@ -462,15 +462,7 @@ async def get_crypto_fundamentals(symbol: str):
 
 @app.get("/api/phase5-metrics")
 async def get_phase5_metrics():
-    # / activation flywheel health — days since last evolution kill,
-    # / brier-populated strategy count, cerebras-vs-groq split, established wiki docs,
-    # / regime diversity per asset class. also surfaces kronos hf-vs-fallback load state.
-    # / each metric degrades independently — a missing table doesn't 500 the endpoint.
-    # /
-    # / kronos status is read from loop_activity (written by the orchestrator) rather
-    # / than from our process-local kronos_signal module: the dashboard never calls
-    # / predict(), so its module globals stay at initial values forever. DB is the
-    # / cross-process source of truth.
+    # / flywheel health metrics, db-sourced
     from src.agents.analyst_agent import get_coverage_pct
     from src.agents.loop_registry import fetch_service_state
     from src.agents.phase5_metrics import compute_phase5_metrics
@@ -611,14 +603,8 @@ async def get_strategies():
             strategies_by_id[sid] = dict(row)
             strategies_by_id[sid]["metrics_source"] = "live"
 
-    # / overlay trade_log aggregates where available
-    # / only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
-    # / broke `pnl > 0` so every buy fell into the "loss" bucket → win_rate 0.000 for everyone.
-    # / closed = sells with realized pnl; win_rate NULL until we have at least one closed trade.
-    # / expose both the "closed trades" count (used for win_rate math) and the
-    # / full fill count so strategies that have only opened positions don't read
-    # / as completely inactive in the ui. the card renders fills_count first and
-    # / falls back to total_trades for back-compat.
+    # / closed trades = sells with non-null pnl
+    # / win_rate null until first closed trade
     trade_rows = await _query(
         """SELECT strategy_id,
             COUNT(*) FILTER (WHERE side = 'sell' AND pnl IS NOT NULL) as total_trades,

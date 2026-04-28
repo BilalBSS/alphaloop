@@ -1,10 +1,6 @@
-# / central dispatch table for chart indicators
-# / indicator id format: name_param1_param2 (e.g. sma_20, bb_20_2, macd_12_26_9)
-# / params encoded as integers only — no floats in ids (psar uses step*100 convention)
-# / all compute functions take df with columns open/high/low/close/volume
-# / every result dict has a "kind" field: "series" for per-bar arrays, "horizontal_levels" for static price lines
-# / series kind: list values same length as bars, warmup positions = none
-# / horizontal_levels kind: scalar price levels, not per-bar aligned
+# / chart indicator dispatch table
+# / id format: name_int_int (no floats)
+# / kinds: series (per-bar) or horizontal_levels (static)
 
 from __future__ import annotations
 

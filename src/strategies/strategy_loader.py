@@ -20,12 +20,7 @@ CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs" / "strategies"
 
 
 class SignalConfig(BaseModel):
-    # / allow extra fields so new indicators can carry bespoke params without
-    # / growing this schema every time. the observation_log exposed that the
-    # / previous closed schema silently dropped config fields (threshold_pct,
-    # / fib_low, max_days_since_report, threshold_usd, values, sector_etf,
-    # / lookback_days, fast_period, slow_period, etc.), leaving 12 strategies
-    # / firing "unknown indicator" near-misses for weeks.
+    # / extra=allow so new indicators carry bespoke params
     model_config = {"extra": "allow"}
 
     indicator: str

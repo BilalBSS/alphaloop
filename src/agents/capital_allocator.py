@@ -167,13 +167,8 @@ async def get_allocation(
     strategy_id: str,
     max_position_pct_default: float = 0.04,
 ) -> float:
-    # / risk_agent calls this on every sizing decision. returns a weight in
-    # / roughly [0.01, 3*max_position_pct].
-    # /
-    # / when no allocation row exists (allocator hasn't run yet, or strategy is
-    # / brand new), return the full default — don't penalize strategies the
-    # / allocator hasn't seen. the allocator itself applies the undersampled
-    # / penalty once it writes rows for every known strategy.
+    # / weight in [0.01, 3*max_position_pct]
+    # / no row → return default unmodified
     if pool is None or not strategy_id:
         return max_position_pct_default
     try:
