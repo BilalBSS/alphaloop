@@ -1608,106 +1608,144 @@ class AgentOrchestrator:
             await loop_registry.complete_trigger(self._pool, trigger_id, "error", str(exc))
 
     async def _run_service_once(self, service: str) -> None:
-        # / dispatch a service name to its one-shot work (same work as the loop body)
-        from src.data.symbols import get_sector as _get_sector
-        from src.data.symbols import is_crypto as _is_crypto
-        symbols = self._get_symbols()
-        if service == "macro_backfill":
-            from src.data.fred_macro import fetch_macro_indicators
-            await fetch_macro_indicators(self._pool)
-        elif service == "fundamentals_backfill":
-            from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
-            syms = [s for s in symbols if not _is_crypto(s)]
-            data = await fetch_all_fundamentals(syms)
-            if data:
-                await store_fundamentals(self._pool, data)
-        elif service == "insider_backfill":
-            from src.data.sec_filings import fetch_insider_trades, store_insider_trades
-            syms = [s for s in symbols if not _is_crypto(s) and _get_sector(s) != "etfs"]
-            for sym in syms:
-                try:
-                    trades = await fetch_insider_trades(sym)
-                    if trades:
-                        await store_insider_trades(self._pool, trades)
-                except Exception as exc:
-                    logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
-        elif service == "regime_backfill":
-            from src.data.regime_detector import (
-                backfill_regimes,
-                backfill_regimes_per_sector,
-                snapshot_regime_daily,
-            )
-            await backfill_regimes(self._pool, "SPY", "equity")
-            await backfill_regimes(self._pool, "BTC-USD", "crypto")
-            try:
-                await backfill_regimes_per_sector(self._pool)
-            except Exception as exc:
-                logger.warning("trigger_sector_regime_failed", error=str(exc)[:120])
-            try:
-                eq = await tools.fetch_latest_regime(self._pool, "equity")
-                cr = await tools.fetch_latest_regime(self._pool, "crypto")
-                if eq:
-                    await snapshot_regime_daily(self._pool, "equity", eq)
-                if cr:
-                    await snapshot_regime_daily(self._pool, "crypto", cr)
-            except Exception as exc:
-                logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
-        elif service == "daily_bar_backfill":
-            from src.data.market_data import backfill
-            await backfill(self._pool, symbols, years=1)
-        elif service == "intraday_backfill":
-            from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
-            await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
-            await aggregate_intraday_to_2h(self._pool, symbols, days=10)
-        elif service == "crypto_backfill":
-            from src.data.market_data import backfill
-            crypto = [s for s in symbols if _is_crypto(s)]
-            if crypto:
-                await backfill(self._pool, crypto, years=1)
-        elif service == "price_refresh":
-            from src.data.market_data import fetch_latest_prices, store_latest_prices
-            prices = await fetch_latest_prices(symbols)
-            if prices:
-                await store_latest_prices(self._pool, prices)
-        elif service == "alternative_data":
-            await self._run_alternative_data_registry_cycle()
-        elif service == "analyst":
-            await self._analyst.run(self._pool, symbols, run_deepseek=False)
-        elif service == "deepseek":
-            await self._analyst.run(self._pool, symbols, run_deepseek=True)
-        elif service == "strategy":
-            broker = self._broker_factory.get_broker()
-            await self._strategy.run(self._pool, self._strategy_pool, broker)
-        elif service == "strategy_metrics":
-            await self._compute_strategy_metrics()
-        elif service == "wiki_embedding":
-            from src.knowledge.loops import _embed_backfill_once
-            await _embed_backfill_once(self._pool)
-        elif service == "knowledge_hydration":
-            cap = self._hydration_daily_cap()
-            picks = await self._fetch_hydration_candidates(cap)
-            if picks:
-                from src.knowledge.wiki_writer import enrich_symbol_doc
-                for sym in picks:
-                    try:
-                        bundle = await self._load_hydration_bundle(sym)
-                        await enrich_symbol_doc(self._pool, sym, *bundle)
-                    except Exception as exc:
-                        logger.warning("trigger_hydration_symbol_failed", symbol=sym, error=str(exc)[:120])
-        elif service == "evolution":
-            if self._strategy_pool.size >= 3:
-                market_data = await self._fetch_evolution_market_data()
-                regime = await tools.fetch_latest_regime(self._pool, "equity")
-                await self._evolution.run(
-                    self._pool, self._strategy_pool,
-                    market_data=market_data, regime=regime,
-                )
-        elif service == "cost_flush":
-            from src.data.cost_tracker import flush_to_db
-            await flush_to_db(self._pool)
-        elif service == "capital_allocator":
-            from src.agents.capital_allocator import compute_allocations
-            mpp = float(self._risk_limits.get("max_position_pct", 0.04))
-            await compute_allocations(self._pool, max_position_pct=mpp)
-        else:
+        # / dispatch via service registry; each handler does the one-shot work
+        handler = self._service_registry().get(service)
+        if handler is None:
             raise ValueError(f"service not triggerable: {service}")
+        await handler()
+
+    def _service_registry(self) -> dict:
+        # / build once on demand; method-bound, no class-level surprises
+        return {
+            "macro_backfill": self._svc_macro_backfill,
+            "fundamentals_backfill": self._svc_fundamentals_backfill,
+            "insider_backfill": self._svc_insider_backfill,
+            "regime_backfill": self._svc_regime_backfill,
+            "daily_bar_backfill": self._svc_daily_bar_backfill,
+            "intraday_backfill": self._svc_intraday_backfill,
+            "crypto_backfill": self._svc_crypto_backfill,
+            "price_refresh": self._svc_price_refresh,
+            "alternative_data": self._run_alternative_data_registry_cycle,
+            "analyst": self._svc_analyst,
+            "deepseek": self._svc_deepseek,
+            "strategy": self._svc_strategy,
+            "strategy_metrics": self._compute_strategy_metrics,
+            "wiki_embedding": self._svc_wiki_embedding,
+            "knowledge_hydration": self._svc_knowledge_hydration,
+            "evolution": self._svc_evolution,
+            "cost_flush": self._svc_cost_flush,
+            "capital_allocator": self._svc_capital_allocator,
+        }
+
+    async def _svc_macro_backfill(self) -> None:
+        from src.data.fred_macro import fetch_macro_indicators
+        await fetch_macro_indicators(self._pool)
+
+    async def _svc_fundamentals_backfill(self) -> None:
+        from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+        syms = [s for s in self._get_symbols() if not is_crypto(s)]
+        data = await fetch_all_fundamentals(syms)
+        if data:
+            await store_fundamentals(self._pool, data)
+
+    async def _svc_insider_backfill(self) -> None:
+        from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+        from src.data.symbols import get_sector
+        syms = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
+        for sym in syms:
+            try:
+                trades = await fetch_insider_trades(sym)
+                if trades:
+                    await store_insider_trades(self._pool, trades)
+            except Exception as exc:
+                logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
+
+    async def _svc_regime_backfill(self) -> None:
+        from src.data.regime_detector import (
+            backfill_regimes,
+            backfill_regimes_per_sector,
+            snapshot_regime_daily,
+        )
+        await backfill_regimes(self._pool, "SPY", "equity")
+        await backfill_regimes(self._pool, "BTC-USD", "crypto")
+        try:
+            await backfill_regimes_per_sector(self._pool)
+        except Exception as exc:
+            logger.warning("trigger_sector_regime_failed", error=str(exc)[:120])
+        try:
+            eq = await tools.fetch_latest_regime(self._pool, "equity")
+            cr = await tools.fetch_latest_regime(self._pool, "crypto")
+            if eq:
+                await snapshot_regime_daily(self._pool, "equity", eq)
+            if cr:
+                await snapshot_regime_daily(self._pool, "crypto", cr)
+        except Exception as exc:
+            logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
+
+    async def _svc_daily_bar_backfill(self) -> None:
+        from src.data.market_data import backfill
+        await backfill(self._pool, self._get_symbols(), years=1)
+
+    async def _svc_intraday_backfill(self) -> None:
+        from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
+        symbols = self._get_symbols()
+        await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
+        await aggregate_intraday_to_2h(self._pool, symbols, days=10)
+
+    async def _svc_crypto_backfill(self) -> None:
+        from src.data.market_data import backfill
+        crypto = [s for s in self._get_symbols() if is_crypto(s)]
+        if crypto:
+            await backfill(self._pool, crypto, years=1)
+
+    async def _svc_price_refresh(self) -> None:
+        from src.data.market_data import fetch_latest_prices, store_latest_prices
+        prices = await fetch_latest_prices(self._get_symbols())
+        if prices:
+            await store_latest_prices(self._pool, prices)
+
+    async def _svc_analyst(self) -> None:
+        await self._analyst.run(self._pool, self._get_symbols(), run_deepseek=False)
+
+    async def _svc_deepseek(self) -> None:
+        await self._analyst.run(self._pool, self._get_symbols(), run_deepseek=True)
+
+    async def _svc_strategy(self) -> None:
+        broker = self._broker_factory.get_broker()
+        await self._strategy.run(self._pool, self._strategy_pool, broker)
+
+    async def _svc_wiki_embedding(self) -> None:
+        from src.knowledge.loops import _embed_backfill_once
+        await _embed_backfill_once(self._pool)
+
+    async def _svc_knowledge_hydration(self) -> None:
+        cap = self._hydration_daily_cap()
+        picks = await self._fetch_hydration_candidates(cap)
+        if not picks:
+            return
+        from src.knowledge.wiki_writer import enrich_symbol_doc
+        for sym in picks:
+            try:
+                bundle = await self._load_hydration_bundle(sym)
+                await enrich_symbol_doc(self._pool, sym, *bundle)
+            except Exception as exc:
+                logger.warning("trigger_hydration_symbol_failed", symbol=sym, error=str(exc)[:120])
+
+    async def _svc_evolution(self) -> None:
+        if self._strategy_pool.size < 3:
+            return
+        market_data = await self._fetch_evolution_market_data()
+        regime = await tools.fetch_latest_regime(self._pool, "equity")
+        await self._evolution.run(
+            self._pool, self._strategy_pool,
+            market_data=market_data, regime=regime,
+        )
+
+    async def _svc_cost_flush(self) -> None:
+        from src.data.cost_tracker import flush_to_db
+        await flush_to_db(self._pool)
+
+    async def _svc_capital_allocator(self) -> None:
+        from src.agents.capital_allocator import compute_allocations
+        mpp = float(self._risk_limits.get("max_position_pct", 0.04))
+        await compute_allocations(self._pool, max_position_pct=mpp)
