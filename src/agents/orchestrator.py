@@ -103,21 +103,32 @@ class AgentOrchestrator:
         return {}
 
     async def start(self) -> None:
-        # / initialize resources and start all agent loops
+        # / coordinated startup: db -> sync -> broker -> strategies -> kronos -> streams -> loops
         logger.info("orchestrator_starting", mode=self._mode)
+        await self._bootstrap_db()
+        await self._bootstrap_alpaca_sync()
+        self._bootstrap_broker()
+        self._bootstrap_strategies()
+        await self._bootstrap_kronos()
+        await self._start_streams()
+        self._spawn_loops()
+        try:
+            await asyncio.gather(*self._tasks)
+        except asyncio.CancelledError:
+            logger.info("orchestrator_tasks_cancelled")
 
-        # / init db
+    async def _bootstrap_db(self) -> None:
+        # / init pool + prune retention tables
         self._pool = await init_db()
-
         try:
             await prune_system_events(self._pool, max_age_days=30)
             await prune_observation_log(self._pool, max_age_days=14)
         except Exception as exc:
             logger.warning("retention_prune_failed", error=str(exc)[:120])
 
-        # / sync trade_log from alpaca (source of truth) and clean stale PaperBroker data
+    async def _bootstrap_alpaca_sync(self) -> None:
+        # / clean ghost paper trades, sync filled orders, bootstrap untracked positions
         try:
-            # / remove ghost trades from in-memory PaperBroker (order_id is a uuid, alpaca uses different format)
             async with self._pool.acquire() as conn:
                 cleaned = await conn.execute(
                     """DELETE FROM trade_log WHERE broker = 'PaperBroker'
@@ -128,21 +139,20 @@ class AgentOrchestrator:
             synced = await tools.sync_trades_from_alpaca(self._pool)
             if synced:
                 logger.info("startup_alpaca_sync", trades_synced=synced)
-            # / bootstrap strategy positions from alpaca for pre-existing holdings
             pos_synced = await tools.sync_strategy_positions_from_alpaca(self._pool)
             if pos_synced:
                 logger.info("startup_position_sync", positions_synced=pos_synced)
-            # / bug e one-shot: backfill historical trade_log pnl for sells with null pnl
             backfilled = await tools.backfill_trade_pnl(self._pool)
             if backfilled:
                 logger.info("startup_pnl_backfill", updated=backfilled)
         except Exception:
             logger.debug("startup_sync_failed", exc_info=True)
 
-        # / init broker
+    def _bootstrap_broker(self) -> None:
         self._broker_factory = BrokerFactory(mode=self._mode)
 
-        # / load strategy configs
+    def _bootstrap_strategies(self) -> None:
+        # / load configs filtered by status, register in pool
         strategies = load_all_configs(
             status_filter={"backtest_pending", "paper_trading", "live"},
         )
@@ -151,28 +161,26 @@ class AgentOrchestrator:
             if hasattr(strat, "config") and strat.config.get("metadata", {}).get("status"):
                 status = strat.config["metadata"]["status"]
             self._strategy_pool.add(strat, status=status)
-
         logger.info(
             "orchestrator_initialized",
             strategies=self._strategy_pool.size,
             mode=self._mode,
         )
 
-        # / warm kronos HF model + record status to loop_activity so the dashboard
-        # / reads orchestrator ground truth (not its own stale module-level globals).
+    async def _bootstrap_kronos(self) -> None:
+        # / warm hf model + record status so dashboard reads ground truth
         try:
             from src.quant.kronos_signal import ensure_loaded_and_record_status
             kronos_status = await ensure_loaded_and_record_status(self._pool)
-            logger.info("kronos_startup_status", **{k: v for k, v in kronos_status.items() if k != "fallback_reason"})
+            logger.info(
+                "kronos_startup_status",
+                **{k: v for k, v in kronos_status.items() if k != "fallback_reason"},
+            )
         except Exception as exc:
             logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
 
-        # / websocket streams for live prices. alpaca iex for stocks,
-        # / coinbase advanced-trade-ws for crypto. aggregator loop drains → latest_prices.
-        # / _price_refresh_loop stays put as fallback when the stream circuit breaker opens.
-        await self._start_streams()
-
-        # / launch all loops
+    def _spawn_loops(self) -> None:
+        # / launch every periodic loop as an asyncio task
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
             asyncio.create_task(self._deepseek_loop(), name="deepseek"),
@@ -195,23 +203,13 @@ class AgentOrchestrator:
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
             asyncio.create_task(self._alert_loop(), name="alert"),
             asyncio.create_task(self._regime_loop(), name="regime_backfill"),
-            # / knowledge base upkeep
             asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
-            # / daily symbol wiki hydration (writes stubs back as playbooks)
             asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
-            # / pull trigger_requests rows posted by dashboard /api/admin/trigger
             asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
-            # / weekly kelly-weighted capital allocation refresh
             asyncio.create_task(self._capital_allocator_loop(), name="capital_allocator"),
-            # / drain tick buffer → latest_prices every minute
             asyncio.create_task(self._stream_aggregator_loop(), name="stream_aggregator"),
         ]
-
-        try:
-            await asyncio.gather(*self._tasks)
-        except asyncio.CancelledError:
-            logger.info("orchestrator_tasks_cancelled")
 
     async def stop(self) -> None:
         # / graceful shutdown
