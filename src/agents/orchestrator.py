@@ -14,16 +14,16 @@ import pandas as pd
 import structlog
 
 from src.agents import tools
-from src.data import loop_registry
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent
 from src.agents.risk_agent import RiskAgent
 from src.agents.strategy_agent import StrategyAgent
+from src.agents.stream_manager import StreamManager
 from src.brokers.broker_factory import BrokerFactory
+from src.data import loop_registry
 from src.data.db import close_db, init_db
 from src.data.retention import prune_observation_log, prune_system_events
-from src.data.streams import AlpacaStream, CoinbaseStream, TickBuffer
 from src.data.symbols import FULL_UNIVERSE, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
 from src.notifications.notifier import notify_system_error
@@ -87,19 +87,8 @@ class AgentOrchestrator:
         # / track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
-        # / websocket streams — shared tick buffer + per-vendor handles
-        self._tick_buffer: TickBuffer | None = None
-        self._alpaca_stream: AlpacaStream | None = None
-        self._coinbase_stream: CoinbaseStream | None = None
-        self._last_tick_broadcast: dict[str, float] = {}
-        # / equity symbols passed to the alpaca stream (capped at 30 on free tier).
-        # / overflow symbols are rest-polled every 5 min via _price_refresh_loop.
-        self._streamed_equity_symbols: set[str] = set()
-        # / bound the in-flight broadcast task count so a slow dashboard client
-        # / can't let fire-and-forget ws sends pile up unbounded under tick storms.
-        self._broadcast_semaphore = asyncio.Semaphore(50)
-        self._broadcast_dropped = 0
-        self._broadcast_drop_log_next = 0.0
+        # / stream manager owns alpaca + coinbase ws + tick buffer + broadcast fan-out
+        self._streams = StreamManager(broadcast_semaphore_size=50)
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -234,12 +223,7 @@ class AgentOrchestrator:
             task.cancel()
 
         # / stop streams first (they sit outside self._tasks)
-        for stream in (self._alpaca_stream, self._coinbase_stream):
-            if stream is not None:
-                try:
-                    await stream.stop()
-                except Exception as exc:
-                    logger.debug("stream_stop_failed", error=str(exc)[:120])
+        await self._streams.stop()
 
         # / wait for tasks to finish (with timeout)
         if self._tasks:
@@ -782,8 +766,8 @@ class AgentOrchestrator:
                     else:
                         from src.data.market_data import fetch_latest_prices, store_latest_prices
                         symbols = self._get_symbols()
-                        equity_healthy = self._streams_healthy_equity()
-                        crypto_healthy = self._streams_healthy_crypto()
+                        equity_healthy = self._streams.is_equity_healthy()
+                        crypto_healthy = self._streams.is_crypto_healthy()
 
                         poll_syms: list[str] = []
                         for s in symbols:
@@ -794,7 +778,7 @@ class AgentOrchestrator:
                                 # / equity: poll if stream unhealthy OR the symbol
                                 # / isn't in the streamed set (overflow past 30 cap)
                                 if (not equity_healthy
-                                        or s not in self._streamed_equity_symbols):
+                                        or s not in self._streams.streamed_equity_symbols):
                                     poll_syms.append(s)
 
                         if not poll_syms:
@@ -821,146 +805,16 @@ class AgentOrchestrator:
                 break
 
     async def _start_streams(self) -> None:
-        # / split universe → equity (alpaca) + crypto (coinbase); start both streams.
-        # / alpaca iex free tier caps at 30 symbols per connection. if the equity
-        # / universe is larger we stream the first N (preserves FULL_UNIVERSE order:
-        # / etfs + mega-caps + semis take priority) and the overflow falls back to
-        # / 5-min rest polling via _price_refresh_loop.
-        symbols = self._get_symbols()
-        equity_all = [s for s in symbols if not is_crypto(s)]
-        crypto_syms = [s for s in symbols if is_crypto(s)]
-        try:
-            stream_cap = int(os.environ.get("ALPACA_STREAM_MAX_SYMBOLS", "30"))
-        except ValueError:
-            stream_cap = 30
-        equity_streamed = equity_all[:stream_cap]
-        equity_overflow = equity_all[stream_cap:]
-        self._streamed_equity_symbols = set(equity_streamed)
-        if equity_overflow:
-            logger.info("alpaca_stream_symbol_cap",
-                        cap=stream_cap, streamed=len(equity_streamed),
-                        overflow=len(equity_overflow),
-                        overflow_symbols=equity_overflow,
-                        note="overflow symbols use 5-min rest poll fallback")
-
-        self._tick_buffer = TickBuffer(max_per_symbol=1000)
-
-        if equity_streamed:
-            self._alpaca_stream = AlpacaStream(
-                equity_streamed, self._tick_buffer, on_tick=self._on_tick_broadcast,
-            )
-            try:
-                await self._alpaca_stream.start()
-            except Exception as exc:
-                logger.warning("alpaca_stream_start_failed", error=str(exc)[:200])
-        if crypto_syms:
-            self._coinbase_stream = CoinbaseStream(
-                crypto_syms, self._tick_buffer, on_tick=self._on_tick_broadcast,
-            )
-            try:
-                await self._coinbase_stream.start()
-            except Exception as exc:
-                logger.warning("coinbase_stream_start_failed", error=str(exc)[:200])
-
-    def _on_tick_broadcast(self, tick) -> None:
-        # / fan each tick out to dashboard ws clients, rate-limited per symbol.
-        # / fire-and-forget — buffering is already done by _emit before us.
-        # / bounded by self._broadcast_semaphore so the task queue can't grow
-        # / unbounded if a dashboard client stops reading.
-        import time as _t
-        now = _t.monotonic()
-        last = self._last_tick_broadcast.get(tick.symbol, 0.0)
-        if (now - last) < PRICE_TICK_BROADCAST_MIN_INTERVAL:
-            return
-        self._last_tick_broadcast[tick.symbol] = now
-        try:
-            from src.dashboard.app import _ws_clients
-            if not _ws_clients:
-                return
-            if self._broadcast_semaphore.locked():
-                # / drop silently — the tick is stale anyway once we're backlogged.
-                # / aggregate count + log at most once per minute.
-                self._broadcast_dropped += 1
-                if now >= self._broadcast_drop_log_next:
-                    logger.warning(
-                        "price_tick_broadcast_dropped",
-                        dropped_total=self._broadcast_dropped,
-                    )
-                    self._broadcast_drop_log_next = now + 60.0
-                return
-            payload = {
-                "symbol": tick.symbol,
-                "price": tick.price,
-                "timestamp_ms": tick.timestamp_ms,
-                "vendor": tick.vendor,
-            }
-            tools.fire_and_forget(self._bounded_broadcast("price_tick", payload))
-        except Exception:
-            pass  # / dashboard not mounted in this process
-
-    async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
-        async with self._broadcast_semaphore:
-            try:
-                from src.dashboard.app import broadcast
-                await broadcast(event_type, payload)
-            except Exception as exc:
-                logger.debug("bounded_broadcast_failed",
-                             event=event_type, error=str(exc)[:120])
-
-    @staticmethod
-    def _stream_healthy(s) -> bool:
-        if s is None or s.state.circuit_breaker.is_open or s.state.last_tick_at is None:
-            return False
-        return (time.monotonic() - s.state.last_tick_at) < STREAM_FRESH_TICK_S
-
-    def _streams_healthy_equity(self) -> bool:
-        return self._stream_healthy(self._alpaca_stream)
-
-    def _streams_healthy_crypto(self) -> bool:
-        return self._stream_healthy(self._coinbase_stream)
+        # / delegate stream lifecycle to StreamManager
+        await self._streams.start(self._get_symbols())
 
     async def _stream_aggregator_loop(self) -> None:
-        # / every 60s, drain the tick buffer and write the newest tick per symbol
-        # / into latest_prices. gives downstream consumers (analyst, risk, dashboard
-        # / refresh) a fresh pointer even between manual refreshes.
-        # / escalates to a visible error after N consecutive upsert failures so the
-        # / operator sees "aggregator stuck" on /api/loops instead of silent staleness.
-        if self._tick_buffer is None:
+        # / every 60s, drain tick buffer and write latest_prices via StreamManager
+        if self._streams.tick_buffer is None:
             return
-        from src.data.market_data import store_latest_prices
-        consecutive_failures = 0
-        escalation_threshold = 3
+        consecutive_failures = [0]
         while not self._stop_event.is_set():
-            try:
-                drained = await self._tick_buffer.drain_all()
-                if drained:
-                    latest = {
-                        sym: float(ticks[-1].price)
-                        for sym, ticks in drained.items()
-                        if ticks
-                    }
-                    if latest and self._pool is not None:
-                        await store_latest_prices(self._pool, latest)
-                        logger.debug("stream_aggregator_upserted", n=len(latest))
-                if consecutive_failures > 0:
-                    consecutive_failures = 0
-                    await loop_registry.upsert_service_state(
-                        self._pool, "stream_aggregator", "ok", error=None,
-                    )
-            except Exception as exc:
-                consecutive_failures += 1
-                logger.warning(
-                    "stream_aggregator_error",
-                    error=str(exc)[:200],
-                    consecutive_failures=consecutive_failures,
-                )
-                if consecutive_failures >= escalation_threshold:
-                    await loop_registry.upsert_service_state(
-                        self._pool,
-                        "stream_aggregator",
-                        "error",
-                        error=f"aggregator stuck ({consecutive_failures} consecutive failures): {str(exc)[:200]}",
-                    )
+            await self._streams.aggregate_once(self._pool, consecutive_failures)
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
