@@ -17,18 +17,18 @@ from src.knowledge.wiki_writer import (
 )
 
 __all__ = [
-    "WikiWriter",
-    "WikiSearch",
-    "WikiContext",
-    "StrategyLessons",
-    "OllamaEmbedder",
     "EMBED_DIM",
-    "VectorStore",
     "HybridRetriever",
-    "chunk_markdown",
+    "OllamaEmbedder",
+    "StrategyLessons",
+    "VectorStore",
+    "WikiContext",
+    "WikiSearch",
+    "WikiWriter",
     "can_write_post_mortem",
-    "write_post_mortem",
-    "on_regime_shift",
+    "chunk_markdown",
     "get_wiki_root",
+    "on_regime_shift",
     "set_wiki_root",
+    "write_post_mortem",
 ]

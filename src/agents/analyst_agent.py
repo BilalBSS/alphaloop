@@ -5,20 +5,19 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import structlog
 
-import os
-
-from src.analysis.ratio_analysis import RatioScore, analyze_ratios
+from src.agents import tools
+from src.analysis.ai_summary import generate_dual_analysis, generate_summary
 from src.analysis.dcf_model import DCFResult, analyze_dcf
 from src.analysis.earnings_signals import EarningsSignal, analyze_earnings
 from src.analysis.insider_activity import InsiderSignal, analyze_insider_activity
-from src.analysis.ai_summary import generate_dual_analysis, generate_summary
-from src.agents import tools
+from src.analysis.ratio_analysis import RatioScore, analyze_ratios
 from src.data.crypto_data import fetch_coin_data, fetch_funding_rates, get_funding_rate
 from src.data.news_sentiment import compute_sentiment_score, store_sentiment
 from src.data.social_sentiment import run_social_sentiment
@@ -593,8 +592,9 @@ class AnalystAgent:
         if indicator_data is None:
             try:
                 import pandas as pd
+
                 from src.indicators.momentum import rsi
-                from src.indicators.trend import macd, adx
+                from src.indicators.trend import adx, macd
                 async with pool.acquire() as conn:
                     ohlc_rows = await conn.fetch(
                         """SELECT high, low, close FROM market_data
@@ -643,15 +643,15 @@ class AnalystAgent:
         return (regime, symbol_trend, indicator_data, sentiment_data)
 
     async def _fetch_alternative_data(self, pool, symbol: str) -> dict:
-        from src.data.symbols import get_sector
-        from src.data.fred_macro import fetch_macro_indicators, get_macro_score
-        from src.data.congressional_trades import fetch_congressional_trades, compute_net_buy_ratio
-        from src.data.analyst_ratings import fetch_analyst_ratings, compute_target_upside
-        from src.data.earnings_revisions import fetch_earnings_estimates, compute_revision_momentum
-        from src.data.short_interest import fetch_short_interest
-        from src.data.dark_pool import fetch_dark_pool_data
-        from src.data.options_data import fetch_options_data
+        from src.data.analyst_ratings import compute_target_upside, fetch_analyst_ratings
+        from src.data.congressional_trades import compute_net_buy_ratio, fetch_congressional_trades
         from src.data.corporate_events import days_to_earnings
+        from src.data.dark_pool import fetch_dark_pool_data
+        from src.data.earnings_revisions import compute_revision_momentum, fetch_earnings_estimates
+        from src.data.fred_macro import fetch_macro_indicators, get_macro_score
+        from src.data.options_data import fetch_options_data
+        from src.data.short_interest import fetch_short_interest
+        from src.data.symbols import get_sector
         from src.indicators.intermarket import compute_intermarket
 
         alt: dict = {}

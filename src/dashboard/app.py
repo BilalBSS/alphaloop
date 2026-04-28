@@ -10,11 +10,11 @@ import json
 import os
 import time
 import traceback
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import asyncpg
 import structlog
-from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -470,9 +470,9 @@ async def get_phase5_metrics():
     # / than from our process-local kronos_signal module: the dashboard never calls
     # / predict(), so its module globals stay at initial values forever. DB is the
     # / cross-process source of truth.
-    from src.agents.phase5_metrics import compute_phase5_metrics
-    from src.agents.loop_registry import fetch_service_state
     from src.agents.analyst_agent import get_coverage_pct
+    from src.agents.loop_registry import fetch_service_state
+    from src.agents.phase5_metrics import compute_phase5_metrics
     from src.data.symbols import FULL_UNIVERSE
     try:
         metrics = await compute_phase5_metrics(_pool)
@@ -1904,9 +1904,10 @@ async def get_portfolio_correlation():
     if _pool is None or len(positions) < 2:
         return {"symbols": [s.symbol for s in positions], "matrix": [], "avg_correlation": 0.0, "is_concentrated": False}
     try:
-        from src.quant.correlation_monitor import check_portfolio_correlation
         # / rebuild the matrix here because check_portfolio_correlation only returns summary stats
         import numpy as np
+
+        from src.quant.correlation_monitor import check_portfolio_correlation
         symbols = [p.symbol for p in positions]
         returns_map: dict[str, list[float]] = {}
         async with _pool.acquire() as conn:
@@ -2016,6 +2017,7 @@ async def get_portfolio_tail_dependence():
 
         import numpy as np
         from scipy.stats import rankdata
+
         from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
 
         async with _pool.acquire() as conn:
@@ -2111,8 +2113,9 @@ async def get_staleness():
     if not _pool:
         return {"sources": []}
     try:
-        from src.data.staleness_monitor import check_all_freshness
         import math
+
+        from src.data.staleness_monitor import check_all_freshness
         results = await check_all_freshness(_pool)
         # / staleness_monitor uses float('inf') for sources that failed entirely.
         # / json.dumps can't encode inf, so the whole response 500s if any source
@@ -2176,7 +2179,7 @@ async def admin_trigger(service: str, request: Request):
     # / queue a one-shot run of {service} for the orchestrator to pick up
     # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
     # / secure-by-default: missing ADMIN_TOKEN → 503, not open access
-    from src.agents.loop_registry import enqueue_trigger, LOOP_METADATA
+    from src.agents.loop_registry import LOOP_METADATA, enqueue_trigger
     if not _ADMIN_TOKEN:
         return JSONResponse(
             {"error": "admin_token_not_configured",
@@ -2262,9 +2265,7 @@ def _serialize_one(row: dict | None) -> dict | None:
     for k, v in row.items():
         if hasattr(v, "isoformat"):
             result[k] = v.isoformat()
-        elif isinstance(v, (int, float, str, bool, type(None))):
-            result[k] = v
-        elif isinstance(v, (dict, list)):
+        elif isinstance(v, (int, float, str, bool, type(None))) or isinstance(v, (dict, list)):
             result[k] = v
         else:
             result[k] = str(v)

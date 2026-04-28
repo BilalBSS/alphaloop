@@ -14,9 +14,9 @@ import structlog
 from src.agents import tools
 from src.indicators.mean_reversion import hurst_exponent
 from src.indicators.momentum import rsi
-from src.indicators.trend import sma, macd, adx
-from src.indicators.volatility import bollinger_bands, atr
 from src.indicators.structure import fair_value_gaps, order_blocks, structure_breaks
+from src.indicators.trend import adx, macd, sma
+from src.indicators.volatility import atr, bollinger_bands
 from src.notifications.notifier import notify_strategy_evaluation
 from src.quant.particle_filter import ParticleFilter
 from src.strategies.base_strategy import ConfigDrivenStrategy, EntrySignal

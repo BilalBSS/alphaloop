@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy import stats, optimize, special
 import structlog
+from scipy import optimize, special, stats
 
 logger = structlog.get_logger(__name__)
 

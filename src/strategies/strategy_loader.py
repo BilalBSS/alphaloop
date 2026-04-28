@@ -65,7 +65,7 @@ class StopLossConfig(BaseModel):
     period: int | None = None
 
     @model_validator(mode="after")
-    def validate_actionable(self) -> "StopLossConfig":
+    def validate_actionable(self) -> StopLossConfig:
         # / require_stop_loss from risk_limits.json: every stop_loss must have teeth
         # / fixed_pct → pct required; atr_trailing / atr_stop → multiplier required
         t = (self.type or "fixed_pct").lower()
@@ -244,7 +244,7 @@ class StrategyConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_tier_constraints(self) -> "StrategyConfig":
+    def validate_tier_constraints(self) -> StrategyConfig:
         # / tier-2 and tier-3 require a symbol
         if self.tier in ("tweaked", "graduated") and not self.symbol:
             raise ValueError(f"tier '{self.tier}' requires a symbol to be set")
@@ -254,7 +254,7 @@ class StrategyConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_track_constraints(self) -> "StrategyConfig":
+    def validate_track_constraints(self) -> StrategyConfig:
         # / fundamental-gated = at least one filter field is actually set
         # / empty {} or all-None fields = momentum-only (no free 8% bypass)
         has_fundamentals = (

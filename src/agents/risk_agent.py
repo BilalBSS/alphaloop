@@ -5,14 +5,12 @@
 from __future__ import annotations
 
 import os
-
 import time
 
 import numpy as np
 import structlog
 
-from src.agents import tools
-from src.agents import capital_allocator
+from src.agents import capital_allocator, tools
 from src.brokers.base import BrokerInterface
 
 logger = structlog.get_logger(__name__)

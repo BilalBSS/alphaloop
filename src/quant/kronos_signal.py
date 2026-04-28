@@ -102,7 +102,7 @@ def _try_load_hf_model() -> bool:
         # / vendored from github.com/shiyu-coder/Kronos (see src/quant/vendor/kronos/)
         # / the HF repo only ships weights + config; loading classes aren't in HF auto-map
         # / so we need the upstream KronosTokenizer/Kronos/KronosPredictor classes locally.
-        from src.quant.vendor.kronos import Kronos, KronosTokenizer, KronosPredictor
+        from src.quant.vendor.kronos import Kronos, KronosPredictor, KronosTokenizer
     except ImportError as exc:
         _model_load_failed_reason = f"kronos_import_failed: {str(exc)[:180]}"
         logger.warning("kronos_vendor_import_failed", error=str(exc)[:200])

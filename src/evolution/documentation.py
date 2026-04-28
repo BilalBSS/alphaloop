@@ -36,7 +36,7 @@ async def update_docs(
     entry = "\n".join(entry_lines)
 
     if target.exists():
-        async with aiofiles.open(target, "r") as f:
+        async with aiofiles.open(target) as f:
             content = await f.read()
 
         lines = content.split("\n")

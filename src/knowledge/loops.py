@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import structlog
 
 from src.knowledge.chunker import chunk_markdown

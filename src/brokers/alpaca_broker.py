@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 
@@ -16,7 +17,7 @@ from src.data.alpaca_client import (
     get_alpaca_client,
 )
 from src.data.resilience import with_retry
-from src.data.symbols import to_alpaca, is_crypto
+from src.data.symbols import is_crypto, to_alpaca
 
 from .base import AccountBalance, BrokerInterface, Order, Position
 

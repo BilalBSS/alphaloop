@@ -19,6 +19,7 @@ from src.agents.tools import (
     store_evolution_log,
     store_strategy_score,
 )
+from src.data.symbols import get_sector_symbols
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
@@ -29,11 +30,10 @@ from src.knowledge.db_helpers import (
 )
 from src.knowledge.strategy_lessons import StrategyLessons
 from src.knowledge.wiki_context import WikiContext
+from src.notifications.notifier import notify_evolution_summary, notify_strategy_promoted
 from src.strategies.backtest import BacktestResult, run_backtest
 from src.strategies.base_strategy import ConfigDrivenStrategy
 from src.strategies.strategy_loader import save_config
-from src.notifications.notifier import notify_evolution_summary, notify_strategy_promoted
-from src.data.symbols import get_sector_symbols
 from src.strategies.strategy_pool import (
     StrategyPool,
     StrategyScore,
@@ -51,7 +51,7 @@ def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
     # / phase 7 tier 1: notify ws clients when a strategy changes status
     # / (killed, paper_trading, live). late-bind so headless tests pass.
     try:
-        from src.dashboard.app import broadcast, _ws_clients
+        from src.dashboard.app import _ws_clients, broadcast
     except Exception:
         return
     if not _ws_clients:
@@ -745,7 +745,7 @@ class EvolutionEngine:
         # / for each live sector/general strategy, check if any symbol has enough
         # / trades to warrant a per-symbol tweak (tier 2)
         # / handles both sector-specific and universe-wide (all_stocks) strategies
-        from src.data.symbols import get_sector, FULL_UNIVERSE
+        from src.data.symbols import FULL_UNIVERSE, get_sector
         spawned = []
         for entry in strategy_pool.list_by_status("live"):
             config = entry.strategy.config

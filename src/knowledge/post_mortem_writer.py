@@ -11,9 +11,13 @@ from typing import Any
 import structlog
 
 from src.analysis.ai_summary import (
-    CEREBRAS_FAST_MODEL, CEREBRAS_MODEL,
-    DEFAULT_MODEL, FALLBACK_MODEL,
-    _RateLimited, _call_cerebras, _call_llm,
+    CEREBRAS_FAST_MODEL,
+    CEREBRAS_MODEL,
+    DEFAULT_MODEL,
+    FALLBACK_MODEL,
+    _call_cerebras,
+    _call_llm,
+    _RateLimited,
 )
 from src.knowledge.db_helpers import (
     claim_post_mortem_slot,
@@ -183,13 +187,14 @@ def _compose_markdown(
 def _load_strategy_config(strategy_id: str) -> dict | None:
     # / read the raw json config off disk to avoid pydantic roundtrip cost
     import re as _re
+
     from src.strategies.strategy_loader import CONFIGS_DIR
 
     if not strategy_id or not _re.match(r"^[a-zA-Z0-9_-]+$", strategy_id):
         return None
     path = CONFIGS_DIR / f"{strategy_id}.json"
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None

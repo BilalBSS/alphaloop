@@ -14,7 +14,7 @@ import structlog
 from src.agents import tools
 from src.brokers.base import BrokerInterface
 from src.data.symbols import is_crypto
-from src.notifications.notifier import notify_trade_executed, notify_trade_error
+from src.notifications.notifier import notify_trade_error, notify_trade_executed
 
 logger = structlog.get_logger(__name__)
 
@@ -28,7 +28,7 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
     # / phase 7 tier 1: fan trade_executed + position_update out to ws clients.
     # / late-bind the dashboard import so tests / headless workers don't fail.
     try:
-        from src.dashboard.app import broadcast, _ws_clients
+        from src.dashboard.app import _ws_clients, broadcast
     except Exception:
         return
     if not _ws_clients:

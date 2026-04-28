@@ -7,8 +7,8 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from scipy import stats
 import structlog
+from scipy import stats
 
 logger = structlog.get_logger(__name__)
 

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import structlog
 
-
 from .alpaca_broker import AlpacaBroker
 from .base import BrokerInterface
 from .paper_broker import PaperBroker

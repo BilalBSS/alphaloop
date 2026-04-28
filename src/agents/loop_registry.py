@@ -331,14 +331,14 @@ async def complete_trigger(
 
 class _LoopTracker:
     # / async context manager that times a loop body and records start/end
-    __slots__ = ("_pool", "_name", "_started")
+    __slots__ = ("_name", "_pool", "_started")
 
     def __init__(self, pool: asyncpg.Pool | None, name: str) -> None:
         self._pool = pool
         self._name = name
         self._started = 0.0
 
-    async def __aenter__(self) -> "_LoopTracker":
+    async def __aenter__(self) -> _LoopTracker:
         import time
         self._started = time.monotonic()
         await record_fire_start(self._pool, self._name)

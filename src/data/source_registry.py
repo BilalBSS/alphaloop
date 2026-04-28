@@ -11,8 +11,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import structlog
 
@@ -83,13 +83,15 @@ def clear() -> None:
 def _register_defaults() -> None:
     # / wire the live alt-data modules into the registry
     # / each entry points at the existing fetch/store functions; no new modules needed
-    from src.data import fred_macro
-    from src.data import congressional_trades
-    from src.data import analyst_ratings
-    from src.data import earnings_revisions
-    from src.data import short_interest
-    from src.data import dark_pool
-    from src.data import options_data
+    from src.data import (
+        analyst_ratings,
+        congressional_trades,
+        dark_pool,
+        earnings_revisions,
+        fred_macro,
+        options_data,
+        short_interest,
+    )
 
     # / fred macro — global (no symbol), populates AnalysisData.macro_score, filter macro_score_min
     register(AltDataSource(

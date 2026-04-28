@@ -17,9 +17,11 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime
-from typing import Any, Callable, Deque, Literal
+from datetime import datetime
+from datetime import time as dtime
+from typing import Any, Literal
 
 import structlog
 
@@ -61,12 +63,15 @@ class TickBuffer:
     # / overflow warning so a single hot symbol can't spam the log.
 
     __slots__ = (
-        "_by_symbol", "_max_per_symbol", "_lock",
-        "_dropped", "_log_suppress_until",
+        "_by_symbol",
+        "_dropped",
+        "_lock",
+        "_log_suppress_until",
+        "_max_per_symbol",
     )
 
     def __init__(self, max_per_symbol: int = 1000) -> None:
-        self._by_symbol: dict[str, Deque[Tick]] = {}
+        self._by_symbol: dict[str, deque[Tick]] = {}
         self._max_per_symbol = max_per_symbol
         self._lock = asyncio.Lock()
         self._dropped: dict[str, int] = {}

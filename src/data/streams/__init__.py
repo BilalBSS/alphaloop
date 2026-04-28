@@ -5,15 +5,15 @@
 # / to 1-min bars before hitting latest_prices. resilience primitives live in
 # / base.py; each vendor module handles protocol specifics.
 
-from .base import StreamBase, TickBuffer, StreamState, CircuitBreaker
 from .alpaca_ws import AlpacaStream
+from .base import CircuitBreaker, StreamBase, StreamState, TickBuffer
 from .coinbase_ws import CoinbaseStream
 
 __all__ = [
-    "StreamBase",
-    "TickBuffer",
-    "StreamState",
-    "CircuitBreaker",
     "AlpacaStream",
+    "CircuitBreaker",
     "CoinbaseStream",
+    "StreamBase",
+    "StreamState",
+    "TickBuffer",
 ]

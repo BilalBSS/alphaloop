@@ -11,7 +11,8 @@ from typing import Any
 
 import structlog
 
-from .alpaca_client import DATA_URL as ALPACA_DATA_URL, alpaca_headers, get_alpaca_client
+from .alpaca_client import DATA_URL as ALPACA_DATA_URL
+from .alpaca_client import alpaca_headers, get_alpaca_client
 from .resilience import with_retry
 from .symbols import is_crypto, to_alpaca
 from .validators import validate_ohlcv

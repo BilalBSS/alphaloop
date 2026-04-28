@@ -13,7 +13,7 @@ from typing import Any
 
 import structlog
 
-from .sec_filings import _edgar_semaphore, _edgar_delay
+from .sec_filings import _edgar_delay, _edgar_semaphore
 from .validators import validate_fundamentals
 
 logger = structlog.get_logger(__name__)

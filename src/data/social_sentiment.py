@@ -10,9 +10,10 @@ from typing import Any
 
 import structlog
 
+from src.notifications.notifier import notify_sentiment_shift
+
 from .resilience import api_get, configure_rate_limit, with_retry
 from .symbols import is_crypto
-from src.notifications.notifier import notify_sentiment_shift
 
 logger = structlog.get_logger(__name__)
 

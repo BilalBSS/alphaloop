@@ -141,7 +141,7 @@ class WikiWriter:
         async with lock:
             if not abs_path.exists():
                 raise FileNotFoundError(f"cannot append to missing doc: {rel_path}")
-            async with aiofiles.open(abs_path, "r", encoding="utf-8") as f:
+            async with aiofiles.open(abs_path, encoding="utf-8") as f:
                 existing = await f.read()
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             section = f"\n\n## {heading} ({timestamp})\n\n{body}\n"
@@ -157,7 +157,7 @@ class WikiWriter:
         abs_path = self._abs_path(rel_path)
         if not abs_path.exists():
             return None
-        async with aiofiles.open(abs_path, "r", encoding="utf-8") as f:
+        async with aiofiles.open(abs_path, encoding="utf-8") as f:
             return await f.read()
 
     async def list_documents(
@@ -392,9 +392,13 @@ async def _generate_symbol_enrichment(prompt: str, symbol: str) -> tuple[str | N
         return None, None
 
     from src.analysis.ai_summary import (
-        CEREBRAS_FAST_MODEL, CEREBRAS_MODEL,
-        DEFAULT_MODEL, FALLBACK_MODEL,
-        _RateLimited, _call_cerebras, _call_llm,
+        CEREBRAS_FAST_MODEL,
+        CEREBRAS_MODEL,
+        DEFAULT_MODEL,
+        FALLBACK_MODEL,
+        _call_cerebras,
+        _call_llm,
+        _RateLimited,
     )
     from src.data.llm_client import build_fallback_chain
 

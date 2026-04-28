@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import structlog
 
@@ -36,23 +37,22 @@ class VectorStore:
             )
 
         written = 0
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM wiki_embeddings WHERE document_id = $1",
+                document_id,
+            )
+            for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings)):
+                if vec is None or not chunk_text.strip():
+                    continue
                 await conn.execute(
-                    "DELETE FROM wiki_embeddings WHERE document_id = $1",
-                    document_id,
-                )
-                for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings)):
-                    if vec is None or not chunk_text.strip():
-                        continue
-                    await conn.execute(
-                        """
+                    """
                         INSERT INTO wiki_embeddings (document_id, chunk_index, chunk_text, embedding)
                         VALUES ($1, $2, $3, $4::vector)
                         """,
-                        document_id, idx, chunk_text, _format_vector(vec),
-                    )
-                    written += 1
+                    document_id, idx, chunk_text, _format_vector(vec),
+                )
+                written += 1
         logger.info(
             "wiki_embeddings_upserted",
             document_id=document_id, written=written, total=len(chunks),

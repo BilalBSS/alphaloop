@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 import structlog
@@ -605,7 +606,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _check_entry_technicals(
         self, market_data: pd.DataFrame, intraday_df: pd.DataFrame | None = None,
-        analysis_data: "AnalysisData | None" = None,
+        analysis_data: AnalysisData | None = None,
     ) -> tuple[bool, float, list[str], int, int, list[str]]:
         # / evaluate technical entry conditions from config.
         # / returns (overall_passed, strength, reasons, passed_count, total_count, failed_reasons).
@@ -1098,7 +1099,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_regime(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         if analysis_data is None or not analysis_data.regime:
             return False, 0.0, "regime: no analysis data"
@@ -1116,7 +1117,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_sector_relative_strength(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         if analysis_data is None or analysis_data.sector_relative_strength is None:
             return False, 0.0, "sector_relative_strength: no analysis data"
@@ -1133,7 +1134,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_earnings_surprise(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         if analysis_data is None or analysis_data.earnings_surprise_pct is None:
             return False, 0.0, "earnings_surprise: no analysis data"
@@ -1159,7 +1160,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_earnings_revision(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         if analysis_data is None or analysis_data.earnings_revision_momentum is None:
             return False, 0.0, "earnings_revision_momentum: no analysis data"
@@ -1173,7 +1174,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_insider_cluster(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         # / we only have net_buy_ratio (sum positive / sum abs) in analysis_data,
         # / not the raw insider count. approximate: ratio > 0.6 implies cluster-
@@ -1193,7 +1194,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_insider_net_dollar(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         # / same limitation: analysis_data lacks raw dollars. use net_buy_ratio as
         # / a permissive proxy (ratio > 0.55 ≈ $100k+ cluster per empirical median).
@@ -1234,7 +1235,7 @@ class ConfigDrivenStrategy(StrategyInterface):
     # / changing every existing handler signature.
     def _eval_macro_not_implemented(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         # / yield_curve / yield_curve_slope / vix / beta: macro series not yet
         # / threaded through to the strategy evaluator. registered so the
@@ -1246,7 +1247,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _eval_intermarket_correlation(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None",
+        analysis_data: AnalysisData | None,
     ) -> tuple[bool, float, str]:
         # / we don't have the second series loaded here; use intermarket_score
         # / from analysis_data as a proxy. score > 0.5 implies strong alignment.
@@ -1277,7 +1278,7 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     def _evaluate_signal(
         self, sig: dict[str, Any], market_data: pd.DataFrame,
-        analysis_data: "AnalysisData | None" = None,
+        analysis_data: AnalysisData | None = None,
     ) -> tuple[bool, float, str]:
         # / evaluate a single technical signal condition
         indicator = sig.get("indicator", "")

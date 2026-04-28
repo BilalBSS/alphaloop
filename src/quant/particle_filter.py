@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import expit, logit as scipy_logit
 import structlog
+from scipy.special import expit
+from scipy.special import logit as scipy_logit
 
 logger = structlog.get_logger(__name__)
 

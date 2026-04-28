@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Any
-import json
 
 import numpy as np
 import structlog

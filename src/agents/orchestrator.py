@@ -10,11 +10,10 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
-import structlog
 import pandas as pd
+import structlog
 
-from src.agents import tools
-from src.agents import loop_registry
+from src.agents import loop_registry, tools
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent
@@ -250,9 +249,9 @@ class AgentOrchestrator:
 
         # / close shared http clients (best-effort, may already be torn down)
         try:
-            from src.data.resilience import close_http_client
-            from src.data.llm_client import close_llm_clients
             from src.data.alpaca_client import close_alpaca_client
+            from src.data.llm_client import close_llm_clients
+            from src.data.resilience import close_http_client
             await close_http_client()
             await close_llm_clients()
             await close_alpaca_client()
@@ -347,7 +346,7 @@ class AgentOrchestrator:
                     )
                     # / broadcast analysis update (fire-and-forget); dashboard may not be running
                     try:
-                        from src.dashboard.app import broadcast, _ws_clients
+                        from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
                             asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
                     except Exception as exc:
@@ -441,7 +440,7 @@ class AgentOrchestrator:
                     )
                     # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
                     try:
-                        from src.dashboard.app import broadcast, _ws_clients
+                        from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
                             asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
                     except Exception as exc:
@@ -606,8 +605,8 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "crypto_backfill"):
-                    from src.data.market_data import backfill
                     from src.data.crypto_data import fetch_coin_data
+                    from src.data.market_data import backfill
                     crypto_symbols = [s for s in self._get_symbols() if is_crypto(s)]
                     if crypto_symbols:
                         # / alpaca v1beta3/crypto path writes real ohlcv into market_data
@@ -719,7 +718,7 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "intraday_backfill"):
-                    from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
+                    from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
                     symbols = self._get_symbols()
                     results_1h = await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
                     total_1h = sum(results_1h.values())
@@ -1083,7 +1082,8 @@ class AgentOrchestrator:
                         # / late-bind ws broadcast so tests that don't mount the dashboard still pass
                         ws_broadcast = None
                         try:
-                            from src.dashboard.app import broadcast as ws_broadcast_fn, _ws_clients
+                            from src.dashboard.app import _ws_clients
+                            from src.dashboard.app import broadcast as ws_broadcast_fn
                             if _ws_clients:
                                 ws_broadcast = ws_broadcast_fn
                         except Exception:
@@ -1130,7 +1130,7 @@ class AgentOrchestrator:
         sources = all_sources()
         # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
         # / (for two fields) but we only want to hit yfinance once per symbol
-        by_name_deduped: dict[str, "AltDataSource"] = {}  # noqa: F821
+        by_name_deduped: dict[str, AltDataSource] = {}  # noqa: F821
         for src in sources:
             by_name_deduped.setdefault(src.name, src)
 
@@ -1179,11 +1179,11 @@ class AgentOrchestrator:
         # / legacy per-source hardcoded code path — kept as fallback during the transition
         # / deprecated path
         from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
-        from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
-        from src.data.short_interest import fetch_short_interest, store_short_interest
-        from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
-        from src.data.options_data import fetch_options_data, store_options_data
         from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
+        from src.data.dark_pool import fetch_dark_pool_data, store_dark_pool
+        from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
+        from src.data.options_data import fetch_options_data, store_options_data
+        from src.data.short_interest import fetch_short_interest, store_short_interest
         from src.data.symbols import get_sector
 
         symbols = [s for s in self._get_symbols() if not is_crypto(s)]
@@ -1641,7 +1641,8 @@ class AgentOrchestrator:
 
     async def _run_service_once(self, service: str) -> None:
         # / dispatch a service name to its one-shot work (same work as the loop body)
-        from src.data.symbols import is_crypto as _is_crypto, get_sector as _get_sector
+        from src.data.symbols import get_sector as _get_sector
+        from src.data.symbols import is_crypto as _is_crypto
         symbols = self._get_symbols()
         if service == "macro_backfill":
             from src.data.fred_macro import fetch_macro_indicators
@@ -1664,7 +1665,9 @@ class AgentOrchestrator:
                     logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
         elif service == "regime_backfill":
             from src.data.regime_detector import (
-                backfill_regimes, backfill_regimes_per_sector, snapshot_regime_daily,
+                backfill_regimes,
+                backfill_regimes_per_sector,
+                snapshot_regime_daily,
             )
             await backfill_regimes(self._pool, "SPY", "equity")
             await backfill_regimes(self._pool, "BTC-USD", "crypto")
@@ -1685,7 +1688,7 @@ class AgentOrchestrator:
             from src.data.market_data import backfill
             await backfill(self._pool, symbols, years=1)
         elif service == "intraday_backfill":
-            from src.data.market_data import backfill_intraday, aggregate_intraday_to_2h
+            from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
             await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
             await aggregate_intraday_to_2h(self._pool, symbols, days=10)
         elif service == "crypto_backfill":

@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import pandas as pd
 import structlog
@@ -30,9 +30,7 @@ def _to_list(s: pd.Series) -> list:
     # / pandas series to list with nan -> none
     out: list = []
     for v in s.tolist():
-        if v is None:
-            out.append(None)
-        elif isinstance(v, float) and math.isnan(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
             out.append(None)
         else:
             out.append(float(v))
