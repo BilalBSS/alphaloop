@@ -35,6 +35,26 @@ def _strict(filters: dict) -> bool:
     return filters.get("strict_data", True)
 
 
+def _threshold_filter(field: str, op: str, label: str, *, pct: bool = False):
+    # / build a min/max filter for an AnalysisData field
+    fmt = "{:.2%}" if pct else "{:.2f}"
+    word = "min" if op == "min" else "max"
+    sym = "<" if op == "min" else ">"
+
+    def _f(analysis, threshold, filters) -> tuple[bool, str]:
+        value = getattr(analysis, field, None)
+        if value is None:
+            if _strict(filters):
+                return False, f"{field} data unavailable"
+            return True, ""
+        if (op == "min" and value < threshold) or (op == "max" and value > threshold):
+            tfmt = fmt.format(threshold) if pct else f"{threshold}"
+            return False, f"{label} {fmt.format(value)} {sym} {word} {tfmt}"
+        return True, ""
+
+    return _f
+
+
 @register_filter("pe_ratio_max")
 def _filter_pe_max(analysis, threshold, filters) -> tuple[bool, str]:
     if analysis.pe_ratio is None:
@@ -59,48 +79,14 @@ def _filter_pe_vs_sector(analysis, value, filters) -> tuple[bool, str]:
     return True, ""
 
 
-@register_filter("revenue_growth_min")
-def _filter_revenue_growth_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.revenue_growth is None:
-        if _strict(filters):
-            return False, "revenue_growth data unavailable"
-        return True, ""
-    if analysis.revenue_growth < threshold:
-        return False, f"revenue growth {analysis.revenue_growth:.2%} < min {threshold:.2%}"
-    return True, ""
-
-
-@register_filter("fcf_margin_min")
-def _filter_fcf_margin_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.fcf_margin is None:
-        if _strict(filters):
-            return False, "fcf_margin data unavailable"
-        return True, ""
-    if analysis.fcf_margin < threshold:
-        return False, f"fcf margin {analysis.fcf_margin:.2%} < min {threshold:.2%}"
-    return True, ""
-
-
-@register_filter("debt_to_equity_max")
-def _filter_de_max(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.debt_to_equity is None:
-        if _strict(filters):
-            return False, "debt_to_equity data unavailable"
-        return True, ""
-    if analysis.debt_to_equity > threshold:
-        return False, f"d/e {analysis.debt_to_equity:.2f} > max {threshold}"
-    return True, ""
-
-
-@register_filter("dcf_upside_min")
-def _filter_dcf_upside_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.dcf_upside is None:
-        if _strict(filters):
-            return False, "dcf_upside data unavailable"
-        return True, ""
-    if analysis.dcf_upside < threshold:
-        return False, f"dcf upside {analysis.dcf_upside:.2%} < min {threshold:.2%}"
-    return True, ""
+register_filter("revenue_growth_min")(
+    _threshold_filter("revenue_growth", "min", "revenue growth", pct=True))
+register_filter("fcf_margin_min")(
+    _threshold_filter("fcf_margin", "min", "fcf margin", pct=True))
+register_filter("debt_to_equity_max")(
+    _threshold_filter("debt_to_equity", "max", "d/e"))
+register_filter("dcf_upside_min")(
+    _threshold_filter("dcf_upside", "min", "dcf upside", pct=True))
 
 
 @register_filter("insider_buying_recent")
@@ -144,115 +130,26 @@ def _filter_news_sentiment_min(analysis, threshold, filters) -> tuple[bool, str]
     return True, ""
 
 
-# / alt-data filters — newly enforced in phase 4
-@register_filter("macro_score_min")
-def _filter_macro_score_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.macro_score is None:
-        if _strict(filters):
-            return False, "macro_score data unavailable"
-        return True, ""
-    if analysis.macro_score < threshold:
-        return False, f"macro score {analysis.macro_score:.2f} < min {threshold}"
-    return True, ""
-
-
-@register_filter("congressional_buy_ratio_min")
-def _filter_congressional_buy_ratio_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.congressional_buy_ratio is None:
-        if _strict(filters):
-            return False, "congressional_buy_ratio data unavailable"
-        return True, ""
-    if analysis.congressional_buy_ratio < threshold:
-        return False, f"congressional buy ratio {analysis.congressional_buy_ratio:.2f} < min {threshold}"
-    return True, ""
-
-
-@register_filter("analyst_consensus_min")
-def _filter_analyst_consensus_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.analyst_consensus is None:
-        if _strict(filters):
-            return False, "analyst_consensus data unavailable"
-        return True, ""
-    if analysis.analyst_consensus < threshold:
-        return False, f"analyst consensus {analysis.analyst_consensus:.2f} < min {threshold}"
-    return True, ""
-
-
-@register_filter("price_target_upside_min")
-def _filter_price_target_upside_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.price_target_upside is None:
-        if _strict(filters):
-            return False, "price_target_upside data unavailable"
-        return True, ""
-    if analysis.price_target_upside < threshold:
-        return False, f"price target upside {analysis.price_target_upside:.2%} < min {threshold:.2%}"
-    return True, ""
-
-
-@register_filter("earnings_revision_momentum_min")
-def _filter_earnings_revision_momentum_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.earnings_revision_momentum is None:
-        if _strict(filters):
-            return False, "earnings_revision_momentum data unavailable"
-        return True, ""
-    if analysis.earnings_revision_momentum < threshold:
-        return False, f"earnings revision momentum {analysis.earnings_revision_momentum:.2f} < min {threshold}"
-    return True, ""
-
-
-@register_filter("short_pct_float_max")
-def _filter_short_pct_float_max(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.short_pct_float is None:
-        if _strict(filters):
-            return False, "short_pct_float data unavailable"
-        return True, ""
-    if analysis.short_pct_float > threshold:
-        return False, f"short pct float {analysis.short_pct_float:.2%} > max {threshold:.2%}"
-    return True, ""
-
-
-@register_filter("dark_pool_ratio_max")
-def _filter_dark_pool_ratio_max(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.dark_pool_ratio is None:
-        if _strict(filters):
-            return False, "dark_pool_ratio data unavailable"
-        return True, ""
-    if analysis.dark_pool_ratio > threshold:
-        return False, f"dark pool ratio {analysis.dark_pool_ratio:.2f} > max {threshold}"
-    return True, ""
-
-
-@register_filter("iv_rank_min")
-def _filter_iv_rank_min(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.iv_rank is None:
-        if _strict(filters):
-            return False, "iv_rank data unavailable"
-        return True, ""
-    if analysis.iv_rank < threshold:
-        return False, f"iv rank {analysis.iv_rank:.2f} < min {threshold}"
-    return True, ""
-
-
-@register_filter("iv_rank_max")
-def _filter_iv_rank_max(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.iv_rank is None:
-        if _strict(filters):
-            return False, "iv_rank data unavailable"
-        return True, ""
-    if analysis.iv_rank > threshold:
-        return False, f"iv rank {analysis.iv_rank:.2f} > max {threshold}"
-    return True, ""
-
-
-@register_filter("put_call_ratio_max")
-def _filter_put_call_ratio_max(analysis, threshold, filters) -> tuple[bool, str]:
-    if analysis.put_call_ratio is None:
-        if _strict(filters):
-            return False, "put_call_ratio data unavailable"
-        return True, ""
-    if analysis.put_call_ratio > threshold:
-        return False, f"put/call ratio {analysis.put_call_ratio:.2f} > max {threshold}"
-    return True, ""
+register_filter("macro_score_min")(
+    _threshold_filter("macro_score", "min", "macro score"))
+register_filter("congressional_buy_ratio_min")(
+    _threshold_filter("congressional_buy_ratio", "min", "congressional buy ratio"))
+register_filter("analyst_consensus_min")(
+    _threshold_filter("analyst_consensus", "min", "analyst consensus"))
+register_filter("price_target_upside_min")(
+    _threshold_filter("price_target_upside", "min", "price target upside", pct=True))
+register_filter("earnings_revision_momentum_min")(
+    _threshold_filter("earnings_revision_momentum", "min", "earnings revision momentum"))
+register_filter("short_pct_float_max")(
+    _threshold_filter("short_pct_float", "max", "short pct float", pct=True))
+register_filter("dark_pool_ratio_max")(
+    _threshold_filter("dark_pool_ratio", "max", "dark pool ratio"))
+register_filter("iv_rank_min")(
+    _threshold_filter("iv_rank", "min", "iv rank"))
+register_filter("iv_rank_max")(
+    _threshold_filter("iv_rank", "max", "iv rank"))
+register_filter("put_call_ratio_max")(
+    _threshold_filter("put_call_ratio", "max", "put/call ratio"))
 
 
 @dataclass
