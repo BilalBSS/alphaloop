@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Coroutine
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -21,6 +23,17 @@ _STATUS_TABLES = {"trade_signals", "approved_trades"}
 # / filled_at timestamps. surfaced via /api/phase5-metrics so a silent
 # / parser drift can't quietly eat fills.
 _sync_skipped_orders = 0
+
+# / strong refs prevent gc of fire-and-forget tasks
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def fire_and_forget(coro: Coroutine) -> asyncio.Task:
+    # / spawn a background task that won't be gc'd mid-flight
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
 
 
 def get_sync_skipped_orders() -> int:

@@ -16,6 +16,7 @@ from src.agents.tools import (
     count_symbol_trades,
     fetch_recent_trades,
     fetch_strategy_scores,
+    fire_and_forget,
     store_evolution_log,
     store_strategy_score,
 )
@@ -57,7 +58,7 @@ def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
     if not _ws_clients:
         return
     try:
-        asyncio.create_task(broadcast("strategy_status_change", {
+        fire_and_forget(broadcast("strategy_status_change", {
             "strategy_id": strategy_id,
             "old_status": old,
             "new_status": new,

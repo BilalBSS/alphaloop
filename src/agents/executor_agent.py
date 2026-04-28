@@ -34,13 +34,13 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
     if not _ws_clients:
         return
     try:
-        asyncio.create_task(broadcast("trade_executed", {
+        tools.fire_and_forget(broadcast("trade_executed", {
             "symbol": symbol, "side": side, "qty": float(qty),
             "price": float(price) if price else 0.0,
             "strategy_id": strategy_id, "log_id": log_id,
             "pnl": float(pnl) if pnl is not None else None,
         }))
-        asyncio.create_task(broadcast("position_update", {"symbol": symbol}))
+        tools.fire_and_forget(broadcast("position_update", {"symbol": symbol}))
     except Exception as exc:
         logger.debug("broadcast_fill_failed", error=str(exc)[:120])
 

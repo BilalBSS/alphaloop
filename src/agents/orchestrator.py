@@ -348,7 +348,7 @@ class AgentOrchestrator:
                     try:
                         from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
-                            asyncio.create_task(broadcast("analysis_update", {"cycle": "complete"}))
+                            tools.fire_and_forget(broadcast("analysis_update", {"cycle": "complete"}))
                     except Exception as exc:
                         logger.debug("broadcast_analysis_failed", error=str(exc)[:100])
             except asyncio.TimeoutError:
@@ -442,7 +442,7 @@ class AgentOrchestrator:
                     try:
                         from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
-                            asyncio.create_task(broadcast("strategy_update", {"cycle": "complete"}))
+                            tools.fire_and_forget(broadcast("strategy_update", {"cycle": "complete"}))
                     except Exception as exc:
                         logger.debug("broadcast_strategy_failed", error=str(exc)[:100])
             except Exception as exc:
@@ -896,7 +896,7 @@ class AgentOrchestrator:
                 "timestamp_ms": tick.timestamp_ms,
                 "vendor": tick.vendor,
             }
-            asyncio.create_task(self._bounded_broadcast("price_tick", payload))
+            tools.fire_and_forget(self._bounded_broadcast("price_tick", payload))
         except Exception:
             pass  # / dashboard not mounted in this process
 
@@ -1614,7 +1614,7 @@ class AgentOrchestrator:
             try:
                 claimed = await loop_registry.claim_pending_triggers(self._pool)
                 for trigger_id, service in claimed:
-                    asyncio.create_task(self._run_trigger(trigger_id, service))
+                    tools.fire_and_forget(self._run_trigger(trigger_id, service))
             except Exception as exc:
                 logger.warning("trigger_poll_error", error=str(exc)[:120])
             if await self._wait_or_stop(5):
