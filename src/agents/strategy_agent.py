@@ -173,236 +173,53 @@ class StrategyAgent:
                 stats["insufficient_data"] += 1
             return None
 
-        # / compute and store indicators (once per symbol per cycle)
         await self._store_indicators(pool, symbol, df)
 
-        # / fetch analysis data
-        analysis_row = await tools.fetch_analysis_score(pool, symbol)
-        analysis_data = None
-        raw_details: dict | None = None  # / telemetry: keep raw dict for per-llm signals dict_to_analysis_data drops (bug f)
-        if analysis_row and analysis_row.get("details"):
-            details = analysis_row["details"]
-            if isinstance(details, str):
-                import json
-                details = json.loads(details)
-            raw_details = details if isinstance(details, dict) else None
-            analysis_data = tools.dict_to_analysis_data(details)
-
-        # / fetch intraday df once for multi-timeframe eval + confirmation gate
+        analysis_data, raw_details, analysis_row = await self._load_analysis(pool, symbol)
         intraday_df = await self._fetch_intraday_df(pool, symbol)
-
-        # / evaluate entry (passes intraday_df for multi-timeframe signals)
         entry_signal = strategy.should_enter(symbol, df, analysis_data, intraday_df=intraday_df)
 
+        # / no-entry path: log near-miss + return
         if not entry_signal.should_enter:
             if stats is not None:
                 stats["no_entry"] += 1
-            # / log near-misses to observation_log, not trade_log
-            try:
-                passed_n = entry_signal.passed_count
-                total_n = entry_signal.total_count
-                is_fundamental_fail = (
-                    total_n == 0
-                    and entry_signal.reasons
-                    and any(
-                        kw in (entry_signal.reasons[0] or "").lower()
-                        for kw in ("fundamental", "no fundamental data")
-                    )
-                )
-                is_technical_near_miss = (
-                    total_n > 0 and passed_n == total_n - 1
-                )
-                if is_fundamental_fail or is_technical_near_miss:
-                    failed_str = "; ".join(entry_signal.failed_reasons or entry_signal.reasons)[:500]
-                    nm_type = "fundamental_gate" if is_fundamental_fail else "n_minus_1_technical"
-                    await tools.log_observation(
-                        pool, strategy.strategy_id, symbol,
-                        near_miss_type=nm_type,
-                        passed_count=passed_n, total_count=total_n,
-                        strength=None, failed_reason=failed_str,
-                        regime=(analysis_data.regime if analysis_data else None),
-                    )
-            except Exception as exc:
-                logger.debug("observation_log_failed", strategy_id=strategy.strategy_id,
-                             symbol=symbol, error=str(exc)[:100])
+            await self._log_near_miss(pool, strategy, symbol, entry_signal, analysis_data)
             return None
 
         # / 2h intraday confirmation gate
-        intraday_confirm = strategy.config.get("intraday_confirm", True)
-        if intraday_confirm and intraday_df is not None and len(intraday_df) >= 14:
-                try:
-                    ic = intraday_df["close"]
-                    rsi_2h = rsi(ic, 14)
-                    rsi_val = float(rsi_2h.iloc[-1]) if not rsi_2h.empty else 50.0
-                    # / check 2h macd alignment if enough bars
-                    macd_aligned = True
-                    if len(ic) >= 26:
-                        m = macd(ic, 12, 26, 9)
-                        if not m.histogram.empty:
-                            macd_aligned = float(m.histogram.iloc[-1]) > 0
-                    # / reject if 2h rsi overbought or macd bearish
-                    if rsi_val > 75 or not macd_aligned:
-                        entry_signal = EntrySignal(
-                            should_enter=True,
-                            strength=entry_signal.strength * 0.5,
-                            reasons=[*entry_signal.reasons,
-                                f"2h misaligned (rsi={rsi_val:.0f}, macd_ok={macd_aligned}), halved"],
-                        )
-                        logger.debug("intraday_gate_halved", symbol=symbol, rsi_2h=rsi_val, macd_aligned=macd_aligned)
-                    elif rsi_val < 30 and macd_aligned:
-                        # / 2h confirms oversold + momentum = boost
-                        entry_signal = EntrySignal(
-                            should_enter=True,
-                            strength=min(1.0, entry_signal.strength * 1.2),
-                            reasons=[*entry_signal.reasons,
-                                f"2h confirms entry (rsi={rsi_val:.0f}, macd aligned), boosted 1.2x"],
-                        )
-                except Exception as e:
-                    logger.debug("intraday_gate_error", symbol=symbol, error=str(e))
+        if strategy.config.get("intraday_confirm", True):
+            entry_signal = self._apply_intraday_gate(symbol, intraday_df, entry_signal)
 
-        # / classify symbol's own trend from price data
+        # / consensus filter w/ symbol-trend overlay
         symbol_trend = self._classify_symbol_trend(df)
-
-        # / ai consensus filter: softened with per-symbol trend overlay
         regime = analysis_data.regime if analysis_data else None
         bypass_consensus = strategy.get_effective_bypass_consensus(regime)
         consensus = analysis_data.ai_consensus if analysis_data else None
-        # / telemetry state captured pre-softening (bug f)
-        _pre_filter_strength = entry_signal.strength
-        _signal_kept = True
-        _reason_code = "passthrough"
-        _blocked_return = False
-        # / consensus mode — strict (default) vs loose.
-        # / strict blocks bearish-consensus when symbol_trend != "up".
-        # / loose softens bearish to 0.4x but never blocks, giving the evolution
-        # / engine more data points to measure brier impact. revert by unset.
-        consensus_mode = os.environ.get("CONSENSUS_MODE", "strict").strip().lower()
-        is_loose = consensus_mode == "loose"
-        if consensus == "bearish" and not bypass_consensus:
-            if symbol_trend == "up":
-                # / stock bucking the bearish market, allow through with penalty
-                entry_signal = EntrySignal(
-                    should_enter=True,
-                    strength=entry_signal.strength * 0.5,
-                    reasons=[*entry_signal.reasons,
-                        "ai_consensus: bearish, but symbol uptrend, halved"],
-                )
-                _reason_code = "kept_bearish_uptrend_softened"
-                logger.debug(
-                    "signal_softened_bearish_uptrend",
-                    symbol=symbol, symbol_trend=symbol_trend,
-                    adjusted_strength=entry_signal.strength,
-                )
-            elif is_loose:
-                # / loose mode: never block on bearish consensus, just size way down
-                entry_signal = EntrySignal(
-                    should_enter=True,
-                    strength=entry_signal.strength * 0.4,
-                    reasons=[*entry_signal.reasons,
-                        "ai_consensus: bearish, loose mode 0.4x"],
-                )
-                _reason_code = "kept_bearish_loose_mode"
-            else:
-                # / strict mode: block as before
-                _signal_kept = False
-                _reason_code = "rejected_bearish_consensus"
-                _blocked_return = True
-                logger.debug(
-                    "signal_blocked_ai_bearish",
-                    symbol=symbol, symbol_trend=symbol_trend,
-                )
-        elif consensus == "bearish" and bypass_consensus:
-            _reason_code = "kept_bearish_consensus_bypass"
-        elif consensus == "disagree" and not bypass_consensus:
-            entry_signal = EntrySignal(
-                should_enter=True,
-                strength=entry_signal.strength * 0.7,
-                reasons=[*entry_signal.reasons, "ai_consensus: disagree, reduced 0.7x"],
-            )
-            _reason_code = "kept_disagree_softened"
-        elif consensus == "disagree" and bypass_consensus:
-            _reason_code = "kept_disagree_consensus_bypass"
-        elif consensus == "bullish":
-            _reason_code = "kept_bullish_consensus"
-        elif consensus == "neutral":
-            _reason_code = "kept_neutral_consensus"
-        # / else: consensus None or unknown -> reason stays "passthrough"
-
-        # / telemetry log (bug f): per-evaluation consensus state for observability
-        logger.info(
-            "consensus_filter_decision",
-            strategy_id=strategy.strategy_id,
-            symbol=symbol,
-            decision_time=datetime.now(timezone.utc).isoformat(),
-            groq_consensus=raw_details.get("llm_signal_groq") if raw_details else None,
-            deepseek_consensus=raw_details.get("llm_signal_deepseek") if raw_details else None,
-            combined_consensus=consensus,
-            raw_signal_strength=_pre_filter_strength,
-            signal_kept=_signal_kept,
-            reason_code=_reason_code,
-            symbol_trend=symbol_trend,
-            bypass_consensus=bypass_consensus,
-            regime=regime,
+        pre_filter_strength = entry_signal.strength
+        entry_signal, reason_code, signal_kept, blocked = self._apply_consensus_filter(
+            consensus, bypass_consensus, symbol_trend, entry_signal,
         )
-
-        if _blocked_return:
-            if stats is not None:
-                stats["blocked_consensus"] += 1
-                stats["near_misses"].append({
-                    "symbol": symbol,
-                    "raw_strength": _pre_filter_strength,
-                    "block_reason": f"bearish consensus (trend={symbol_trend})",
-                    "symbol_trend": symbol_trend,
-                    "consensus_debug": {
-                        "groq_consensus": raw_details.get("llm_signal_groq") if raw_details else None,
-                        "deepseek_consensus": raw_details.get("llm_signal_deepseek") if raw_details else None,
-                        "combined_consensus": consensus,
-                        "raw_signal_strength": _pre_filter_strength,
-                        "reason_code": _reason_code,
-                    },
-                })
+        self._log_consensus_decision(
+            strategy, symbol, raw_details, consensus, pre_filter_strength,
+            signal_kept, reason_code, symbol_trend, bypass_consensus, regime,
+        )
+        if blocked:
+            self._record_blocked_consensus(
+                stats, symbol, pre_filter_strength, symbol_trend,
+                raw_details, consensus, reason_code,
+            )
             return None
 
-        # / smooth with particle filter
-        signal_threshold_override = strategy.config.get("signal_threshold_override")
-        threshold = (
-            signal_threshold_override
-            if signal_threshold_override is not None
-            else SIGNAL_THRESHOLD
-        )
+        # / smoothing + threshold + ml modifier
+        threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)
-
-        # / ml signal modifier (lightgbm probability)
-        if len(df) >= 252:
-            try:
-                from src.quant.ml_signals import train_and_predict
-                indicators_dict = {}
-                if analysis_data:
-                    for attr in ("macro_score", "analyst_consensus", "short_pct_float", "iv_rank", "hurst"):
-                        val = getattr(analysis_data, attr, None)
-                        if val is not None:
-                            indicators_dict[attr] = val
-                ml_pred = await train_and_predict(df, indicators=indicators_dict or None)
-                if ml_pred and ml_pred.probability is not None:
-                    # / probability > 0.6 = boost, < 0.4 = penalty
-                    if ml_pred.probability > 0.6:
-                        smoothed_strength = min(1.0, smoothed_strength * (1.0 + (ml_pred.probability - 0.5)))
-                    elif ml_pred.probability < 0.4:
-                        smoothed_strength = smoothed_strength * (0.5 + ml_pred.probability)
-                    logger.debug("ml_signal_applied", symbol=symbol, ml_prob=ml_pred.probability, adjusted=smoothed_strength)
-                    try:
-                        from src.quant.ml_signals import store_ml_prediction
-                        await store_ml_prediction(pool, ml_pred)
-                    except Exception:
-                        pass
-            except Exception as exc:
-                logger.debug("ml_signal_failed", symbol=symbol, error=str(exc))
-
+        smoothed_strength = await self._apply_ml_modifier(
+            pool, symbol, df, analysis_data, smoothed_strength,
+        )
         if smoothed_strength < threshold:
             logger.debug(
                 "signal_below_threshold",
-                symbol=symbol, raw=entry_signal.strength,
-                smoothed=smoothed_strength,
+                symbol=symbol, raw=entry_signal.strength, smoothed=smoothed_strength,
             )
             if stats is not None:
                 stats["blocked_threshold"] += 1
@@ -412,7 +229,7 @@ class StrategyAgent:
                 })
             return None
 
-        # / store trade signal
+        # / store + return
         regime = analysis_row.get("regime") if analysis_row else None
         signal_id = await tools.store_trade_signal(
             pool,
@@ -427,16 +244,12 @@ class StrategyAgent:
                 "reasons": entry_signal.reasons,
             },
         )
-
         if stats is not None:
             stats["signals"] += 1
-
         logger.info(
             "trade_signal_generated",
-            strategy_id=strategy.strategy_id,
-            symbol=symbol,
-            signal_id=signal_id,
-            strength=smoothed_strength,
+            strategy_id=strategy.strategy_id, symbol=symbol,
+            signal_id=signal_id, strength=smoothed_strength,
         )
         return {
             "signal_id": signal_id,
@@ -444,6 +257,215 @@ class StrategyAgent:
             "symbol": symbol,
             "strength": smoothed_strength,
         }
+
+    async def _load_analysis(self, pool, symbol: str):
+        # / fetch analysis_score row + parse details into AnalysisData
+        analysis_row = await tools.fetch_analysis_score(pool, symbol)
+        analysis_data = None
+        raw_details: dict | None = None
+        if analysis_row and analysis_row.get("details"):
+            details = analysis_row["details"]
+            if isinstance(details, str):
+                import json
+                details = json.loads(details)
+            raw_details = details if isinstance(details, dict) else None
+            analysis_data = tools.dict_to_analysis_data(details)
+        return analysis_data, raw_details, analysis_row
+
+    async def _log_near_miss(
+        self, pool, strategy: ConfigDrivenStrategy, symbol: str,
+        entry_signal: EntrySignal, analysis_data,
+    ) -> None:
+        # / observation_log near-miss writer; differentiates fundamental vs technical
+        try:
+            passed_n = entry_signal.passed_count
+            total_n = entry_signal.total_count
+            is_fundamental_fail = (
+                total_n == 0
+                and entry_signal.reasons
+                and any(
+                    kw in (entry_signal.reasons[0] or "").lower()
+                    for kw in ("fundamental", "no fundamental data")
+                )
+            )
+            is_technical_near_miss = total_n > 0 and passed_n == total_n - 1
+            if not (is_fundamental_fail or is_technical_near_miss):
+                return
+            failed_str = "; ".join(entry_signal.failed_reasons or entry_signal.reasons)[:500]
+            nm_type = "fundamental_gate" if is_fundamental_fail else "n_minus_1_technical"
+            await tools.log_observation(
+                pool, strategy.strategy_id, symbol,
+                near_miss_type=nm_type,
+                passed_count=passed_n, total_count=total_n,
+                strength=None, failed_reason=failed_str,
+                regime=(analysis_data.regime if analysis_data else None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "observation_log_failed",
+                strategy_id=strategy.strategy_id, symbol=symbol, error=str(exc)[:100],
+            )
+
+    def _apply_intraday_gate(
+        self, symbol: str, intraday_df, entry_signal: EntrySignal,
+    ) -> EntrySignal:
+        # / 2h rsi/macd alignment: halve on misalignment, boost on confirm
+        if intraday_df is None or len(intraday_df) < 14:
+            return entry_signal
+        try:
+            ic = intraday_df["close"]
+            rsi_2h = rsi(ic, 14)
+            rsi_val = float(rsi_2h.iloc[-1]) if not rsi_2h.empty else 50.0
+            macd_aligned = True
+            if len(ic) >= 26:
+                m = macd(ic, 12, 26, 9)
+                if not m.histogram.empty:
+                    macd_aligned = float(m.histogram.iloc[-1]) > 0
+            if rsi_val > 75 or not macd_aligned:
+                logger.debug(
+                    "intraday_gate_halved",
+                    symbol=symbol, rsi_2h=rsi_val, macd_aligned=macd_aligned,
+                )
+                return EntrySignal(
+                    should_enter=True,
+                    strength=entry_signal.strength * 0.5,
+                    reasons=[*entry_signal.reasons,
+                        f"2h misaligned (rsi={rsi_val:.0f}, macd_ok={macd_aligned}), halved"],
+                )
+            if rsi_val < 30 and macd_aligned:
+                return EntrySignal(
+                    should_enter=True,
+                    strength=min(1.0, entry_signal.strength * 1.2),
+                    reasons=[*entry_signal.reasons,
+                        f"2h confirms entry (rsi={rsi_val:.0f}, macd aligned), boosted 1.2x"],
+                )
+        except Exception as e:
+            logger.debug("intraday_gate_error", symbol=symbol, error=str(e))
+        return entry_signal
+
+    def _apply_consensus_filter(
+        self, consensus, bypass_consensus: bool, symbol_trend: str,
+        entry_signal: EntrySignal,
+    ) -> tuple[EntrySignal, str, bool, bool]:
+        # / returns (entry_signal, reason_code, signal_kept, blocked)
+        # / strict mode (default) blocks bearish-consensus unless trend is up
+        # / loose mode softens bearish to 0.4x but never blocks
+        is_loose = os.environ.get("CONSENSUS_MODE", "strict").strip().lower() == "loose"
+        if consensus == "bearish" and not bypass_consensus:
+            if symbol_trend == "up":
+                return (
+                    EntrySignal(
+                        should_enter=True,
+                        strength=entry_signal.strength * 0.5,
+                        reasons=[*entry_signal.reasons,
+                            "ai_consensus: bearish, but symbol uptrend, halved"],
+                    ),
+                    "kept_bearish_uptrend_softened", True, False,
+                )
+            if is_loose:
+                return (
+                    EntrySignal(
+                        should_enter=True,
+                        strength=entry_signal.strength * 0.4,
+                        reasons=[*entry_signal.reasons,
+                            "ai_consensus: bearish, loose mode 0.4x"],
+                    ),
+                    "kept_bearish_loose_mode", True, False,
+                )
+            return entry_signal, "rejected_bearish_consensus", False, True
+        if consensus == "bearish" and bypass_consensus:
+            return entry_signal, "kept_bearish_consensus_bypass", True, False
+        if consensus == "disagree" and not bypass_consensus:
+            return (
+                EntrySignal(
+                    should_enter=True,
+                    strength=entry_signal.strength * 0.7,
+                    reasons=[*entry_signal.reasons, "ai_consensus: disagree, reduced 0.7x"],
+                ),
+                "kept_disagree_softened", True, False,
+            )
+        if consensus == "disagree" and bypass_consensus:
+            return entry_signal, "kept_disagree_consensus_bypass", True, False
+        if consensus == "bullish":
+            return entry_signal, "kept_bullish_consensus", True, False
+        if consensus == "neutral":
+            return entry_signal, "kept_neutral_consensus", True, False
+        return entry_signal, "passthrough", True, False
+
+    def _log_consensus_decision(
+        self, strategy: ConfigDrivenStrategy, symbol: str, raw_details,
+        consensus, pre_filter_strength: float, signal_kept: bool,
+        reason_code: str, symbol_trend: str, bypass_consensus: bool, regime,
+    ) -> None:
+        logger.info(
+            "consensus_filter_decision",
+            strategy_id=strategy.strategy_id, symbol=symbol,
+            decision_time=datetime.now(timezone.utc).isoformat(),
+            groq_consensus=raw_details.get("llm_signal_groq") if raw_details else None,
+            deepseek_consensus=raw_details.get("llm_signal_deepseek") if raw_details else None,
+            combined_consensus=consensus,
+            raw_signal_strength=pre_filter_strength,
+            signal_kept=signal_kept,
+            reason_code=reason_code,
+            symbol_trend=symbol_trend,
+            bypass_consensus=bypass_consensus,
+            regime=regime,
+        )
+
+    def _record_blocked_consensus(
+        self, stats, symbol: str, pre_filter_strength: float, symbol_trend: str,
+        raw_details, consensus, reason_code: str,
+    ) -> None:
+        if stats is None:
+            return
+        stats["blocked_consensus"] += 1
+        stats["near_misses"].append({
+            "symbol": symbol,
+            "raw_strength": pre_filter_strength,
+            "block_reason": f"bearish consensus (trend={symbol_trend})",
+            "symbol_trend": symbol_trend,
+            "consensus_debug": {
+                "groq_consensus": raw_details.get("llm_signal_groq") if raw_details else None,
+                "deepseek_consensus": raw_details.get("llm_signal_deepseek") if raw_details else None,
+                "combined_consensus": consensus,
+                "raw_signal_strength": pre_filter_strength,
+                "reason_code": reason_code,
+            },
+        })
+
+    async def _apply_ml_modifier(
+        self, pool, symbol: str, df, analysis_data, smoothed_strength: float,
+    ) -> float:
+        # / lightgbm probability boost/penalty; >0.6 boost, <0.4 penalty
+        if len(df) < 252:
+            return smoothed_strength
+        try:
+            from src.quant.ml_signals import train_and_predict
+            indicators_dict: dict = {}
+            if analysis_data:
+                for attr in ("macro_score", "analyst_consensus", "short_pct_float", "iv_rank", "hurst"):
+                    val = getattr(analysis_data, attr, None)
+                    if val is not None:
+                        indicators_dict[attr] = val
+            ml_pred = await train_and_predict(df, indicators=indicators_dict or None)
+            if not (ml_pred and ml_pred.probability is not None):
+                return smoothed_strength
+            if ml_pred.probability > 0.6:
+                smoothed_strength = min(1.0, smoothed_strength * (1.0 + (ml_pred.probability - 0.5)))
+            elif ml_pred.probability < 0.4:
+                smoothed_strength = smoothed_strength * (0.5 + ml_pred.probability)
+            logger.debug(
+                "ml_signal_applied", symbol=symbol,
+                ml_prob=ml_pred.probability, adjusted=smoothed_strength,
+            )
+            try:
+                from src.quant.ml_signals import store_ml_prediction
+                await store_ml_prediction(pool, ml_pred)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("ml_signal_failed", symbol=symbol, error=str(exc))
+        return smoothed_strength
 
     async def _fetch_intraday_df(
         self, pool, symbol: str, min_bars: int = 20,
