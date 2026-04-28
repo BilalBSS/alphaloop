@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import structlog
 
-from src.agents import tools
+from src.data.strategy_metrics import store_strategy_score
 from src.quant.brier_score import brier_score
 from src.quant.risk_metrics import max_drawdown
 
@@ -63,7 +63,7 @@ async def compute_live_strategy_metrics(
                 )
                 if result is None:
                     continue
-                await tools.store_strategy_score(
+                await store_strategy_score(
                     pool,
                     strategy_id=strategy_id,
                     period_start=period_start,

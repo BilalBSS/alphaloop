@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import structlog
 
-from src.agents import loop_registry, tools
+from src.agents import tools
+from src.data import loop_registry
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
 from src.agents.executor_agent import ExecutorAgent

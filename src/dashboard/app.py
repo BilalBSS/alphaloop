@@ -464,7 +464,7 @@ async def get_crypto_fundamentals(symbol: str):
 async def get_phase5_metrics():
     # / flywheel health metrics, db-sourced
     from src.agents.analyst_agent import get_coverage_pct
-    from src.agents.loop_registry import fetch_service_state
+    from src.data.loop_registry import fetch_service_state
     from src.agents.phase5_metrics import compute_phase5_metrics
     from src.data.symbols import FULL_UNIVERSE
     try:
@@ -984,7 +984,7 @@ async def get_health():
     # / prior Health vs Analysis disagreement.
     last_analysis_ts: str | None = None
     try:
-        from src.agents.loop_registry import describe_loops
+        from src.data.loop_registry import describe_loops
         loops_rows = await describe_loops(_pool)
         analyst_row = next((loop for loop in loops_rows if loop.get("name") == "analyst"), None)
         if analyst_row and analyst_row.get("last_fire_ts"):
@@ -1671,7 +1671,7 @@ async def get_feature_benchmark(symbol: str = "SPY"):
 @app.get("/api/hydration-status")
 async def get_hydration_status():
     # / wiki symbol-doc hydration progress: today's count, daily cap, next fire
-    from src.agents.loop_registry import describe_loops
+    from src.data.loop_registry import describe_loops
     cap_raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP", "5")
     try:
         cap = max(0, int(cap_raw))
@@ -2148,7 +2148,7 @@ async def get_strategy_decay():
 @app.get("/api/loops")
 async def get_loops():
     # / one row per known orchestrator loop with cadence, last fire, next fire, status
-    from src.agents.loop_registry import describe_loops
+    from src.data.loop_registry import describe_loops
     rows = await describe_loops(_pool)
     return {"loops": _serialize(rows)}
 
@@ -2158,7 +2158,7 @@ async def admin_trigger(service: str, request: Request):
     # / queue a one-shot run of {service} for the orchestrator to pick up
     # / gated by ADMIN_TOKEN env; pass via Authorization: Bearer <token> header
     # / secure-by-default: missing ADMIN_TOKEN → 503, not open access
-    from src.agents.loop_registry import LOOP_METADATA, enqueue_trigger
+    from src.data.loop_registry import LOOP_METADATA, enqueue_trigger
     if not _ADMIN_TOKEN:
         return JSONResponse(
             {"error": "admin_token_not_configured",

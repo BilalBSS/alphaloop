@@ -204,7 +204,7 @@ async def _fetch_context(
     pool, trade_id: int | None, strategy_id: str, symbol: str,
 ) -> tuple[dict | None, dict | None, list[dict]]:
     # / gather the trade row, strategy config, and recent trades
-    from src.agents.tools import fetch_recent_trades
+    from src.data.trade_history import fetch_recent_trades
 
     trade_row: dict | None = None
     if trade_id is not None:

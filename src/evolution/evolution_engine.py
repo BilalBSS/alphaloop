@@ -11,14 +11,16 @@ from typing import Any
 import numpy as np
 import structlog
 
-from src.agents.tools import (
+from src.agents.data_tools import fire_and_forget
+from src.data.strategy_metrics import (
+    fetch_strategy_scores,
+    store_evolution_log,
+    store_strategy_score,
+)
+from src.data.trade_history import (
     count_all_symbol_trades,
     count_symbol_trades,
     fetch_recent_trades,
-    fetch_strategy_scores,
-    fire_and_forget,
-    store_evolution_log,
-    store_strategy_score,
 )
 from src.data.symbols import get_sector_symbols
 from src.evolution.documentation import update_docs
