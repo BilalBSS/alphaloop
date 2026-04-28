@@ -51,6 +51,143 @@ class DualAnalysis:
     consensus_confidence: float = 0.0
 
 
+def _ratio_section(ratio: RatioScore) -> list[str]:
+    parts = ["\n## Valuation vs Peers", f"Ratio score: {ratio.composite_score}/100"]
+    if ratio.details.get("pe_ratio") is not None:
+        pe = float(ratio.details["pe_ratio"])
+        sector_pe = ratio.details.get("sector_pe_avg")
+        premium = ""
+        if sector_pe and sector_pe != "N/A" and float(sector_pe) > 0:
+            prem = (pe / float(sector_pe) - 1) * 100
+            premium = f" ({prem:+.0f}% vs sector)"
+        parts.append(f"  P/E: {pe:.1f}{premium}")
+    if ratio.details.get("fcf_margin") is not None:
+        parts.append(f"  FCF margin: {float(ratio.details['fcf_margin']):.1%}")
+    if ratio.details.get("debt_to_equity") is not None:
+        parts.append(f"  Debt/Equity: {float(ratio.details['debt_to_equity']):.1f}")
+    return parts
+
+
+def _dcf_section(dcf: DCFResult) -> list[str]:
+    parts = [
+        "\n## DCF Model Output (challenge these assumptions)",
+        f"  Fair value: ${dcf.fair_value_median:.2f} | Current: ${dcf.current_price:.2f} | Upside: {dcf.upside_pct:.1%}",
+        f"  Range: ${dcf.fair_value_p10:.2f} to ${dcf.fair_value_p90:.2f} | Confidence: {dcf.confidence}",
+    ]
+    if abs(dcf.upside_pct) > 0.5:
+        parts.append(f"  NOTE: Extreme {dcf.upside_pct:.0%} gap. Consider whether model assumptions match this company's growth profile.")
+    return parts
+
+
+def _earnings_section(earnings: EarningsSignal) -> list[str]:
+    parts = ["\n## Earnings Momentum", f"  Signal: {earnings.signal} | Strength: {earnings.strength}"]
+    if earnings.surprise_pct is not None:
+        parts.append(f"  Latest surprise: {float(earnings.surprise_pct):.1%} | Consecutive beats: {earnings.consecutive_beats}")
+    return parts
+
+
+_ACTION_MAP = {
+    "buy": "bought",
+    "sell": "sold",
+    "option_exercise": "exercised options (not a market sale)",
+    "tax_payment": "withheld shares for tax (automatic)",
+    "gift": "gifted shares (not a market sale)",
+}
+
+
+def _insider_section(insider: InsiderSignal) -> list[str]:
+    parts = [
+        "\n## Insider Activity (last 90 days)",
+        f"  Signal: {insider.signal} (strength {insider.strength}/100)",
+        f"  {insider.total_buys} buys, {insider.total_sells} sells (net buy ratio: {insider.net_buy_ratio:.2f})",
+    ]
+    if insider.cluster_detected:
+        parts.append("  Cluster buying detected. Multiple insiders buying within 30 days.")
+    if insider.details:
+        wb = float(insider.details.get("weighted_buy_value", 0))
+        ws = float(insider.details.get("weighted_sell_value", 0))
+        if wb > 0 or ws > 0:
+            parts.append(f"  Buy volume: ${wb:,.0f}, Sell volume: ${ws:,.0f}")
+    if insider.top_trades:
+        parts.append("  Key trades:")
+        for t in insider.top_trades[:5]:
+            title = f" ({t['title']})" if t.get("title") else ""
+            action = _ACTION_MAP.get(t["type"], t["type"])
+            shares = int(float(t.get("shares", 0)))
+            value = float(t.get("value", 0))
+            parts.append(f"    {t['name']}{title} {action} {shares:,} shares (${value:,.0f}) on {t['date']}")
+    if insider.details:
+        for key, label in (
+            ("option_exercise_count", "option exercises excluded (RSU/stock vesting, not market sales)"),
+            ("tax_payment_count", "tax withholding transactions excluded (automatic, not market sales)"),
+            ("gift_count", "gift transactions excluded (not market sales)"),
+        ):
+            count = insider.details.get(key, 0)
+            if count > 0:
+                parts.append(f"  Note: {count} {label}")
+    return parts
+
+
+def _indicator_section(indicators: dict) -> list[str]:
+    parts = ["\n## Technical Setup"]
+    rsi = indicators.get("rsi14")
+    if rsi is not None:
+        rsi = float(rsi)
+        label = "overbought, watch for reversal" if rsi > 70 else "oversold, potential bounce" if rsi < 30 else "neutral zone"
+        parts.append(f"  RSI(14): {rsi:.1f} ({label})")
+    macd_h = indicators.get("macd_histogram")
+    if macd_h is not None:
+        macd_h = float(macd_h)
+        parts.append(f"  MACD histogram: {macd_h:.4f} ({'bullish momentum' if macd_h > 0 else 'bearish momentum'})")
+    adx = indicators.get("adx")
+    if adx is not None:
+        adx = float(adx)
+        parts.append(f"  ADX: {adx:.1f} ({'strong trend' if adx > 25 else 'weak/no trend'})")
+    return parts
+
+
+def _sentiment_section(sentiment: dict) -> list[str]:
+    parts = ["\n## Sentiment"]
+    ns = sentiment.get("news_score")
+    if ns is not None:
+        ns = float(ns)
+        label = "bullish" if ns > 0.1 else "bearish" if ns < -0.1 else "neutral"
+        parts.append(f"  News: {ns:.2f} ({label})")
+    social = sentiment.get("social")
+    if social:
+        vol = social.get("volume", 0)
+        bull = social.get("bullish_pct")
+        if vol or bull is not None:
+            s = f"  Social: {vol} mentions" if vol else "  Social:"
+            if bull is not None:
+                s += f", {float(bull):.0%} bullish"
+            parts.append(s)
+    return parts
+
+
+def _positions_section(positions: list[dict]) -> list[str]:
+    parts = [
+        "\n## Current Positions & Strategy Performance",
+        f"{len(positions)} strategies currently hold this stock:",
+    ]
+    for p in positions:
+        entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
+        line = f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}"
+        metric_parts = []
+        if p.get("sharpe") is not None:
+            metric_parts.append(f"sharpe {p['sharpe']:.2f}")
+        if p.get("win_rate") is not None:
+            metric_parts.append(f"win {p['win_rate'] * 100:.0f}%")
+        if p.get("max_drawdown") is not None:
+            metric_parts.append(f"maxdd {p['max_drawdown'] * 100:.1f}%")
+        if p.get("total_trades") is not None and p.get("total_trades") > 0:
+            metric_parts.append(f"{p['total_trades']} closed")
+        if metric_parts:
+            line += f" | {', '.join(metric_parts)}"
+        parts.append(line)
+    return parts
+
+
 def _build_prompt(
     symbol: str,
     ratio: RatioScore | None,
@@ -62,140 +199,32 @@ def _build_prompt(
     sentiment: dict | None = None,
     positions: list[dict] | None = None,
 ) -> str:
-    # / construct structured analysis prompt with analytical instructions
-    parts = [f"Analyze {symbol} and provide an investment signal."]
-    parts.append("Begin with SIGNAL: BULLISH, SIGNAL: BEARISH, or SIGNAL: NEUTRAL.")
-
+    parts = [
+        f"Analyze {symbol} and provide an investment signal.",
+        "Begin with SIGNAL: BULLISH, SIGNAL: BEARISH, or SIGNAL: NEUTRAL.",
+    ]
     if regime:
         parts.append(f"\n## Market Context\nRegime: {regime}")
-
     if ratio:
-        parts.append("\n## Valuation vs Peers")
-        parts.append(f"Ratio score: {ratio.composite_score}/100")
-        if ratio.details.get("pe_ratio") is not None:
-            pe = float(ratio.details["pe_ratio"])
-            sector_pe = ratio.details.get("sector_pe_avg")
-            premium = ""
-            if sector_pe and sector_pe != "N/A" and float(sector_pe) > 0:
-                prem = (pe / float(sector_pe) - 1) * 100
-                premium = f" ({prem:+.0f}% vs sector)"
-            parts.append(f"  P/E: {pe:.1f}{premium}")
-        if ratio.details.get("fcf_margin") is not None:
-            parts.append(f"  FCF margin: {float(ratio.details['fcf_margin']):.1%}")
-        if ratio.details.get("debt_to_equity") is not None:
-            parts.append(f"  Debt/Equity: {float(ratio.details['debt_to_equity']):.1f}")
-
+        parts.extend(_ratio_section(ratio))
     if dcf:
-        parts.append("\n## DCF Model Output (challenge these assumptions)")
-        parts.append(f"  Fair value: ${dcf.fair_value_median:.2f} | Current: ${dcf.current_price:.2f} | Upside: {dcf.upside_pct:.1%}")
-        parts.append(f"  Range: ${dcf.fair_value_p10:.2f} to ${dcf.fair_value_p90:.2f} | Confidence: {dcf.confidence}")
-        if abs(dcf.upside_pct) > 0.5:
-            parts.append(f"  NOTE: Extreme {dcf.upside_pct:.0%} gap. Consider whether model assumptions match this company's growth profile.")
-
+        parts.extend(_dcf_section(dcf))
     if earnings:
-        parts.append("\n## Earnings Momentum")
-        parts.append(f"  Signal: {earnings.signal} | Strength: {earnings.strength}")
-        if earnings.surprise_pct is not None:
-            parts.append(f"  Latest surprise: {float(earnings.surprise_pct):.1%} | Consecutive beats: {earnings.consecutive_beats}")
-
+        parts.extend(_earnings_section(earnings))
     if insider:
-        parts.append("\n## Insider Activity (last 90 days)")
-        parts.append(f"  Signal: {insider.signal} (strength {insider.strength}/100)")
-        parts.append(f"  {insider.total_buys} buys, {insider.total_sells} sells (net buy ratio: {insider.net_buy_ratio:.2f})")
-        if insider.cluster_detected:
-            parts.append("  Cluster buying detected. Multiple insiders buying within 30 days.")
-        if insider.details:
-            wb = float(insider.details.get("weighted_buy_value", 0))
-            ws = float(insider.details.get("weighted_sell_value", 0))
-            if wb > 0 or ws > 0:
-                parts.append(f"  Buy volume: ${wb:,.0f}, Sell volume: ${ws:,.0f}")
-        if insider.top_trades:
-            parts.append("  Key trades:")
-            # / map transaction types to human-readable actions
-            _action_map = {
-                "buy": "bought",
-                "sell": "sold",
-                "option_exercise": "exercised options (not a market sale)",
-                "tax_payment": "withheld shares for tax (automatic)",
-                "gift": "gifted shares (not a market sale)",
-            }
-            for t in insider.top_trades[:5]:
-                title = f" ({t['title']})" if t.get("title") else ""
-                action = _action_map.get(t["type"], t["type"])
-                shares = int(float(t.get("shares", 0)))
-                value = float(t.get("value", 0))
-                parts.append(f"    {t['name']}{title} {action} {shares:,} shares (${value:,.0f}) on {t['date']}")
-        # / notes for non-conviction transactions excluded from signal
-        if insider.details:
-            oe = insider.details.get("option_exercise_count", 0)
-            tp = insider.details.get("tax_payment_count", 0)
-            gc = insider.details.get("gift_count", 0)
-            if oe > 0:
-                parts.append(f"  Note: {oe} option exercises excluded (RSU/stock vesting, not market sales)")
-            if tp > 0:
-                parts.append(f"  Note: {tp} tax withholding transactions excluded (automatic, not market sales)")
-            if gc > 0:
-                parts.append(f"  Note: {gc} gift transactions excluded (not market sales)")
-
+        parts.extend(_insider_section(insider))
     if indicators:
-        parts.append("\n## Technical Setup")
-        rsi = indicators.get("rsi14")
-        if rsi is not None:
-            rsi = float(rsi)
-            label = "overbought, watch for reversal" if rsi > 70 else "oversold, potential bounce" if rsi < 30 else "neutral zone"
-            parts.append(f"  RSI(14): {rsi:.1f} ({label})")
-        macd_h = indicators.get("macd_histogram")
-        if macd_h is not None:
-            macd_h = float(macd_h)
-            parts.append(f"  MACD histogram: {macd_h:.4f} ({'bullish momentum' if macd_h > 0 else 'bearish momentum'})")
-        adx = indicators.get("adx")
-        if adx is not None:
-            adx = float(adx)
-            parts.append(f"  ADX: {adx:.1f} ({'strong trend' if adx > 25 else 'weak/no trend'})")
-
+        parts.extend(_indicator_section(indicators))
     if sentiment:
-        parts.append("\n## Sentiment")
-        ns = sentiment.get("news_score")
-        if ns is not None:
-            ns = float(ns)
-            label = "bullish" if ns > 0.1 else "bearish" if ns < -0.1 else "neutral"
-            parts.append(f"  News: {ns:.2f} ({label})")
-        social = sentiment.get("social")
-        if social:
-            vol = social.get("volume", 0)
-            bull = social.get("bullish_pct")
-            if vol or bull is not None:
-                s = f"  Social: {vol} mentions" if vol else "  Social:"
-                if bull is not None:
-                    s += f", {float(bull):.0%} bullish"
-                parts.append(s)
-
+        parts.extend(_sentiment_section(sentiment))
     if positions:
-        parts.append("\n## Current Positions & Strategy Performance")
-        parts.append(f"{len(positions)} strategies currently hold this stock:")
-        for p in positions:
-            entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
-            line = f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}"
-            # / include strategy quant metrics so llm can reason about which
-            # / strategy holding this symbol is working vs which is leaking alpha
-            metric_parts = []
-            if p.get("sharpe") is not None:
-                metric_parts.append(f"sharpe {p['sharpe']:.2f}")
-            if p.get("win_rate") is not None:
-                metric_parts.append(f"win {p['win_rate'] * 100:.0f}%")
-            if p.get("max_drawdown") is not None:
-                metric_parts.append(f"maxdd {p['max_drawdown'] * 100:.1f}%")
-            if p.get("total_trades") is not None and p.get("total_trades") > 0:
-                metric_parts.append(f"{p['total_trades']} closed")
-            if metric_parts:
-                line += f" | {', '.join(metric_parts)}"
-            parts.append(line)
-
-    parts.append("\n## Instructions")
-    parts.append("- Identify the 2-3 most important signals and explain why they matter more than the others")
-    parts.append("- If signals conflict, state which you trust and why")
-    parts.append("- Keep under 200 words")
-
+        parts.extend(_positions_section(positions))
+    parts.extend([
+        "\n## Instructions",
+        "- Identify the 2-3 most important signals and explain why they matter more than the others",
+        "- If signals conflict, state which you trust and why",
+        "- Keep under 200 words",
+    ])
     return "\n".join(parts)
 
 
