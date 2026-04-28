@@ -32,19 +32,23 @@ async def check_portfolio_correlation(
     if len(symbols) < 2:
         return None
 
-    # / fetch recent returns
+    # / batch fetch all symbols in one query, bucket per-symbol in python
     returns_map = {}
     async with pool.acquire() as conn:
-        for symbol in symbols:
-            rows = await conn.fetch(
-                """SELECT date, close FROM market_data
-                WHERE symbol = $1 ORDER BY date DESC LIMIT $2""",
-                symbol, window + 1,
-            )
-            if len(rows) >= 10:
-                prices = [float(r["close"]) for r in reversed(rows)]
-                rets = np.diff(prices) / np.array(prices[:-1])
-                returns_map[symbol] = rets
+        rows = await conn.fetch(
+            """SELECT symbol, date, close FROM market_data
+            WHERE symbol = ANY($1::text[])
+            ORDER BY symbol, date DESC""",
+            symbols,
+        )
+    by_symbol: dict[str, list[float]] = {}
+    for r in rows:
+        by_symbol.setdefault(r["symbol"], []).append(float(r["close"]))
+    for symbol, prices_desc in by_symbol.items():
+        prices = list(reversed(prices_desc[: window + 1]))
+        if len(prices) >= 10:
+            rets = np.diff(prices) / np.array(prices[:-1])
+            returns_map[symbol] = rets
 
     if len(returns_map) < 2:
         return None

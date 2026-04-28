@@ -1280,33 +1280,38 @@ class AgentOrchestrator:
                 break
 
     async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:
-        # / load daily ohlcv from db for all symbols, used by evolution backtesting
+        # / load daily ohlcv for all symbols in one query, bucket per symbol
         symbols = self._get_symbols()
         market_data: dict[str, pd.DataFrame] = {}
-        async with self._pool.acquire() as conn:
-            for symbol in symbols:
-                try:
-                    rows = await conn.fetch(
-                        """SELECT date, open, high, low, close, volume
-                        FROM market_data WHERE symbol = $1
-                        ORDER BY date ASC""",
-                        symbol,
-                    )
-                    if len(rows) < 50:
-                        continue
-                    df = pd.DataFrame(
-                        [{
-                            "open": float(r["open"]) if r["open"] else 0,
-                            "high": float(r["high"]) if r["high"] else 0,
-                            "low": float(r["low"]) if r["low"] else 0,
-                            "close": float(r["close"]) if r["close"] else 0,
-                            "volume": int(r["volume"]) if r["volume"] else 0,
-                        } for r in rows],
-                        index=pd.DatetimeIndex([r["date"] for r in rows]),
-                    )
-                    market_data[symbol] = df
-                except Exception as exc:
-                    logger.warning("evolution_market_data_failed", symbol=symbol, error=str(exc))
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT symbol, date, open, high, low, close, volume
+                    FROM market_data
+                    WHERE symbol = ANY($1::text[])
+                    ORDER BY symbol, date ASC""",
+                    symbols,
+                )
+        except Exception as exc:
+            logger.warning("evolution_market_data_query_failed", error=str(exc))
+            return market_data
+        by_symbol: dict[str, list[dict]] = {}
+        for r in rows:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+        for symbol, sym_rows in by_symbol.items():
+            if len(sym_rows) < 50:
+                continue
+            df = pd.DataFrame(
+                [{
+                    "open": float(r["open"]) if r["open"] else 0,
+                    "high": float(r["high"]) if r["high"] else 0,
+                    "low": float(r["low"]) if r["low"] else 0,
+                    "close": float(r["close"]) if r["close"] else 0,
+                    "volume": int(r["volume"]) if r["volume"] else 0,
+                } for r in sym_rows],
+                index=pd.DatetimeIndex([r["date"] for r in sym_rows]),
+            )
+            market_data[symbol] = df
         logger.info("evolution_market_data_loaded", symbols=len(market_data))
         return market_data
 

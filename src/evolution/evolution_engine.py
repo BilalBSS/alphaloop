@@ -17,11 +17,7 @@ from src.data.strategy_metrics import (
     store_evolution_log,
     store_strategy_score,
 )
-from src.data.trade_history import (
-    count_all_symbol_trades,
-    count_symbol_trades,
-    fetch_recent_trades,
-)
+from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.data.symbols import get_sector_symbols
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
@@ -745,29 +741,47 @@ class EvolutionEngine:
     async def _spawn_tier2(
         self, pool: Any, strategy_pool: StrategyPool, generation: int,
     ) -> list[dict]:
-        # / for each live sector/general strategy, check if any symbol has enough
-        # / trades to warrant a per-symbol tweak (tier 2)
-        # / handles both sector-specific and universe-wide (all_stocks) strategies
+        # / for live sector/general strategies, check per-symbol trade counts
+        # / single grouped query replaces N*M acquires
         from src.data.symbols import FULL_UNIVERSE, get_sector
         spawned = []
+
+        # / collect candidate (strategy, symbols) pairs
+        candidates: list[tuple[Any, dict, str | None, list[str]]] = []
+        all_strat_ids: set[str] = set()
+        all_symbols: set[str] = set()
         for entry in strategy_pool.list_by_status("live"):
             config = entry.strategy.config
             if config.get("tier", "sector") != "sector":
                 continue
-
-            # / determine which symbols to check
             sector = config.get("sector")
             if sector:
-                symbols_to_check = get_sector_symbols(sector)
+                symbols_to_check = list(get_sector_symbols(sector))
             else:
-                # / general strategy (all_stocks, all, etc) — check all symbols
-                symbols_to_check = entry.strategy.resolve_universe() or FULL_UNIVERSE
+                symbols_to_check = list(entry.strategy.resolve_universe() or FULL_UNIVERSE)
+            candidates.append((entry, config, sector, symbols_to_check))
+            all_strat_ids.add(config["id"])
+            all_symbols.update(symbols_to_check)
 
+        # / one grouped query for all (strategy_id, symbol) trade counts
+        counts: dict[tuple[str, str], int] = {}
+        if all_strat_ids and all_symbols:
+            try:
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """SELECT strategy_id, symbol, COUNT(*) AS n FROM trade_log
+                        WHERE strategy_id = ANY($1::text[])
+                          AND symbol = ANY($2::text[])
+                        GROUP BY strategy_id, symbol""",
+                        list(all_strat_ids), list(all_symbols),
+                    )
+                counts = {(r["strategy_id"], r["symbol"]): int(r["n"]) for r in rows}
+            except Exception as exc:
+                logger.warning("tier2_count_batch_failed", error=str(exc))
+
+        for entry, config, sector, symbols_to_check in candidates:
             for symbol in symbols_to_check:
-                try:
-                    trade_count = await count_symbol_trades(pool, config["id"], symbol)
-                except Exception:
-                    continue
+                trade_count = counts.get((config["id"], symbol), 0)
                 if trade_count < self._tier2_spawn_trades:
                     continue
                 # / infer sector from symbol if strategy doesn't have one

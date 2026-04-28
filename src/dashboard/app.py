@@ -2121,23 +2121,17 @@ async def get_strategy_decay():
     if not _pool:
         return {"signals": []}
     try:
-        from src.analysis.strategy_decay import check_strategy_decay
-        # / check all strategies that have trades
-        async with _pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT DISTINCT strategy_id FROM trade_log WHERE strategy_id IS NOT NULL"
-            )
-        signals = []
-        for row in rows:
-            ds = await check_strategy_decay(_pool, row["strategy_id"])
-            if ds:
-                signals.append({
-                    "strategy_id": ds.strategy_id,
-                    "rolling_sharpe": round(ds.rolling_sharpe, 3),
-                    "days_below_threshold": ds.days_below_threshold,
-                    "cusum_triggered": ds.cusum_triggered,
-                    "recommendation": ds.recommendation,
-                })
+        from src.analysis.strategy_decay import check_all_decay
+        signals = [
+            {
+                "strategy_id": ds.strategy_id,
+                "rolling_sharpe": round(ds.rolling_sharpe, 3),
+                "days_below_threshold": ds.days_below_threshold,
+                "cusum_triggered": ds.cusum_triggered,
+                "recommendation": ds.recommendation,
+            }
+            for ds in await check_all_decay(_pool)
+        ]
         return {"signals": signals}
     except Exception:
         return {"signals": []}
