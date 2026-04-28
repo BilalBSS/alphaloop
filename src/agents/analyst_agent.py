@@ -1048,19 +1048,27 @@ class AnalystAgent:
         # / build jsonb details for strategy agent to reconstruct AnalysisData
         d: dict[str, Any] = {}
         if ratio:
-            d["pe_ratio"] = float(ratio.details.get("pe_ratio")) if ratio.details.get("pe_ratio") else None
-            d["ps_ratio"] = float(ratio.details.get("ps_ratio")) if ratio.details.get("ps_ratio") else None
-            # / peg=0 means unknown/divide-by-zero — never display as 0.00
-            _peg = ratio.details.get("peg_ratio")
+            rd = ratio.details
+            _pe = rd.get("pe_ratio")
+            d["pe_ratio"] = float(_pe) if _pe else None
+            _ps = rd.get("ps_ratio")
+            d["ps_ratio"] = float(_ps) if _ps else None
+            # / peg=0 means unknown/divide-by-zero
+            _peg = rd.get("peg_ratio")
             try:
                 d["peg_ratio"] = float(_peg) if _peg and float(_peg) > 0 else None
             except (TypeError, ValueError):
                 d["peg_ratio"] = None
-            d["fcf_margin"] = float(ratio.details.get("fcf_margin")) if ratio.details.get("fcf_margin") else None
-            d["debt_to_equity"] = float(ratio.details.get("debt_to_equity")) if ratio.details.get("debt_to_equity") else None
-            d["revenue_growth"] = float(ratio.details.get("revenue_growth_1y")) if ratio.details.get("revenue_growth_1y") else None
-            d["sector_pe_avg"] = float(ratio.details.get("sector_pe_avg")) if ratio.details.get("sector_pe_avg") else None
-            d["sector_ps_avg"] = float(ratio.details.get("sector_ps_avg")) if ratio.details.get("sector_ps_avg") else None
+            _fcf = rd.get("fcf_margin")
+            d["fcf_margin"] = float(_fcf) if _fcf else None
+            _de = rd.get("debt_to_equity")
+            d["debt_to_equity"] = float(_de) if _de else None
+            _rg = rd.get("revenue_growth_1y")
+            d["revenue_growth"] = float(_rg) if _rg else None
+            _spe = rd.get("sector_pe_avg")
+            d["sector_pe_avg"] = float(_spe) if _spe else None
+            _sps = rd.get("sector_ps_avg")
+            d["sector_ps_avg"] = float(_sps) if _sps else None
             d["ratio_composite"] = ratio.composite_score
         if dcf:
             d["dcf_upside"] = dcf.upside_pct

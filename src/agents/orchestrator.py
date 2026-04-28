@@ -828,7 +828,7 @@ class AgentOrchestrator:
             stream_cap = 30
         equity_streamed = equity_all[:stream_cap]
         equity_overflow = equity_all[stream_cap:]
-        self._streamed_equity_symbols: set[str] = set(equity_streamed)
+        self._streamed_equity_symbols = set(equity_streamed)
         if equity_overflow:
             logger.info("alpaca_stream_symbol_cap",
                         cap=stream_cap, streamed=len(equity_streamed),

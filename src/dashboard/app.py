@@ -2234,7 +2234,12 @@ async def broadcast(event_type: str, data: dict) -> None:
 # / serialization helpers for decimal/date/datetime types
 
 def _serialize(rows: list[dict]) -> list[dict]:
-    return [_serialize_one(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        s = _serialize_one(r)
+        if s is not None:
+            out.append(s)
+    return out
 
 
 def _serialize_one(row: dict | None) -> dict | None:

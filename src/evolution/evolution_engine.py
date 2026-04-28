@@ -494,7 +494,7 @@ class EvolutionEngine:
 
             bt_results = await asyncio.gather(*backtest_tasks, return_exceptions=True)
             for config, bt_result in zip(mutated_configs, bt_results, strict=False):
-                if isinstance(bt_result, Exception):
+                if isinstance(bt_result, BaseException):
                     logger.error("backtest_failed", strategy_id=config.get("id"), error=str(bt_result))
                     summary["errors"].append(f"backtest failed for {config.get('id')}: {bt_result}")
                 else:

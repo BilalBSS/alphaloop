@@ -314,8 +314,7 @@ class RiskAgent:
         regime_mult = 1.0
         if side == "buy":
             try:
-                regime = await tools.fetch_latest_regime(pool)
-                regime_label = regime.get("regime", "insufficient_data") if regime else "insufficient_data"
+                regime_label = await tools.fetch_latest_regime(pool) or "insufficient_data"
                 regime_mult = self._regime_multipliers.get(regime_label, 0.5)
                 qty = int(qty * regime_mult)
             except Exception as exc:
