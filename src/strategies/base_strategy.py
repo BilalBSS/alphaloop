@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import structlog
@@ -1207,7 +1207,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         passed = ratio >= implied_ratio_floor
         return passed, min(1.0, ratio) if passed else 0.0, f"insider_net_ratio={ratio:.2f} {'>=' if passed else '<'} {implied_ratio_floor:.2f} (proxy for ${threshold_usd:,.0f})"
 
-    _SIGNAL_HANDLERS: dict[str, Any] = {
+    _SIGNAL_HANDLERS: ClassVar[dict[str, Any]] = {
         "bollinger_bands": _eval_bollinger,
         "rsi": _eval_rsi,
         "macd": _eval_macd,
@@ -1259,7 +1259,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         passed = score >= thr
         return passed, min(1.0, score) if passed else 0.0, f"intermarket_score={score:.2f} {'>=' if passed else '<'} {thr}"
 
-    _ANALYSIS_HANDLERS: dict[str, Any] = {
+    _ANALYSIS_HANDLERS: ClassVar[dict[str, Any]] = {
         "regime": _eval_regime,
         "sector_relative_strength": _eval_sector_relative_strength,
         "earnings_surprise": _eval_earnings_surprise,
