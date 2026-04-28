@@ -9,6 +9,7 @@ import asyncpg
 import structlog
 
 from ._serialize import iso as _iso
+from ._serialize import whitelist as _whitelist
 
 logger = structlog.get_logger(__name__)
 
@@ -30,23 +31,11 @@ _UPDATE_WHITELIST: set[str] = {"price", "direction", "label", "status"}
 
 
 def sanitize_direction(d: Any) -> str | None:
-    # / whitelist + lowercase, returns None when unknown so callers can 400
-    if not isinstance(d, str):
-        return None
-    normalized = d.strip().lower()
-    if normalized not in VALID_DIRECTIONS:
-        return None
-    return normalized
+    return _whitelist(d, VALID_DIRECTIONS)
 
 
 def sanitize_status(s: Any) -> str | None:
-    # / whitelist + lowercase, returns None when unknown
-    if not isinstance(s, str):
-        return None
-    normalized = s.strip().lower()
-    if normalized not in VALID_STATUSES:
-        return None
-    return normalized
+    return _whitelist(s, VALID_STATUSES)
 
 
 def validate_label(label: Any) -> str | None:

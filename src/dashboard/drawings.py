@@ -9,6 +9,7 @@ import asyncpg
 import structlog
 
 from ._serialize import iso as _iso
+from ._serialize import whitelist as _whitelist
 
 logger = structlog.get_logger(__name__)
 
@@ -35,13 +36,7 @@ _PAYLOAD_MAX_BYTES = 32 * 1024
 
 
 def sanitize_drawing_type(dt: Any) -> str | None:
-    # / normalize + whitelist check, returns None when the type is unknown
-    if not isinstance(dt, str):
-        return None
-    normalized = dt.strip().lower()
-    if normalized not in VALID_DRAWING_TYPES:
-        return None
-    return normalized
+    return _whitelist(dt, VALID_DRAWING_TYPES)
 
 
 def validate_payload(payload: Any) -> bool:
