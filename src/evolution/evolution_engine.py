@@ -17,8 +17,8 @@ from src.data.strategy_metrics import (
     store_evolution_log,
     store_strategy_score,
 )
-from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.data.symbols import get_sector_symbols
+from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
@@ -779,7 +779,7 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.warning("tier2_count_batch_failed", error=str(exc))
 
-        for entry, config, sector, symbols_to_check in candidates:
+        for _entry, config, sector, symbols_to_check in candidates:
             for symbol in symbols_to_check:
                 trade_count = counts.get((config["id"], symbol), 0)
                 if trade_count < self._tier2_spawn_trades:

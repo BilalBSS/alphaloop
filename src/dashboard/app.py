@@ -8,12 +8,10 @@ import asyncio
 import hmac
 import json
 import os
-import time
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import asyncpg
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +26,7 @@ from src.dashboard import indicator_registry
 from src.dashboard import marker_aggregator as marker_agg_mod
 from src.dashboard import replay as replay_mod
 from src.dashboard import volume_profile as volume_profile_mod
-from src.dashboard.state import STATE, get_state
+from src.dashboard.state import STATE
 from src.data.db import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -429,8 +427,8 @@ async def get_crypto_fundamentals(symbol: str):
 async def get_phase5_metrics():
     # / flywheel health metrics, db-sourced
     from src.agents.analyst_agent import get_coverage_pct
-    from src.data.loop_registry import fetch_service_state
     from src.agents.phase5_metrics import compute_phase5_metrics
+    from src.data.loop_registry import fetch_service_state
     from src.data.symbols import FULL_UNIVERSE
     try:
         metrics = await compute_phase5_metrics(STATE.pool)

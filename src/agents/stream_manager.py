@@ -5,17 +5,16 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
 
 from src.agents import tools
+from src.data.loop_registry import upsert_service_state
 from src.data.streams.alpaca_ws import AlpacaStream
 from src.data.streams.base import TickBuffer
 from src.data.streams.coinbase_ws import CoinbaseStream
 from src.data.symbols import is_crypto
-from src.data.loop_registry import upsert_service_state
 
 logger = structlog.get_logger(__name__)
 

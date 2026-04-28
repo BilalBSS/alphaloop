@@ -77,12 +77,12 @@ class DashboardState:
         self.cors_origins = parsed or default_origins
 
         self.prod_mode = os.environ.get("PROD", "").strip().lower() in ("1", "true", "yes")
-        if self.prod_mode and not cors_env:
-            if any("localhost" in o or "127.0.0.1" in o for o in self.cors_origins):
-                raise RuntimeError(
-                    "PROD=1 but ALPHALOOP_CORS_ORIGINS unset and resolved origins still "
-                    "include localhost. set ALPHALOOP_CORS_ORIGINS=<prod hostname(s)>."
-                )
+        if (self.prod_mode and not cors_env
+                and any("localhost" in o or "127.0.0.1" in o for o in self.cors_origins)):
+            raise RuntimeError(
+                "PROD=1 but ALPHALOOP_CORS_ORIGINS unset and resolved origins still "
+                "include localhost. set ALPHALOOP_CORS_ORIGINS=<prod hostname(s)>."
+            )
 
         self.admin_token = os.environ.get("ADMIN_TOKEN", "").strip()
         if self.admin_token and len(self.admin_token) < 32:
