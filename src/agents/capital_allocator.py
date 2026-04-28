@@ -1,4 +1,4 @@
-# / phase 6 step 10: kelly-weighted capital allocator
+# / kelly-weighted capital allocator
 # /
 # / the risk agent used to size every position as a fixed pct of equity.
 # / with 30+ strategies competing for the same $100k, that sizing ignores

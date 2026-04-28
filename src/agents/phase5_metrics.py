@@ -1,5 +1,5 @@
 # / phase 5 success-criteria metrics
-# / phase 5 step 9: measure whether the flywheel actually spins
+# / measure whether the flywheel actually spins
 # /
 # / all phase 5 success criteria from plans/phase5-activation.md are measurable
 # / via SQL over our own tables. this module computes them in one shot so the

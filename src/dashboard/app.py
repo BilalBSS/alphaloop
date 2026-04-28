@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Quant Trading Dashboard", docs_url="/api/docs", lifespan=lifespan)
 
-# / bug 5e: allow_origins=* is too permissive for a dashboard with broker context
+# / allow_origins=* is too permissive for a dashboard with broker context
 # / restrict to known origins; override via ALPHALOOP_CORS_ORIGINS env (comma separated)
 _default_origins = [
     "https://dashboard.siddiqtradebot.trade",
@@ -95,7 +95,7 @@ app.add_middleware(
 )
 
 
-# / bug 5d: FastAPI APIRoute sets methods={'GET'} without adding HEAD, so HEAD to /api/ returns 404
+# / FastAPI APIRoute sets methods={'GET'} without adding HEAD, so HEAD to /api/ returns 404
 # / gate rewrite to /api/ paths only — static assets already handle HEAD natively in StaticFiles,
 # / mutating scope["method"] there would force full file reads on every HEAD ping
 @app.middleware("http")
@@ -431,7 +431,7 @@ async def get_analysis(symbol: str):
 
 @app.get("/api/crypto-fundamentals/{symbol}")
 async def get_crypto_fundamentals(symbol: str):
-    # / phase 5 step 6: crypto alt-data aggregate (nvt, funding, tvl, active addrs,
+    # / crypto alt-data aggregate (nvt, funding, tvl, active addrs,
     # / exchange flows, hash rate, dex volume, stablecoin supply ratio).
     # / cache-first via crypto_fundamentals table, falls back to live fetchers.
     # / single source failures return null for that field — never 500s the request.
@@ -462,7 +462,7 @@ async def get_crypto_fundamentals(symbol: str):
 
 @app.get("/api/phase5-metrics")
 async def get_phase5_metrics():
-    # / phase 5 step 9: activation flywheel health — days since last evolution kill,
+    # / activation flywheel health — days since last evolution kill,
     # / brier-populated strategy count, cerebras-vs-groq split, established wiki docs,
     # / regime diversity per asset class. also surfaces kronos hf-vs-fallback load state.
     # / each metric degrades independently — a missing table doesn't 500 the endpoint.
@@ -492,7 +492,7 @@ async def get_phase5_metrics():
             from src.quant.kronos_signal import get_load_status as kronos_status
             kronos_payload = kronos_status()
 
-        # / phase 9: analyst freshness. 60-min window matches the intended full-universe
+        # / analyst freshness. 60-min window matches the intended full-universe
         # / refresh cadence (3 batches x 20-min interval). <0.8 = trading on stale signals.
         coverage_60m = await get_coverage_pct(_pool, list(FULL_UNIVERSE), window_s=3600.0)
         metrics_dict = metrics.as_dict()
@@ -612,7 +612,7 @@ async def get_strategies():
             strategies_by_id[sid]["metrics_source"] = "live"
 
     # / overlay trade_log aggregates where available
-    # / bug 4a: only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
+    # / only sells with pnl NOT NULL count as closed trades. buys have pnl=null which
     # / broke `pnl > 0` so every buy fell into the "loss" bucket → win_rate 0.000 for everyone.
     # / closed = sells with realized pnl; win_rate NULL until we have at least one closed trade.
     # / expose both the "closed trades" count (used for win_rate math) and the
@@ -728,7 +728,7 @@ async def get_evolution_mutations(limit: int = 100):
     }
 
 
-# / phase 2: knowledge base endpoints
+# / knowledge base endpoints
 # / wiki_documents rows for sidebar browsing, raw markdown for content pane,
 # / plus dedicated post_mortems + regime_shifts feeds for their own panels
 
@@ -986,7 +986,7 @@ async def get_health():
     if "cerebras" not in sources:
         sources["cerebras"] = {"status": "pending", "last_error": None, "errors_24h": 0}
 
-    # / bug e: baseline orchestrator loops — show as pending until first cycle logs an event
+    # / baseline orchestrator loops — show as pending until first cycle logs an event
     for _loop in (
         "intraday_backfill", "daily_bar_backfill", "price_refresh",
         "fundamentals_backfill", "insider_backfill", "regime_backfill",
@@ -1038,7 +1038,7 @@ async def get_health():
 @app.get("/api/insider/{symbol}")
 async def get_insider(symbol: str):
     # / recent insider trades for symbol (last 90 days) + signed strength from latest analysis
-    # / bug 4b: signed_strength lives in analysis_scores.details, not in insider_trades table
+    # / signed_strength lives in analysis_scores.details, not in insider_trades table
     sym = symbol.upper()
     rows = await _query(
         """SELECT * FROM insider_trades
@@ -1299,7 +1299,7 @@ async def list_drawings_endpoint(symbol: str):
 @app.post("/api/drawings/{symbol}")
 async def create_drawing_endpoint(symbol: str, body: dict, _auth: None = Depends(require_admin_token)):
     # / create a drawing from a whitelisted type + opaque jsonb payload
-    # / bug e: accept both `drawing_type` (canonical) and `type` (stale-bundle fallback)
+    # / accept both `drawing_type` (canonical) and `type` (stale-bundle fallback)
     if not symbol or len(symbol) > _CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if _pool is None:
@@ -1437,7 +1437,7 @@ async def compare_endpoint(
 ):
     # / pair normalized overlay — % change from first common timestamp for both symbols
     # / empty series on any failure so the chart can fall back cleanly
-    # / bug 3c: accept symbols=AAPL,MSFT as an alias for base=AAPL&against=MSFT
+    # / accept symbols=AAPL,MSFT as an alias for base=AAPL&against=MSFT
     if not base and not against and symbols:
         parts = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(parts) >= 2:
@@ -1498,8 +1498,8 @@ async def get_ict_indicators(symbol: str):
 
 @app.get("/api/quant-metrics/{symbol}")
 async def get_quant_metrics(symbol: str):
-    # / bug 4d: broaden the join — strategy scored this symbol via any signal OR actual trade
-    # / bug e: also include strategy_positions so open-only positions (no closes yet) surface
+    # / broaden the join — strategy scored this symbol via any signal OR actual trade
+    # / also include strategy_positions so open-only positions (no closes yet) surface
     # / DISTINCT ON picks the latest strategy_scores row per strategy_id
     rows = await _query(
         """SELECT DISTINCT ON (ss.strategy_id) ss.*
@@ -1515,7 +1515,7 @@ async def get_quant_metrics(symbol: str):
         ORDER BY ss.strategy_id, ss.created_at DESC""",
         symbol,
     )
-    # / bug e2: prior stub emitted null-valued rows that rendered as 0.00/0%/0.000 on the ui,
+    # / prior stub emitted null-valued rows that rendered as 0.00/0%/0.000 on the ui,
     # / making strategies look dead when they were actually paper-trading with no closed trades.
     # / preferred path: no row unless we have real metrics; ui shows informative empty state.
     rows_sorted = sorted(
@@ -1615,7 +1615,7 @@ async def get_signal_funnel(hours: int = 24):
     }
 
 
-# / phase 4: alt-data endpoints — one per source backed by the source_registry
+# / alt-data endpoints — one per source backed by the source_registry
 
 @app.get("/api/macro-context")
 async def get_macro_context():
@@ -1651,7 +1651,7 @@ async def get_macro_context():
 
 @app.get("/api/feature-benchmark")
 async def get_feature_benchmark(symbol: str = "SPY"):
-    # / phase 6 step 9: run the handbuilt vs alpha158 a/b on one symbol's 5y daily bars
+    # / run the handbuilt vs alpha158 a/b on one symbol's 5y daily bars
     # / cached per symbol for an hour so the button is cheap to press repeatedly
     import time as _time
     cache_key = symbol.upper()
@@ -2160,7 +2160,7 @@ async def get_strategy_decay():
         return {"signals": []}
 
 
-# / phase 6 step 1: loop introspection + admin trigger + env health
+# / loop introspection + admin trigger + env health
 
 @app.get("/api/loops")
 async def get_loops():

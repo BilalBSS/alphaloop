@@ -379,7 +379,7 @@ async def reconcile_strategy_positions(
         )
 
         # / guard: if alpaca returns empty but we have positions, skip (api glitch)
-        # / bug c: full_sync bypasses this so manual liquidation reconciles cleanly
+        # / full_sync bypasses this so manual liquidation reconciles cleanly
         if not alpaca_map and rows and not full_sync:
             logger.warning("reconcile_skipped_empty_alpaca", tracked=len(rows))
             return
@@ -399,7 +399,7 @@ async def reconcile_strategy_positions(
                     # / executor's open_strategy_position committed and the next
                     # / reconciler tick wrote the row as untracked even though
                     # / trade_log already had the real strategy_id.
-                    # / bug e: avg_entry_price was hardcoded 0, now pulled from price_map
+                    # / avg_entry_price was hardcoded 0, now pulled from price_map
                     avg_price = price_map.get(symbol, 0)
                     recovered = await conn.fetchrow(
                         """SELECT strategy_id FROM trade_log
@@ -589,7 +589,7 @@ async def sync_trades_from_alpaca(pool) -> int:
                     continue
             if qty <= 0 or price <= 0 or filled_at is None:
                 continue
-            # / bug e: compute pnl for sells from the most recent buy BEFORE this sell
+            # / compute pnl for sells from the most recent buy BEFORE this sell
             # / critical: alpaca returns orders desc, so a later-sync buy could have later created_at
             # / arithmetic in Decimal avoids float rounding before cast
             pnl: Decimal | None = None
@@ -623,7 +623,7 @@ async def sync_trades_from_alpaca(pool) -> int:
                 {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
-            # / bug 1a: project alpaca fills into strategy_positions so the position
+            # / project alpaca fills into strategy_positions so the position
             # / table never disagrees with the broker. prefer the strategy_id we
             # / recovered from approved_trades (same attribution we wrote to
             # / trade_log above) so sync-ingested fills don't land as untracked

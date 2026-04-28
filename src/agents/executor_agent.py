@@ -25,7 +25,7 @@ _POST_MORTEM_TASKS: set = set()
 def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
                     strategy_id: str | None, log_id: int | None,
                     pnl: float | None) -> None:
-    # / phase 7 tier 1: fan trade_executed + position_update out to ws clients.
+    # / fan trade_executed + position_update out to ws clients.
     # / late-bind the dashboard import so tests / headless workers don't fail.
     try:
         from src.dashboard.app import _ws_clients, broadcast
@@ -46,7 +46,7 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
 
 
 def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> bool:
-    # / phase 2: loss > $50 OR loss > 2% of entry notional
+    # / loss > $50 OR loss > 2% of entry notional
     if pnl is None or pnl >= 0:
         return False
     try:
@@ -91,7 +91,7 @@ def _spawn_post_mortem(
 
 
 def _strategy_killed_on_disk(strategy_id: str) -> bool:
-    # / bug e: disk fallback for kill gate — defends against stale/missing in-memory pool
+    # / disk fallback for kill gate — defends against stale/missing in-memory pool
     # / reads the strategy config json directly to see the authoritative status
     import json as _json
     import re as _re
@@ -121,7 +121,7 @@ class ExecutorAgent:
         # / killed-strategy gate: reject trades from strategies marked killed in the pool
         # / prevents orphaned approved_trades from executing after evolution kills a strategy
         # / status value must fit VARCHAR(20) on approved_trades.status
-        # / bug e: also check on-disk config when in-memory pool is missing/stale
+        # / also check on-disk config when in-memory pool is missing/stale
         if strategy_id:
             killed = False
             if strategy_pool is not None:
@@ -212,7 +212,7 @@ class ExecutorAgent:
                     pool, strategy_id, symbol, order.filled_qty, order.filled_price,
                 )
             elif side == "sell":
-                # / bug e: try strategy close first, fall back to most recent buy lookup
+                # / try strategy close first, fall back to most recent buy lookup
                 entry_price = None
                 if strategy_id:
                     entry_price = await tools.close_strategy_position(
@@ -256,7 +256,7 @@ class ExecutorAgent:
                 qty=order.filled_qty, price=order.filled_price,
             )
 
-            # / phase 2: trigger post-mortem on loss-close (sell branch only)
+            # / trigger post-mortem on loss-close (sell branch only)
             if side == "sell" and pnl is not None:
                 entry_notional = 0.0
                 if 'entry_price' in locals() and entry_price is not None:
@@ -328,7 +328,7 @@ class ExecutorAgent:
                         pool, strategy_id, symbol, order.filled_qty, order.filled_price,
                     )
                 elif side == "sell":
-                    # / bug e: try strategy close first, fall back to most recent buy lookup
+                    # / try strategy close first, fall back to most recent buy lookup
                     entry_price = None
                     if strategy_id:
                         entry_price = await tools.close_strategy_position(
@@ -357,7 +357,7 @@ class ExecutorAgent:
                 logger.info("trade_executed_after_poll", trade_id=trade_id, log_id=log_id,
                             symbol=symbol, side=side, qty=order.filled_qty, price=order.filled_price)
 
-                # / phase 2: trigger post-mortem on loss-close (polled fill)
+                # / trigger post-mortem on loss-close (polled fill)
                 if side == "sell" and pnl is not None:
                     entry_notional = 0.0
                     if 'entry_price' in locals() and entry_price is not None:

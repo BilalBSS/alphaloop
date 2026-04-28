@@ -1,4 +1,4 @@
-# / phase 5 step 6: aggregate crypto fundamentals (nvt, funding, tvl, active addrs,
+# / aggregate crypto fundamentals (nvt, funding, tvl, active addrs,
 # / exchange flows, hash rate, dex volume, stablecoin supply ratio). every source
 # / is best-effort — one failure returns null for that field only, never 500s the
 # / whole response.

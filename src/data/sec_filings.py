@@ -83,7 +83,7 @@ def _fetch_insider_trades_sync(
                 owner_title = _safe_get(form4, "position", "")
 
                 for txn in _get_transactions(form4):
-                    # / bug 5b: option_exercise rows often have NaN price from edgartools
+                    # / option_exercise rows often have NaN price from edgartools
                     # / Decimal('NaN') serializes as the literal string "NaN" in jsonb — coerce to 0
                     shares = _to_decimal_safe(txn.get("shares", 0))
                     price = _to_decimal_safe(txn.get("price", 0))

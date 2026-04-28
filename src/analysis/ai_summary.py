@@ -176,7 +176,7 @@ def _build_prompt(
         for p in positions:
             entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
             line = f"  - {p['strategy_id']}: {p['qty']:.0f} shares{entry}"
-            # / bug e2: include strategy quant metrics so llm can reason about which
+            # / include strategy quant metrics so llm can reason about which
             # / strategy holding this symbol is working vs which is leaking alpha
             metric_parts = []
             if p.get("sharpe") is not None:
@@ -431,7 +431,7 @@ def _extract_signal(text: str) -> tuple[str, float]:
     if not text or not text.strip():
         return ("neutral", 30.0)
 
-    # / phase 1: structured prefix match
+    # / structured prefix match
     match = _PREFIX_RE.search(text[:80])
     if match:
         return (match.group(1).lower(), 90.0)
@@ -442,7 +442,7 @@ def _extract_signal(text: str) -> tuple[str, float]:
     if first_word in ("bullish", "bearish", "neutral"):
         return (first_word, 90.0)
 
-    # / phase 2: paragraph-weighted keyword analysis
+    # / paragraph-weighted keyword analysis
     paragraphs = text.split("\n\n")
     if len(paragraphs) == 1:
         paragraphs = [p for p in text.split("\n") if p.strip()]
@@ -559,7 +559,7 @@ def _dispatch_prompt(
 
 
 def _parse_synthesis_json(raw: str) -> dict | None:
-    # / bug 4e: tolerant json parser for llm synthesis output
+    # / tolerant json parser for llm synthesis output
     # / handles ```json fences, trailing commas, unescaped control chars, first-{ last-} slice
     if not raw:
         return None
@@ -969,7 +969,7 @@ async def generate_daily_synthesis(
     except Exception as exc:
         logger.debug("synthesis_positions_failed", error=str(exc)[:100])
 
-    # / bug e2: inject live strategy performance so synthesis reasons about active strategies
+    # / inject live strategy performance so synthesis reasons about active strategies
     # / not just symbol scores. paper must mirror live — same feedback that live would give.
     strategy_text = ""
     try:
@@ -1030,9 +1030,9 @@ Output ONLY valid JSON. No explanation outside the JSON."""
         )
         return data["choices"][0]["message"]["content"]
 
-    # / bug 4e: parse with sanitization + retry + groq fallback so one bad deepseek response
+    # / parse with sanitization + retry + groq fallback so one bad deepseek response
     # / doesn't blank the whole synthesis card
-    # / bug e: keep the raw llm payload from every attempt; don't overwrite with parser exception text
+    # / keep the raw llm payload from every attempt; don't overwrite with parser exception text
     result: dict | None = None
     raw: str = ""
     raw_attempts: list[str] = []
@@ -1055,7 +1055,7 @@ Output ONLY valid JSON. No explanation outside the JSON."""
 
     if result is None:
         logger.error("daily_synthesis_failed", errors=errors)
-        # / bug e: show actual llm output (or empty markers) alongside parser errors so user can debug
+        # / show actual llm output (or empty markers) alongside parser errors so user can debug
         fallback_body = "\n".join(raw_attempts) + ("\n--errors--\n" + "; ".join(errors) if errors else "")
         if not fallback_body.strip():
             fallback_body = raw or "; ".join(errors) or "<no response>"

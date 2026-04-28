@@ -1,4 +1,4 @@
-# / bug a: live strategy metrics writer
+# / live strategy metrics writer
 # / aggregates closed trades from trade_log, computes rolling sharpe/sortino/maxdd/win rate
 # / upserts to strategy_scores so /api/quant-metrics returns real rows for live strategies
 # / evolution engine backtester only writes backtest results; this covers the live path
@@ -18,7 +18,7 @@ from src.quant.risk_metrics import max_drawdown
 
 logger = structlog.get_logger(__name__)
 
-# / bug e2: paper-mode mirror of live — emit metrics once a strategy has >=3 data points
+# / paper-mode mirror of live — emit metrics once a strategy has >=3 data points
 # / across closed trades AND daily mark-to-market observations from open positions combined.
 # / previously this required 3 CLOSED trades, which meant strategy_011 paper-trading 10 open
 # / positions with no sells yet showed no metrics at all. now open positions contribute daily
@@ -103,7 +103,7 @@ async def compute_live_strategy_metrics(
 async def _compute_open_position_returns(
     pool, strategy_id: str, period_start: date, period_end: date,
 ) -> tuple[list[float], float]:
-    # / bug e2: build daily mark-to-market return series from strategy's currently open positions
+    # / build daily mark-to-market return series from strategy's currently open positions
     # / for each open position, walk daily market_data closes and compute pct changes vs previous
     # / close (or entry price on the first day). returns per-position daily returns concatenated.
     # / total_pnl is the sum of unrealized p&l (current close vs entry) across all positions.
@@ -196,7 +196,7 @@ async def _compute_for_strategy(
     if rows:
         returns, total_pnl, closed_trades = _fifo_match_returns([dict(r) for r in rows])
 
-    # / bug e2: extend returns with daily mark-to-market from open positions so paper-trading
+    # / extend returns with daily mark-to-market from open positions so paper-trading
     # / strategies get meaningful sharpe/sortino before any sell ever happens
     open_returns, unrealized_pnl = await _compute_open_position_returns(
         pool, strategy_id, period_start, period_end,
@@ -227,7 +227,7 @@ async def _compute_for_strategy(
     win_rate = wins / len(returns_arr)
 
     # / max drawdown against a fixed capital base for meaningful % scaling
-    # / bug e2: also include unrealized p&l deltas from open positions so paper drawdown
+    # / also include unrealized p&l deltas from open positions so paper drawdown
     # / reflects ongoing mark-to-market moves, not just closed trade realized swings
     pnl_series_parts: list[float] = [t["pnl"] for t in closed_trades]
     if open_returns:

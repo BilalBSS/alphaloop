@@ -323,7 +323,7 @@ async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str =
 
 async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[dict[str, Any]]:
     # / yfinance 1h bars — free, 730 day lookback
-    # / bug e2: yfinance returns multiindex columns like ('Open', 'AAPL') even for single
+    # / yfinance returns multiindex columns like ('Open', 'AAPL') even for single
     # / ticker, so float(row["Open"]) raised valueerror and swallowed every equity intraday
     # / fetch. flatten columns to top level before iterating.
     def _fetch():

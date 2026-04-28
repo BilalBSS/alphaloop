@@ -287,7 +287,7 @@ class RiskAgent:
                 strat_pos = await tools.get_strategy_positions(pool, strategy_id=signal.get("strategy_id"), symbol=symbol)
                 qty = int(strat_pos[0]["qty"]) if strat_pos else 0
         else:
-            # / phase 6 step 10: kelly-weighted sizing via capital_allocator
+            # / kelly-weighted sizing via capital_allocator
             # / returns allocated_weight per strategy; falls back to half max_pct
             # / when no allocation row exists (first week) or under-sampled history
             strategy_id = signal.get("strategy_id") or ""

@@ -1,5 +1,5 @@
 # / alpha158 feature set — port of microsoft qlib's reference feature library
-# / phase 5 step 8: benchmark feature set for ml_signals.py
+# / benchmark feature set for ml_signals.py
 # /
 # / qlib's Alpha158 defines ~158 features across 9 families. this module
 # / implements a representative subset covering every family, computed in pure

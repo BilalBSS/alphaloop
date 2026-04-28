@@ -2,7 +2,7 @@
 # / rule-based using rolling volatility, sma cross, drawdown
 # / separate classifiers for equity (spy-based) and crypto (btc-based)
 # / graceful: returns insufficient_data when not enough history
-# / phase 5 step 4: per-sector regime on sector composite returns to fix the
+# / per-sector regime on sector composite returns to fix the
 # / "all stocks bull / all crypto bear" uniformity problem
 
 from __future__ import annotations
@@ -565,7 +565,7 @@ async def snapshot_regime_daily(
     pool, market: str, current_regime: str | None,
     confidence: float | None = None,
 ) -> bool:
-    # / phase 5 step 3: ensure a regime_history row exists for today even when
+    # / ensure a regime_history row exists for today even when
     # / no shift occurred — otherwise the timeline widget only has scattered
     # / shift-triggered rows and looks empty / uniform.
     # / returns True if a snapshot row was inserted, False if one already existed or input was invalid.

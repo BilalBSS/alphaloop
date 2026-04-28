@@ -49,7 +49,7 @@ DEFAULT_WIKI_GUIDED_RATIO = 0.80
 
 def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
                              reason: str | None = None) -> None:
-    # / phase 7 tier 1: notify ws clients when a strategy changes status
+    # / notify ws clients when a strategy changes status
     # / (killed, paper_trading, live). late-bind so headless tests pass.
     try:
         from src.dashboard.app import _ws_clients, broadcast
@@ -294,7 +294,7 @@ class EvolutionEngine:
             try:
                 save_config(config)
             except Exception as exc:
-                # / bug e: save_config silently failed before; now loudly notify so stale configs get surfaced
+                # / save_config silently failed before; now loudly notify so stale configs get surfaced
                 logger.error("kill_save_config_failed", strategy_id=sid, error=str(exc))
                 try:
                     from src.notifications.notifier import notify_system_error

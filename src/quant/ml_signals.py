@@ -15,7 +15,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# / phase 6 step 9: feature-set selector lets us a/b handbuilt vs alpha158 benchmark
+# / feature-set selector lets us a/b handbuilt vs alpha158 benchmark
 # / values: "handbuilt" (default, ~13 features) | "alpha158" (~60 qlib features) | "both"
 FEATURE_SET_HANDBUILT = "handbuilt"
 FEATURE_SET_ALPHA158 = "alpha158"
@@ -78,7 +78,7 @@ def build_features(
         df["macd_hist"] = df["macd"] - df["macd_signal"]
 
     if fs in (FEATURE_SET_ALPHA158, FEATURE_SET_BOTH):
-        # / phase 6 step 9: qlib-style feature bundle. cap to (5,10,20) windows
+        # / qlib-style feature bundle. cap to (5,10,20) windows
         # / on the first pass to keep training fast; expand after we have a brier baseline.
         from src.quant.alpha158 import compute_alpha158
         windows = (5, 10, 20)
@@ -173,7 +173,7 @@ async def benchmark_feature_sets(
     train_window: int = 252,
     forward_days: int = 5,
 ) -> dict:
-    # / phase 6 step 9: train a lightgbm model on each feature set, return test brier
+    # / train a lightgbm model on each feature set, return test brier
     # / so the dashboard can visibly compare handbuilt vs alpha158.
     # / the smaller brier wins (lower = better-calibrated probabilities).
     try:

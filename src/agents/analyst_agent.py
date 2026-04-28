@@ -82,7 +82,7 @@ def _kronos_weight() -> float:
 
 
 def _compute_technical_score(indicator_data: dict | None) -> float | None:
-    # / bug 4c: derive 0-100 technical score from indicator_data so analysis_scores.technical_score
+    # / derive 0-100 technical score from indicator_data so analysis_scores.technical_score
     # / stops being null. keys match what _fetch_equity_enrichment stores: rsi14, macd_histogram, adx.
     # / rsi and macd carry direction; adx is trend strength only and acts as confidence multiplier.
     if not indicator_data:
@@ -571,7 +571,7 @@ class AnalystAgent:
             )
 
         # / fetch indicators + sentiment from db for llm prompt enrichment
-        # / bug e: lazy compute from market_data if computed_indicators has no row — prevents
+        # / lazy compute from market_data if computed_indicators has no row — prevents
         # / technical_score starvation when strategy_agent hasn't written for this symbol yet
         indicator_data: dict | None = None
         sentiment_data: dict | None = None
@@ -853,7 +853,7 @@ class AnalystAgent:
         # / fetch strategy positions for llm context
         strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
 
-        # / bug e2: enrich each position with its strategy's latest quant metrics so the llm
+        # / enrich each position with its strategy's latest quant metrics so the llm
         # / sees paper-mode performance (sharpe/sortino/win rate/maxdd) and can reason about
         # / which strategies are actually working vs which need adjustment
         if strat_positions:
@@ -950,11 +950,11 @@ class AnalystAgent:
             if key in alt_data and alt_data[key] is not None:
                 details[key] = alt_data[key]
 
-        # / bug 4c: compute technical_score from indicator_data so composite != fundamental
+        # / compute technical_score from indicator_data so composite != fundamental
         # / rsi midline, macd histogram sign, adx trend strength, bb position — all 0-100
         technical_score = _compute_technical_score(indicator_data)
 
-        # / phase 6 step 8: kronos candle-sequence score (0..100), blended into composite.
+        # / kronos candle-sequence score (0..100), blended into composite.
         # / degrades silently to None when model is off / data too short / psutil guard trips.
         kronos_score, kronos_details = await _compute_kronos_score(pool, symbol)
         if kronos_details is not None:
@@ -1066,7 +1066,7 @@ class AnalystAgent:
         if ratio:
             d["pe_ratio"] = float(ratio.details.get("pe_ratio")) if ratio.details.get("pe_ratio") else None
             d["ps_ratio"] = float(ratio.details.get("ps_ratio")) if ratio.details.get("ps_ratio") else None
-            # / bug e: peg=0 means unknown/divide-by-zero — never display as 0.00
+            # / peg=0 means unknown/divide-by-zero — never display as 0.00
             _peg = ratio.details.get("peg_ratio")
             try:
                 d["peg_ratio"] = float(_peg) if _peg and float(_peg) > 0 else None

@@ -277,7 +277,7 @@ class StrategyAgent:
         _signal_kept = True
         _reason_code = "passthrough"
         _blocked_return = False
-        # / phase 6 step 12: consensus mode — strict (default) vs loose.
+        # / consensus mode — strict (default) vs loose.
         # / strict blocks bearish-consensus when symbol_trend != "up".
         # / loose softens bearish to 0.4x but never blocks, giving the evolution
         # / engine more data points to measure brier impact. revert by unset.
@@ -644,7 +644,7 @@ class StrategyAgent:
         self, strategy, sp: dict, df: pd.DataFrame,
         override_strategy_id: str | None = None,
     ) -> dict | None:
-        # / phase 6 step 12: evaluate the first partial_exits tier.
+        # / evaluate the first partial_exits tier.
         # / strategy JSON shape:
         # /   exit_conditions.partial_exits: [{"trigger": "take_profit_pct", "threshold": 0.05, "fraction": 0.5}]
         # / returns None when no tier triggers or the position already consumed a tier.
@@ -695,7 +695,7 @@ class StrategyAgent:
             if df is None:
                 return None
 
-            # / phase 6 step 12: partial-exit tier check before full-exit evaluation.
+            # / partial-exit tier check before full-exit evaluation.
             # / if the strategy's exit_conditions.partial_exits[0] trigger has fired
             # / and partial_exit_fired is still false, sell `fraction` of the position.
             partial_sig = self._eval_partial_exit(strategy, sp, df, override_strategy_id)

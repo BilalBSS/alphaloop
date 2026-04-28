@@ -1,4 +1,4 @@
-# / phase 6 step 1: loop introspection registry
+# / loop introspection registry
 # / orchestrator loops call record_fire_start / record_fire_end on every cycle;
 # / the dashboard reads describe_loops() via /api/loops. trigger_requests is a
 # / cross-process command queue for /api/admin/trigger/{service}.

@@ -32,7 +32,7 @@ from src.strategies.strategy_pool import StrategyPool
 logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
-# / phase 9: analyst + deepseek switched to batched staleness-ordered runs.
+# / analyst + deepseek switched to batched staleness-ordered runs.
 # / each cycle is time-budgeted (ANALYST_BUDGET_S / DEEPSEEK_BUDGET_S) so the
 # / 10-min loop_registry timeout acts as a hard ceiling, not the usual case.
 # / full-universe refresh = 3 batches/hour for analyst, 2/hour for deepseek.
@@ -86,10 +86,10 @@ class AgentOrchestrator:
         self._tasks: list[asyncio.Task] = []
         self._last_drift: dict[str, float] = {}
         self._alert_prev_prices: dict[str, float] = {}
-        # / phase 2: track last known regime per market to fire on_regime_shift on transitions
+        # / track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
-        # / phase 7: websocket streams — shared tick buffer + per-vendor handles
+        # / websocket streams — shared tick buffer + per-vendor handles
         self._tick_buffer: TickBuffer | None = None
         self._alpaca_stream: AlpacaStream | None = None
         self._coinbase_stream: CoinbaseStream | None = None
@@ -180,7 +180,7 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
 
-        # / phase 7 tier 1: websocket streams for live prices. alpaca iex for stocks,
+        # / websocket streams for live prices. alpaca iex for stocks,
         # / coinbase advanced-trade-ws for crypto. aggregator loop drains → latest_prices.
         # / _price_refresh_loop stays put as fallback when the stream circuit breaker opens.
         await self._start_streams()
@@ -208,16 +208,16 @@ class AgentOrchestrator:
             asyncio.create_task(self._macro_backfill_loop(), name="macro_backfill"),
             asyncio.create_task(self._alert_loop(), name="alert"),
             asyncio.create_task(self._regime_loop(), name="regime_backfill"),
-            # / phase 2: knowledge base upkeep
+            # / knowledge base upkeep
             asyncio.create_task(self._wiki_embedding_loop(), name="wiki_embedding"),
             asyncio.create_task(self._wiki_archive_loop(), name="wiki_archive"),
-            # / phase 5 step 3: daily symbol wiki hydration (writes stubs back as playbooks)
+            # / daily symbol wiki hydration (writes stubs back as playbooks)
             asyncio.create_task(self._knowledge_hydration_loop(), name="knowledge_hydration"),
-            # / phase 6 step 1: pull trigger_requests rows posted by dashboard /api/admin/trigger
+            # / pull trigger_requests rows posted by dashboard /api/admin/trigger
             asyncio.create_task(self._trigger_poll_loop(), name="trigger_poll"),
-            # / phase 6 step 10: weekly kelly-weighted capital allocation refresh
+            # / weekly kelly-weighted capital allocation refresh
             asyncio.create_task(self._capital_allocator_loop(), name="capital_allocator"),
-            # / phase 7 tier 1: drain tick buffer → latest_prices every minute
+            # / drain tick buffer → latest_prices every minute
             asyncio.create_task(self._stream_aggregator_loop(), name="stream_aggregator"),
         ]
 
@@ -527,7 +527,7 @@ class AgentOrchestrator:
                     else:
                         # / fetch market data for backtesting mutations
                         market_data = await self._fetch_evolution_market_data()
-                        # / phase 2: pass current equity regime so wiki context loads regime-matched notes
+                        # / pass current equity regime so wiki context loads regime-matched notes
                         current_regime = await tools.fetch_latest_regime(self._pool, "equity")
                         await self._evolution.run(
                             self._pool, self._strategy_pool,
@@ -647,7 +647,7 @@ class AgentOrchestrator:
                     )
                     equity_count = await backfill_regimes(self._pool, "SPY", "equity")
                     crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
-                    # / phase 5 step 4: per-sector regimes so strategies can see sector-specific nuance
+                    # / per-sector regimes so strategies can see sector-specific nuance
                     try:
                         sector_counts = await backfill_regimes_per_sector(self._pool)
                         sector_total = sum(sector_counts.values())
@@ -664,10 +664,10 @@ class AgentOrchestrator:
                         self._pool, "info", "regime_backfill",
                         f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
                     )
-                    # / phase 2: detect regime transitions and write wiki note + regime_shifts row
+                    # / detect regime transitions and write wiki note + regime_shifts row
                     await self._check_regime_shift("equity")
                     await self._check_regime_shift("crypto")
-                    # / phase 5 step 3: write daily snapshot rows so the timeline widget has
+                    # / write daily snapshot rows so the timeline widget has
                     # / data points on non-shift days (otherwise it only populates on transitions)
                     try:
                         equity_regime = await tools.fetch_latest_regime(self._pool, "equity")
@@ -713,7 +713,7 @@ class AgentOrchestrator:
 
     async def _intraday_backfill_loop(self) -> None:
         # / fetch 1h intraday bars for all symbols, then aggregate 1h into 2h bars
-        # / bug e: 2h timeframe previously had zero rows; aggregate after 1h backfill
+        # / 2h timeframe previously had zero rows; aggregate after 1h backfill
         # / also emits cycle_ok events so /api/health surfaces this loop
         while not self._stop_event.is_set():
             try:
@@ -1006,7 +1006,7 @@ class AgentOrchestrator:
             broker = self._broker_factory.get_broker()
             alpaca_positions = await broker.get_positions()
             alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
-            # / bug e: carry avg_entry_price for untracked projection so cost basis isn't zero
+            # / carry avg_entry_price for untracked projection so cost basis isn't zero
             alpaca_prices: dict[str, float] = {
                 p.symbol: float(p.avg_entry_price or 0) for p in alpaca_positions
             }
@@ -1038,7 +1038,7 @@ class AgentOrchestrator:
 
             # / auto-fix: update drifted positions without destroying attribution
             if drift_found:
-                # / bug c: full_sync=true bypasses empty-alpaca guard after confirmed drift
+                # / full_sync=true bypasses empty-alpaca guard after confirmed drift
                 await tools.reconcile_strategy_positions(
                     self._pool, alpaca_map, full_sync=True, price_map=alpaca_prices,
                 )
@@ -1344,7 +1344,7 @@ class AgentOrchestrator:
                 break
 
     async def _compute_strategy_metrics(self) -> None:
-        # / bug a: delegate to richer live_strategy_metrics module
+        # / delegate to richer live_strategy_metrics module
         # / writes rolling sharpe/sortino/maxdd/win rate/composite per strategy/window
         from src.analysis.live_strategy_metrics import compute_live_strategy_metrics
         updated = await compute_live_strategy_metrics(self._pool)
@@ -1536,7 +1536,7 @@ class AgentOrchestrator:
         return analysis_rows, fundamentals, insider
 
     async def _knowledge_hydration_loop(self) -> None:
-        # / phase 5 step 3: daily enrichment of seed-stub symbol wiki docs
+        # / daily enrichment of seed-stub symbol wiki docs
         # / offset from other loops so llm calls don't stack at cold start
         if await self._wait_or_stop(KNOWLEDGE_HYDRATION_STARTUP_DELAY):
             return

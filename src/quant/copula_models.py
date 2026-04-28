@@ -46,7 +46,7 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
     _, n_vars = u_data.shape
     u_clipped = np.clip(u_data, 1e-10, 1 - 1e-10)
 
-    # / step 1: estimate correlation matrix via Kendall's tau (nu-independent)
+    # / estimate correlation matrix via Kendall's tau (nu-independent)
     # / tau = (2/pi) * arcsin(rho) for t-copula => rho = sin(pi*tau/2)
     corr = np.eye(n_vars)
     for i in range(n_vars):
@@ -66,7 +66,7 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
         # / nearest positive definite matrix
         corr = _nearest_pd(corr)
 
-    # / step 2: profile likelihood over nu using Brent's method
+    # / profile likelihood over nu using Brent's method
     # / transform uniform margins to t-quantiles for given nu
     def neg_log_likelihood(nu):
         if nu <= 2.0:

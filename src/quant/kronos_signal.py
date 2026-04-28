@@ -1,5 +1,5 @@
 # / kronos candle-sequence signal
-# / phase 5 step 7: orthogonal signal source to lightgbm
+# / orthogonal signal source to lightgbm
 # /
 # / real kronos (shiyu-coder/Kronos, AAAI 2026) is a transformer that tokenizes
 # / ohlcv candles and predicts the next-candle distribution. ~100m-1b params.
