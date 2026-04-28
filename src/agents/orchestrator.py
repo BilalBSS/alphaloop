@@ -88,6 +88,26 @@ class AgentOrchestrator:
         self._last_crypto_regime: str | None = None
         # / stream manager owns alpaca + coinbase ws + tick buffer + broadcast fan-out
         self._streams = StreamManager(broadcast_semaphore_size=50)
+        self._service_handlers: dict = {
+            "macro_backfill": self._svc_macro_backfill,
+            "fundamentals_backfill": self._svc_fundamentals_backfill,
+            "insider_backfill": self._svc_insider_backfill,
+            "regime_backfill": self._svc_regime_backfill,
+            "daily_bar_backfill": self._svc_daily_bar_backfill,
+            "intraday_backfill": self._svc_intraday_backfill,
+            "crypto_backfill": self._svc_crypto_backfill,
+            "price_refresh": self._svc_price_refresh,
+            "alternative_data": self._run_alternative_data_registry_cycle,
+            "analyst": self._svc_analyst,
+            "deepseek": self._svc_deepseek,
+            "strategy": self._svc_strategy,
+            "strategy_metrics": self._compute_strategy_metrics,
+            "wiki_embedding": self._svc_wiki_embedding,
+            "knowledge_hydration": self._svc_knowledge_hydration,
+            "evolution": self._svc_evolution,
+            "cost_flush": self._svc_cost_flush,
+            "capital_allocator": self._svc_capital_allocator,
+        }
 
     @staticmethod
     def _load_risk_limits() -> dict:
@@ -809,9 +829,8 @@ class AgentOrchestrator:
         # / every 60s, drain tick buffer and write latest_prices via StreamManager
         if self._streams.tick_buffer is None:
             return
-        consecutive_failures = [0]
         while not self._stop_event.is_set():
-            await self._streams.aggregate_once(self._pool, consecutive_failures)
+            await self._streams.aggregate_once(self._pool)
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
@@ -1459,34 +1478,11 @@ class AgentOrchestrator:
             await loop_registry.complete_trigger(self._pool, trigger_id, "error", str(exc))
 
     async def _run_service_once(self, service: str) -> None:
-        # / dispatch via service registry; each handler does the one-shot work
-        handler = self._service_registry().get(service)
+        # / dispatch via cached handler map
+        handler = self._service_handlers.get(service)
         if handler is None:
             raise ValueError(f"service not triggerable: {service}")
         await handler()
-
-    def _service_registry(self) -> dict:
-        # / build once on demand; method-bound, no class-level surprises
-        return {
-            "macro_backfill": self._svc_macro_backfill,
-            "fundamentals_backfill": self._svc_fundamentals_backfill,
-            "insider_backfill": self._svc_insider_backfill,
-            "regime_backfill": self._svc_regime_backfill,
-            "daily_bar_backfill": self._svc_daily_bar_backfill,
-            "intraday_backfill": self._svc_intraday_backfill,
-            "crypto_backfill": self._svc_crypto_backfill,
-            "price_refresh": self._svc_price_refresh,
-            "alternative_data": self._run_alternative_data_registry_cycle,
-            "analyst": self._svc_analyst,
-            "deepseek": self._svc_deepseek,
-            "strategy": self._svc_strategy,
-            "strategy_metrics": self._compute_strategy_metrics,
-            "wiki_embedding": self._svc_wiki_embedding,
-            "knowledge_hydration": self._svc_knowledge_hydration,
-            "evolution": self._svc_evolution,
-            "cost_flush": self._svc_cost_flush,
-            "capital_allocator": self._svc_capital_allocator,
-        }
 
     async def _svc_macro_backfill(self) -> None:
         from src.data.fred_macro import fetch_macro_indicators

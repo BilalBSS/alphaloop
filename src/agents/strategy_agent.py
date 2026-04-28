@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,15 @@ logger = structlog.get_logger(__name__)
 
 # / minimum smoothed strength to generate a signal
 SIGNAL_THRESHOLD = 0.15
+
+
+@dataclass(frozen=True)
+class ConsensusResult:
+    # / outcome of consensus filter; .blocked means signal was rejected
+    signal: EntrySignal
+    reason_code: str
+    kept: bool
+    blocked: bool
 
 
 class StrategyAgent:
@@ -196,17 +206,18 @@ class StrategyAgent:
         bypass_consensus = strategy.get_effective_bypass_consensus(regime)
         consensus = analysis_data.ai_consensus if analysis_data else None
         pre_filter_strength = entry_signal.strength
-        entry_signal, reason_code, signal_kept, blocked = self._apply_consensus_filter(
+        result = self._apply_consensus_filter(
             consensus, bypass_consensus, symbol_trend, entry_signal,
         )
+        entry_signal = result.signal
         self._log_consensus_decision(
             strategy, symbol, raw_details, consensus, pre_filter_strength,
-            signal_kept, reason_code, symbol_trend, bypass_consensus, regime,
+            result.kept, result.reason_code, symbol_trend, bypass_consensus, regime,
         )
-        if blocked:
+        if result.blocked:
             self._record_blocked_consensus(
                 stats, symbol, pre_filter_strength, symbol_trend,
-                raw_details, consensus, reason_code,
+                raw_details, consensus, result.reason_code,
             )
             return None
 
@@ -346,51 +357,67 @@ class StrategyAgent:
     def _apply_consensus_filter(
         self, consensus, bypass_consensus: bool, symbol_trend: str,
         entry_signal: EntrySignal,
-    ) -> tuple[EntrySignal, str, bool, bool]:
-        # / returns (entry_signal, reason_code, signal_kept, blocked)
+    ) -> ConsensusResult:
         # / strict mode (default) blocks bearish-consensus unless trend is up
         # / loose mode softens bearish to 0.4x but never blocks
         is_loose = os.environ.get("CONSENSUS_MODE", "strict").strip().lower() == "loose"
         if consensus == "bearish" and not bypass_consensus:
             if symbol_trend == "up":
-                return (
-                    EntrySignal(
+                return ConsensusResult(
+                    signal=EntrySignal(
                         should_enter=True,
                         strength=entry_signal.strength * 0.5,
                         reasons=[*entry_signal.reasons,
                             "ai_consensus: bearish, but symbol uptrend, halved"],
                     ),
-                    "kept_bearish_uptrend_softened", True, False,
+                    reason_code="kept_bearish_uptrend_softened", kept=True, blocked=False,
                 )
             if is_loose:
-                return (
-                    EntrySignal(
+                return ConsensusResult(
+                    signal=EntrySignal(
                         should_enter=True,
                         strength=entry_signal.strength * 0.4,
                         reasons=[*entry_signal.reasons,
                             "ai_consensus: bearish, loose mode 0.4x"],
                     ),
-                    "kept_bearish_loose_mode", True, False,
+                    reason_code="kept_bearish_loose_mode", kept=True, blocked=False,
                 )
-            return entry_signal, "rejected_bearish_consensus", False, True
+            return ConsensusResult(
+                signal=entry_signal, reason_code="rejected_bearish_consensus",
+                kept=False, blocked=True,
+            )
         if consensus == "bearish" and bypass_consensus:
-            return entry_signal, "kept_bearish_consensus_bypass", True, False
+            return ConsensusResult(
+                signal=entry_signal, reason_code="kept_bearish_consensus_bypass",
+                kept=True, blocked=False,
+            )
         if consensus == "disagree" and not bypass_consensus:
-            return (
-                EntrySignal(
+            return ConsensusResult(
+                signal=EntrySignal(
                     should_enter=True,
                     strength=entry_signal.strength * 0.7,
                     reasons=[*entry_signal.reasons, "ai_consensus: disagree, reduced 0.7x"],
                 ),
-                "kept_disagree_softened", True, False,
+                reason_code="kept_disagree_softened", kept=True, blocked=False,
             )
         if consensus == "disagree" and bypass_consensus:
-            return entry_signal, "kept_disagree_consensus_bypass", True, False
+            return ConsensusResult(
+                signal=entry_signal, reason_code="kept_disagree_consensus_bypass",
+                kept=True, blocked=False,
+            )
         if consensus == "bullish":
-            return entry_signal, "kept_bullish_consensus", True, False
+            return ConsensusResult(
+                signal=entry_signal, reason_code="kept_bullish_consensus",
+                kept=True, blocked=False,
+            )
         if consensus == "neutral":
-            return entry_signal, "kept_neutral_consensus", True, False
-        return entry_signal, "passthrough", True, False
+            return ConsensusResult(
+                signal=entry_signal, reason_code="kept_neutral_consensus",
+                kept=True, blocked=False,
+            )
+        return ConsensusResult(
+            signal=entry_signal, reason_code="passthrough", kept=True, blocked=False,
+        )
 
     def _log_consensus_decision(
         self, strategy: ConfigDrivenStrategy, symbol: str, raw_details,

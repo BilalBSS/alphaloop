@@ -11,6 +11,7 @@ import structlog
 
 from src.agents import tools
 from src.data.loop_registry import upsert_service_state
+from src.data.market_data import store_latest_prices
 from src.data.streams.alpaca_ws import AlpacaStream
 from src.data.streams.base import TickBuffer
 from src.data.streams.coinbase_ws import CoinbaseStream
@@ -35,6 +36,7 @@ class StreamManager:
         self._broadcast_semaphore = asyncio.Semaphore(broadcast_semaphore_size)
         self._broadcast_dropped = 0
         self._broadcast_drop_log_next = 0.0
+        self._consecutive_failures: int = 0
 
     async def start(self, symbols: list[str]) -> None:
         # / split universe → equity (alpaca) + crypto (coinbase); start both
@@ -92,7 +94,7 @@ class StreamManager:
             return
         self._last_tick_broadcast[tick.symbol] = now
         try:
-            from src.dashboard.app import _ws_clients
+            from src.dashboard.app import _ws_clients  # / cycle: dashboard imports streams
             if not _ws_clients:
                 return
             if self._broadcast_semaphore.locked():
@@ -118,7 +120,7 @@ class StreamManager:
     async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
         async with self._broadcast_semaphore:
             try:
-                from src.dashboard.app import broadcast
+                from src.dashboard.app import broadcast  # / cycle: dashboard imports streams
                 await broadcast(event_type, payload)
             except Exception as exc:
                 logger.debug(
@@ -138,13 +140,10 @@ class StreamManager:
     def is_crypto_healthy(self) -> bool:
         return self._stream_healthy(self.coinbase_stream)
 
-    async def aggregate_once(self, pool, consecutive_failures_ref: list[int]) -> None:
+    async def aggregate_once(self, pool) -> None:
         # / one aggregator cycle: drain buffer → upsert latest_prices
-        # / consecutive_failures_ref is a 1-element list mutated in place so caller
-        # / can track the escalation count across cycles without a managed state object.
         if self.tick_buffer is None:
             return
-        from src.data.market_data import store_latest_prices
         try:
             drained = await self.tick_buffer.drain_all()
             if drained:
@@ -156,18 +155,18 @@ class StreamManager:
                 if latest and pool is not None:
                     await store_latest_prices(pool, latest)
                     logger.debug("stream_aggregator_upserted", n=len(latest))
-            if consecutive_failures_ref[0] > 0:
-                consecutive_failures_ref[0] = 0
+            if self._consecutive_failures > 0:
+                self._consecutive_failures = 0
                 await upsert_service_state(pool, "stream_aggregator", "ok", error=None)
         except Exception as exc:
-            consecutive_failures_ref[0] += 1
+            self._consecutive_failures += 1
             logger.warning(
                 "stream_aggregator_error",
                 error=str(exc)[:200],
-                consecutive_failures=consecutive_failures_ref[0],
+                consecutive_failures=self._consecutive_failures,
             )
-            if consecutive_failures_ref[0] >= 3:
+            if self._consecutive_failures >= 3:
                 await upsert_service_state(
                     pool, "stream_aggregator", "error",
-                    error=f"aggregator stuck ({consecutive_failures_ref[0]} consecutive failures): {str(exc)[:200]}",
+                    error=f"aggregator stuck ({self._consecutive_failures} consecutive failures): {str(exc)[:200]}",
                 )
