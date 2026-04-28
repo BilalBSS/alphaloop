@@ -99,7 +99,7 @@ class DashboardState:
     def get_broker(self) -> Any:
         # / lazy alpaca init
         if self.broker is None:
-            from src.brokers.alpaca import AlpacaBroker
+            from src.brokers.alpaca_broker import AlpacaBroker
             self.broker = AlpacaBroker()
         return self.broker
 
