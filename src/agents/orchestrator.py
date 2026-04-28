@@ -14,6 +14,7 @@ import structlog
 
 from src.agents.alert_engine import check_and_fire as alert_check_and_fire
 from src.agents.analyst_agent import AnalystAgent
+from src.agents.capital_allocator import compute_allocations
 from src.agents.data_tools import fire_and_forget, log_event
 from src.agents.executor_agent import ExecutorAgent
 from src.agents.market_tools import fetch_latest_regime
@@ -33,10 +34,28 @@ from src.agents.trade_tools import (
 )
 from src.brokers.broker_factory import BrokerFactory
 from src.data import loop_registry
+from src.data.cost_tracker import flush_to_db
 from src.data.db import close_db, init_db
+from src.data.fred_macro import fetch_macro_indicators
+from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
+from src.data.market_data import (
+    aggregate_intraday_to_2h,
+    backfill,
+    backfill_intraday,
+    fetch_latest_prices,
+    store_latest_prices,
+)
+from src.data.regime_detector import (
+    backfill_regimes,
+    backfill_regimes_per_sector,
+    snapshot_regime_daily,
+)
 from src.data.retention import prune_observation_log, prune_system_events
-from src.data.symbols import FULL_UNIVERSE, is_crypto
+from src.data.sec_filings import fetch_insider_trades, store_insider_trades
+from src.data.symbols import FULL_UNIVERSE, get_sector, is_crypto
 from src.evolution.evolution_engine import EvolutionEngine
+from src.knowledge.loops import _embed_backfill_once
+from src.knowledge.wiki_writer import enrich_symbol_doc
 from src.notifications.notifier import notify_system_error
 from src.strategies.strategy_loader import load_all_configs
 from src.strategies.strategy_pool import StrategyPool
@@ -995,7 +1014,6 @@ class AgentOrchestrator:
     async def _run_alternative_data_registry_cycle(self) -> None:
         # / canonical path — iterate registered alt-data sources
         from src.data.source_registry import AltDataSource, all_sources
-        from src.data.symbols import get_sector
 
         sources = all_sources()
         # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
@@ -1054,7 +1072,6 @@ class AgentOrchestrator:
         from src.data.earnings_revisions import fetch_earnings_estimates, store_earnings_estimates
         from src.data.options_data import fetch_options_data, store_options_data
         from src.data.short_interest import fetch_short_interest, store_short_interest
-        from src.data.symbols import get_sector
 
         symbols = [s for s in self._get_symbols() if not is_crypto(s)]
         for symbol in symbols:
@@ -1497,19 +1514,15 @@ class AgentOrchestrator:
         await handler()
 
     async def _svc_macro_backfill(self) -> None:
-        from src.data.fred_macro import fetch_macro_indicators
         await fetch_macro_indicators(self._pool)
 
     async def _svc_fundamentals_backfill(self) -> None:
-        from src.data.fundamentals import fetch_all_fundamentals, store_fundamentals
         syms = [s for s in self._get_symbols() if not is_crypto(s)]
         data = await fetch_all_fundamentals(syms)
         if data:
             await store_fundamentals(self._pool, data)
 
     async def _svc_insider_backfill(self) -> None:
-        from src.data.sec_filings import fetch_insider_trades, store_insider_trades
-        from src.data.symbols import get_sector
         syms = [s for s in self._get_symbols() if not is_crypto(s) and get_sector(s) != "etfs"]
         for sym in syms:
             try:
@@ -1520,11 +1533,6 @@ class AgentOrchestrator:
                 logger.warning("trigger_insider_symbol_failed", symbol=sym, error=str(exc)[:120])
 
     async def _svc_regime_backfill(self) -> None:
-        from src.data.regime_detector import (
-            backfill_regimes,
-            backfill_regimes_per_sector,
-            snapshot_regime_daily,
-        )
         await backfill_regimes(self._pool, "SPY", "equity")
         await backfill_regimes(self._pool, "BTC-USD", "crypto")
         try:
@@ -1542,23 +1550,19 @@ class AgentOrchestrator:
             logger.warning("trigger_regime_snapshot_failed", error=str(exc)[:120])
 
     async def _svc_daily_bar_backfill(self) -> None:
-        from src.data.market_data import backfill
         await backfill(self._pool, self._get_symbols(), years=1)
 
     async def _svc_intraday_backfill(self) -> None:
-        from src.data.market_data import aggregate_intraday_to_2h, backfill_intraday
         symbols = self._get_symbols()
         await backfill_intraday(self._pool, symbols, days=10, timeframe="1Hour")
         await aggregate_intraday_to_2h(self._pool, symbols, days=10)
 
     async def _svc_crypto_backfill(self) -> None:
-        from src.data.market_data import backfill
         crypto = [s for s in self._get_symbols() if is_crypto(s)]
         if crypto:
             await backfill(self._pool, crypto, years=1)
 
     async def _svc_price_refresh(self) -> None:
-        from src.data.market_data import fetch_latest_prices, store_latest_prices
         prices = await fetch_latest_prices(self._get_symbols())
         if prices:
             await store_latest_prices(self._pool, prices)
@@ -1574,7 +1578,6 @@ class AgentOrchestrator:
         await self._strategy.run(self._pool, self._strategy_pool, broker)
 
     async def _svc_wiki_embedding(self) -> None:
-        from src.knowledge.loops import _embed_backfill_once
         await _embed_backfill_once(self._pool)
 
     async def _svc_knowledge_hydration(self) -> None:
@@ -1582,7 +1585,6 @@ class AgentOrchestrator:
         picks = await self._fetch_hydration_candidates(cap)
         if not picks:
             return
-        from src.knowledge.wiki_writer import enrich_symbol_doc
         for sym in picks:
             try:
                 bundle = await self._load_hydration_bundle(sym)
@@ -1601,10 +1603,8 @@ class AgentOrchestrator:
         )
 
     async def _svc_cost_flush(self) -> None:
-        from src.data.cost_tracker import flush_to_db
         await flush_to_db(self._pool)
 
     async def _svc_capital_allocator(self) -> None:
-        from src.agents.capital_allocator import compute_allocations
         mpp = float(self._risk_limits.get("max_position_pct", 0.04))
         await compute_allocations(self._pool, max_position_pct=mpp)
