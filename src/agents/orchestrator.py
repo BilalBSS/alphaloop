@@ -809,9 +809,8 @@ class AgentOrchestrator:
         # / every 60s, drain tick buffer and write latest_prices via StreamManager
         if self._streams.tick_buffer is None:
             return
-        consecutive_failures = [0]
         while not self._stop_event.is_set():
-            await self._streams.aggregate_once(self._pool, consecutive_failures)
+            await self._streams.aggregate_once(self._pool)
             if await self._wait_or_stop(STREAM_AGGREGATOR_INTERVAL):
                 break
 
