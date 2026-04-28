@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import structlog
 
-from src.data.symbols import is_crypto
 
 from .alpaca_broker import AlpacaBroker
 from .base import BrokerInterface

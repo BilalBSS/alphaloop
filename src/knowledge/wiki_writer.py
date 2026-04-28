@@ -328,7 +328,7 @@ def _build_symbol_enrichment_prompt(
 
     parts: list[str] = [
         f"Rewrite the wiki entry for {symbol}.",
-        f"Data window: last 30 days of analysis scores, current fundamentals, last 90 days of insider trades.",
+        "Data window: last 30 days of analysis scores, current fundamentals, last 90 days of insider trades.",
     ]
 
     if analysis_history:
@@ -358,7 +358,7 @@ def _build_symbol_enrichment_prompt(
     if insider_trades:
         buys = sum(1 for t in insider_trades if t.get("transaction_type") == "buy")
         sells = sum(1 for t in insider_trades if t.get("transaction_type") == "sell")
-        parts.append(f"\n## Insider Activity (last 90d)")
+        parts.append("\n## Insider Activity (last 90d)")
         parts.append(f"  buys: {buys}, sells: {sells}")
         # / show top 5 largest transactions by total_value for context
         def _val(t: dict) -> float:

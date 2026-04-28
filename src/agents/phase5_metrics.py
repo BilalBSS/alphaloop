@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog

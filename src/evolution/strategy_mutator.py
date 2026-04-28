@@ -8,7 +8,6 @@ import json
 import os
 import re
 import uuid
-from typing import Any
 
 import numpy as np
 import structlog

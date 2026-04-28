@@ -25,13 +25,13 @@ async def update_docs(
     today = date.today().isoformat()
 
     entry_lines = [
-        f"",
+        "",
         f"## [Evolution Gen {generation}] - {today}",
-        f"",
-        f"### Evolution",
+        "",
+        "### Evolution",
         f"- Generation {generation} evolution cycle completed",
         f"- Report: {report_path}",
-        f"",
+        "",
     ]
     entry = "\n".join(entry_lines)
 

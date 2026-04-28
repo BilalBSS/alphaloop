@@ -9,7 +9,6 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 
 import structlog
 import pandas as pd
@@ -878,7 +877,7 @@ class AgentOrchestrator:
             return
         self._last_tick_broadcast[tick.symbol] = now
         try:
-            from src.dashboard.app import broadcast, _ws_clients
+            from src.dashboard.app import _ws_clients
             if not _ws_clients:
                 return
             if self._broadcast_semaphore.locked():

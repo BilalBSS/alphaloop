@@ -240,7 +240,7 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
         client = await get_http_client()
         # / basic financials
         resp = await client.get(
-            f"https://finnhub.io/api/v1/stock/metric",
+            "https://finnhub.io/api/v1/stock/metric",
             params={"symbol": symbol, "metric": "all"},
             headers=headers,
             timeout=10.0,
@@ -251,7 +251,7 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
 
         # / company profile for sector + shares
         resp2 = await client.get(
-            f"https://finnhub.io/api/v1/stock/profile2",
+            "https://finnhub.io/api/v1/stock/profile2",
             params={"symbol": symbol},
             headers=headers,
             timeout=10.0,

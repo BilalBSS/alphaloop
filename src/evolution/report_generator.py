@@ -27,11 +27,11 @@ async def generate_report(
     today = date.today().isoformat()
     report_lines = [
         f"# Evolution Report - Generation {generation}",
-        f"",
+        "",
         f"**Date**: {today}",
-        f"",
-        f"## Pool Summary",
-        f"",
+        "",
+        "## Pool Summary",
+        "",
         f"- Total strategies: {pool_summary.get('total', 0)}",
         f"- Active (paper + live): {pool_summary.get('active', 0)}",
     ]
@@ -40,31 +40,31 @@ async def generate_report(
     if by_status:
         report_lines.append(f"- Status breakdown: {', '.join(f'{k}={v}' for k, v in sorted(by_status.items()))}")
     else:
-        report_lines.append(f"- Status breakdown: empty")
+        report_lines.append("- Status breakdown: empty")
 
     top_3 = pool_summary.get("top_3", [])
     if top_3:
-        report_lines.append(f"")
-        report_lines.append(f"### Top Performers")
-        report_lines.append(f"")
+        report_lines.append("")
+        report_lines.append("### Top Performers")
+        report_lines.append("")
         for entry in top_3:
             score_str = f"{entry['score']:.4f}" if entry.get("score") is not None else "unscored"
             report_lines.append(f"- {entry['id']}: {score_str}")
 
-    report_lines.append(f"")
-    report_lines.append(f"## Killed Strategies")
-    report_lines.append(f"")
+    report_lines.append("")
+    report_lines.append("## Killed Strategies")
+    report_lines.append("")
     if killed:
         for k in killed:
             sid = k.get("id", "unknown")
             reason = k.get("reason", "bottom quartile")
             report_lines.append(f"- {sid}: {reason}")
     else:
-        report_lines.append(f"None")
+        report_lines.append("None")
 
-    report_lines.append(f"")
-    report_lines.append(f"## Mutated Strategies")
-    report_lines.append(f"")
+    report_lines.append("")
+    report_lines.append("## Mutated Strategies")
+    report_lines.append("")
     if mutated:
         for m in mutated:
             new_id = m.get("id", "unknown")
@@ -72,19 +72,19 @@ async def generate_report(
             status = m.get("status", "unknown")
             report_lines.append(f"- {new_id} (from {parent_id}): {status}")
     else:
-        report_lines.append(f"None")
+        report_lines.append("None")
 
-    report_lines.append(f"")
-    report_lines.append(f"## Promoted Strategies")
-    report_lines.append(f"")
+    report_lines.append("")
+    report_lines.append("## Promoted Strategies")
+    report_lines.append("")
     if promoted:
         for p in promoted:
             sid = p.get("id", "unknown")
             report_lines.append(f"- {sid}: promoted to live")
     else:
-        report_lines.append(f"None")
+        report_lines.append("None")
 
-    report_lines.append(f"")
+    report_lines.append("")
     report = "\n".join(report_lines) + "\n"
 
     # / write to file

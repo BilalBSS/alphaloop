@@ -15,7 +15,6 @@ from src.analysis.ai_summary import (
     DEFAULT_MODEL, FALLBACK_MODEL,
     _RateLimited, _call_cerebras, _call_llm,
 )
-from src.knowledge.cooldown import can_write_post_mortem
 from src.knowledge.db_helpers import (
     claim_post_mortem_slot,
     set_post_mortem_wiki_path,

@@ -19,7 +19,7 @@ from src.indicators.volatility import bollinger_bands, atr
 from src.indicators.structure import fair_value_gaps, order_blocks, structure_breaks
 from src.notifications.notifier import notify_strategy_evaluation
 from src.quant.particle_filter import ParticleFilter
-from src.strategies.base_strategy import AnalysisData, ConfigDrivenStrategy, EntrySignal
+from src.strategies.base_strategy import ConfigDrivenStrategy, EntrySignal
 from src.strategies.strategy_pool import StrategyPool
 
 logger = structlog.get_logger(__name__)

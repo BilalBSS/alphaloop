@@ -16,8 +16,6 @@ import numpy as np
 import structlog
 
 from src.data.symbols import (
-    CRYPTO_UNIVERSE,
-    EQUITY_UNIVERSE,
     SECTORS,
     get_sector,
     is_crypto,

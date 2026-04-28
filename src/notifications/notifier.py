@@ -13,7 +13,7 @@ from typing import Any
 
 import structlog
 
-from src.data.resilience import api_post, get_http_client
+from src.data.resilience import api_post
 
 logger = structlog.get_logger(__name__)
 

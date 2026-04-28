@@ -69,7 +69,7 @@ def _build_prompt(
         parts.append(f"\n## Market Context\nRegime: {regime}")
 
     if ratio:
-        parts.append(f"\n## Valuation vs Peers")
+        parts.append("\n## Valuation vs Peers")
         parts.append(f"Ratio score: {ratio.composite_score}/100")
         if ratio.details.get("pe_ratio") is not None:
             pe = float(ratio.details["pe_ratio"])
@@ -85,31 +85,31 @@ def _build_prompt(
             parts.append(f"  Debt/Equity: {float(ratio.details['debt_to_equity']):.1f}")
 
     if dcf:
-        parts.append(f"\n## DCF Model Output (challenge these assumptions)")
+        parts.append("\n## DCF Model Output (challenge these assumptions)")
         parts.append(f"  Fair value: ${dcf.fair_value_median:.2f} | Current: ${dcf.current_price:.2f} | Upside: {dcf.upside_pct:.1%}")
         parts.append(f"  Range: ${dcf.fair_value_p10:.2f} to ${dcf.fair_value_p90:.2f} | Confidence: {dcf.confidence}")
         if abs(dcf.upside_pct) > 0.5:
             parts.append(f"  NOTE: Extreme {dcf.upside_pct:.0%} gap. Consider whether model assumptions match this company's growth profile.")
 
     if earnings:
-        parts.append(f"\n## Earnings Momentum")
+        parts.append("\n## Earnings Momentum")
         parts.append(f"  Signal: {earnings.signal} | Strength: {earnings.strength}")
         if earnings.surprise_pct is not None:
             parts.append(f"  Latest surprise: {float(earnings.surprise_pct):.1%} | Consecutive beats: {earnings.consecutive_beats}")
 
     if insider:
-        parts.append(f"\n## Insider Activity (last 90 days)")
+        parts.append("\n## Insider Activity (last 90 days)")
         parts.append(f"  Signal: {insider.signal} (strength {insider.strength}/100)")
         parts.append(f"  {insider.total_buys} buys, {insider.total_sells} sells (net buy ratio: {insider.net_buy_ratio:.2f})")
         if insider.cluster_detected:
-            parts.append(f"  Cluster buying detected. Multiple insiders buying within 30 days.")
+            parts.append("  Cluster buying detected. Multiple insiders buying within 30 days.")
         if insider.details:
             wb = float(insider.details.get("weighted_buy_value", 0))
             ws = float(insider.details.get("weighted_sell_value", 0))
             if wb > 0 or ws > 0:
                 parts.append(f"  Buy volume: ${wb:,.0f}, Sell volume: ${ws:,.0f}")
         if insider.top_trades:
-            parts.append(f"  Key trades:")
+            parts.append("  Key trades:")
             # / map transaction types to human-readable actions
             _action_map = {
                 "buy": "bought",
@@ -137,7 +137,7 @@ def _build_prompt(
                 parts.append(f"  Note: {gc} gift transactions excluded (not market sales)")
 
     if indicators:
-        parts.append(f"\n## Technical Setup")
+        parts.append("\n## Technical Setup")
         rsi = indicators.get("rsi14")
         if rsi is not None:
             rsi = float(rsi)
@@ -153,7 +153,7 @@ def _build_prompt(
             parts.append(f"  ADX: {adx:.1f} ({'strong trend' if adx > 25 else 'weak/no trend'})")
 
     if sentiment:
-        parts.append(f"\n## Sentiment")
+        parts.append("\n## Sentiment")
         ns = sentiment.get("news_score")
         if ns is not None:
             ns = float(ns)
@@ -170,7 +170,7 @@ def _build_prompt(
                 parts.append(s)
 
     if positions:
-        parts.append(f"\n## Current Positions & Strategy Performance")
+        parts.append("\n## Current Positions & Strategy Performance")
         parts.append(f"{len(positions)} strategies currently hold this stock:")
         for p in positions:
             entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
@@ -219,13 +219,13 @@ def _build_crypto_prompt(
         parts.append(f"\n## Market Regime\n{regime}")
 
     if nvt is not None:
-        parts.append(f"\n## On-chain Valuation")
+        parts.append("\n## On-chain Valuation")
         label = "healthy network usage" if nvt < 15 else "overvalued, speculative" if nvt > 25 else "moderate"
         parts.append(f"  NVT ratio: {nvt:.1f} ({label})")
 
     has_deriv = funding_rate is not None or oi_rank is not None
     if has_deriv:
-        parts.append(f"\n## Derivatives & Funding")
+        parts.append("\n## Derivatives & Funding")
         if funding_rate is not None:
             label = "crowded long, liquidation risk" if funding_rate > 0.0005 else "shorts paying longs" if funding_rate < -0.0001 else "balanced"
             parts.append(f"  Funding rate: {funding_rate:+.4%} ({label})")
@@ -234,7 +234,7 @@ def _build_crypto_prompt(
 
     has_momentum = any(x is not None for x in [price_change_24h, price_change_7d, market_cap])
     if has_momentum:
-        parts.append(f"\n## Price Momentum")
+        parts.append("\n## Price Momentum")
         if price_change_24h is not None:
             parts.append(f"  24h change: {price_change_24h:+.1%}")
         if price_change_7d is not None:
@@ -244,7 +244,7 @@ def _build_crypto_prompt(
 
     has_sentiment = fear_greed is not None or sentiment_score is not None
     if has_sentiment:
-        parts.append(f"\n## Sentiment")
+        parts.append("\n## Sentiment")
         if fear_greed is not None:
             label = "extreme fear" if fear_greed < 25 else "fear" if fear_greed < 40 else "neutral" if fear_greed < 60 else "greed" if fear_greed < 75 else "extreme greed"
             parts.append(f"  Fear & Greed: {fear_greed:.0f}/100 ({label})")
@@ -252,13 +252,13 @@ def _build_crypto_prompt(
             parts.append(f"  News sentiment: {sentiment_score:+.2f}")
 
     if positions:
-        parts.append(f"\n## Current Positions")
+        parts.append("\n## Current Positions")
         parts.append(f"{len(positions)} strategies currently hold this asset:")
         for p in positions:
             entry = f" @ ${p['avg_entry_price']:.2f}" if p.get("avg_entry_price") else ""
             parts.append(f"  - {p['strategy_id']}: {p['qty']:.4f} units{entry}")
 
-    parts.append(f"\n## Analysis Framework")
+    parts.append("\n## Analysis Framework")
     parts.append("Consider these factors:")
     parts.append("1. Momentum: is the trend sustainable or extended? Look at 24h vs 7d divergence.")
     parts.append("2. Sentiment: does fear/greed suggest contrarian positioning? Extreme greed (>75) often precedes corrections.")
@@ -877,7 +877,6 @@ async def generate_daily_synthesis(
 ) -> dict[str, Any] | None:
     # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
     # / reads all today's data, produces top buys/avoids/risk assessment
-    import json
     from src.agents.tools import store_daily_synthesis
 
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
