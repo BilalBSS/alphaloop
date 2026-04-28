@@ -10,6 +10,9 @@ from typing import Any
 import asyncpg
 import structlog
 
+from ._serialize import iso as _iso
+from ._serialize import num as _num
+
 logger = structlog.get_logger(__name__)
 
 # / bounds for the days_back window — mirrors /api/markers clamp
@@ -19,25 +22,6 @@ _DAYS_BACK_DEFAULT = 30
 
 # / signal strength threshold matches marker_aggregator for consistency
 _SIGNAL_STRENGTH_MIN = 0.5
-
-
-def _iso(value: Any) -> str | None:
-    # / uniform iso timestamp rendering for jsonable output
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
-
-
-def _num(value: Any) -> float | None:
-    # / safe numeric coerce — handles Decimal/None/str without raising
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_cutoff(value: str | None) -> datetime | None:

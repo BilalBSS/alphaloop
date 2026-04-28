@@ -12,6 +12,9 @@ from typing import Any
 import asyncpg
 import structlog
 
+from ._serialize import iso as _iso
+from ._serialize import num as _num
+
 logger = structlog.get_logger(__name__)
 
 # / signals below this strength are considered noise and dropped from the chart
@@ -20,25 +23,6 @@ _SIGNAL_STRENGTH_MIN = 0.5
 # / insider cluster detection window + minimum cluster size
 _INSIDER_CLUSTER_DAYS = 5
 _INSIDER_CLUSTER_MIN = 3
-
-
-def _iso(value: Any) -> str | None:
-    # / uniform iso timestamp rendering for jsonable output
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
-
-
-def _num(value: Any) -> float | None:
-    # / safe numeric coerce — handles Decimal/None/str without raising
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:

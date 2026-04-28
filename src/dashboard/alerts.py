@@ -8,6 +8,8 @@ from typing import Any
 import asyncpg
 import structlog
 
+from ._serialize import iso as _iso
+
 logger = structlog.get_logger(__name__)
 
 # / direction + status enums
@@ -74,14 +76,6 @@ def _coerce_price(price: Any) -> Decimal | None:
     if value <= 0:
         return None
     return value
-
-
-def _iso(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
 
 
 def _row_to_alert(row: dict) -> dict:

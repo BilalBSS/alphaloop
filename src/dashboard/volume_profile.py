@@ -9,6 +9,8 @@ from typing import Any
 import asyncpg
 import structlog
 
+from ._serialize import num as _num
+
 logger = structlog.get_logger(__name__)
 
 # / clamps matching the backend style — keep payload small + response predictable
@@ -67,15 +69,6 @@ def _clamp(value: Any, lo: int, hi: int, default: int) -> int:
     if n > hi:
         return hi
     return n
-
-
-def _num(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _empty_payload(symbol: str, bins: int, days: int, timeframe: str) -> dict:

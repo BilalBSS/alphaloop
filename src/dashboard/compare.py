@@ -8,6 +8,9 @@ from typing import Any
 import asyncpg
 import structlog
 
+from ._serialize import iso as _iso
+from ._serialize import num as _num
+
 logger = structlog.get_logger(__name__)
 
 # / daily timeframes route to market_data, everything else to market_data_intraday
@@ -28,23 +31,6 @@ def _clamp_days(days: Any) -> int:
     if n > _DAYS_MAX:
         return _DAYS_MAX
     return n
-
-
-def _iso(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
-
-
-def _num(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 async def _fetch_closes(
