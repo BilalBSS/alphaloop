@@ -10,8 +10,24 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from src.agents import capital_allocator, tools
+from src.agents import capital_allocator
 from src.agents.circuit_breaker import CircuitBreakerState
+from src.agents.market_tools import (
+    fetch_avg_volume,
+    fetch_close_history_batch,
+    fetch_latest_regime,
+    fetch_recent_pnl,
+    fetch_symbol_beta,
+)
+from src.agents.position_tools import get_strategy_positions
+from src.agents.trade_tools import (
+    count_pending_signals_for_strategy,
+    count_today_approved_trades,
+    count_today_approved_trades_for_strategy,
+    fetch_pending_signal_by_id,
+    store_approved_trade,
+    update_trade_status,
+)
 from src.brokers.base import BrokerInterface
 from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
 
@@ -79,7 +95,7 @@ class RiskAgent:
         except Exception as exc:
             logger.error("risk_process_signal_error", signal_id=signal_id, error=str(exc))
             try:
-                await tools.update_trade_status(pool, "trade_signals", signal_id, "error")
+                await update_trade_status(pool, "trade_signals", signal_id, "error")
             except Exception as inner:
                 logger.warning(
                     "risk_signal_status_update_failed",
@@ -91,7 +107,7 @@ class RiskAgent:
         self, pool, signal_id: int, label: str, response_reason: str | None = None,
     ) -> dict:
         # / write rejected status + emit standard response
-        await tools.update_trade_status(pool, "trade_signals", signal_id, "rejected", label)
+        await update_trade_status(pool, "trade_signals", signal_id, "rejected", label)
         return {"status": "rejected", "reason": response_reason or label}
 
     async def _process_signal_inner(
@@ -99,7 +115,7 @@ class RiskAgent:
         strategy_pool=None,
     ) -> dict:
         # / 1. fetch + normalize signal
-        signal = await tools.fetch_pending_signal_by_id(pool, signal_id)
+        signal = await fetch_pending_signal_by_id(pool, signal_id)
         if not signal:
             return {"status": "skipped", "reason": "signal_not_found_or_not_pending"}
         symbol = signal["symbol"]
@@ -208,7 +224,7 @@ class RiskAgent:
             return None
         strategy_id = signal.get("strategy_id")
         if strategy_id:
-            strat_positions = await tools.get_strategy_positions(
+            strat_positions = await get_strategy_positions(
                 pool, strategy_id=strategy_id, symbol=symbol,
             )
             if strat_positions:
@@ -236,7 +252,7 @@ class RiskAgent:
                 pool, signal_id, "circuit_breaker_losses",
                 response_reason="circuit_breaker_consecutive_losses",
             )
-        recent_pnl = await tools.fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
+        recent_pnl = await fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
         if len(recent_pnl) >= self._consecutive_loss_pause and all(p < 0 for p in recent_pnl):
             self._cb.record_loss_pause()
             logger.warning("circuit_breaker_consecutive_losses", count=len(recent_pnl))
@@ -250,7 +266,7 @@ class RiskAgent:
         self, pool, signal_id: int, symbol: str, balance, strength: float, price: float,
     ) -> dict | None:
         # / cap trade value to a fraction of daily dollar volume
-        avg_vol = await tools.fetch_avg_volume(pool, symbol)
+        avg_vol = await fetch_avg_volume(pool, symbol)
         if not (avg_vol and avg_vol > 0 and price > 0):
             return None
         trade_value = balance.equity * self.max_position_pct * strength
@@ -270,7 +286,7 @@ class RiskAgent:
                 pool, signal_id, "max_positions",
                 response_reason=f"max_positions ({self._max_open_positions}) reached",
             )
-        today_count = await tools.count_today_approved_trades(pool)
+        today_count = await count_today_approved_trades(pool)
         if today_count >= self._max_daily_trades:
             return await self._reject(
                 pool, signal_id, "max_daily_trades",
@@ -285,7 +301,7 @@ class RiskAgent:
         signal_strategy_id = signal.get("strategy_id") or ""
         if not signal_strategy_id:
             return None
-        strat_today = await tools.count_today_approved_trades_for_strategy(pool, signal_strategy_id)
+        strat_today = await count_today_approved_trades_for_strategy(pool, signal_strategy_id)
         if strat_today >= self._max_daily_trades_per_strategy:
             return await self._reject(
                 pool, signal_id, "strategy_daily_cap",
@@ -294,7 +310,7 @@ class RiskAgent:
                     f"reached for {signal_strategy_id}"
                 ),
             )
-        strat_positions = await tools.get_strategy_positions(pool, strategy_id=signal_strategy_id)
+        strat_positions = await get_strategy_positions(pool, strategy_id=signal_strategy_id)
         open_slots = sum(1 for sp in strat_positions if float(sp.get("qty") or 0) > 0)
         if open_slots >= self._max_positions_per_strategy:
             return await self._reject(
@@ -327,7 +343,7 @@ class RiskAgent:
         self, pool, signal_id: int, symbol: str, balance, price: float,
     ) -> dict | None:
         # / cap aggregate symbol holding at 2x single-strategy max
-        all_sym_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+        all_sym_positions = await get_strategy_positions(pool, symbol=symbol)
         if not all_sym_positions:
             return None
         total_held_value = sum(sp["qty"] for sp in all_sym_positions) * price
@@ -355,7 +371,7 @@ class RiskAgent:
         qty = int(float(signal_details.get("qty", 0)))
         if qty > 0:
             return qty
-        strat_pos = await tools.get_strategy_positions(
+        strat_pos = await get_strategy_positions(
             pool, strategy_id=signal.get("strategy_id"), symbol=signal["symbol"],
         )
         return int(strat_pos[0]["qty"]) if strat_pos else 0
@@ -377,7 +393,7 @@ class RiskAgent:
         if not (self._activity_scaling_enabled and strategy_id):
             return 1.0
         try:
-            pending_n = await tools.count_pending_signals_for_strategy(pool, strategy_id)
+            pending_n = await count_pending_signals_for_strategy(pool, strategy_id)
             if pending_n > 1:
                 scale = 1.0 / (pending_n ** 0.5)
                 logger.debug(
@@ -393,7 +409,7 @@ class RiskAgent:
 
     async def _apply_regime_multiplier(self, pool, symbol: str, qty: int) -> int:
         try:
-            regime_label = await tools.fetch_latest_regime(pool) or "insufficient_data"
+            regime_label = await fetch_latest_regime(pool) or "insufficient_data"
             regime_mult = self._regime_multipliers.get(regime_label, 0.5)
             return int(qty * regime_mult)
         except Exception as exc:
@@ -403,7 +419,7 @@ class RiskAgent:
 
     async def _apply_beta_adjustment(self, pool, symbol: str, qty: int) -> int:
         try:
-            beta = await tools.fetch_symbol_beta(pool, symbol)
+            beta = await fetch_symbol_beta(pool, symbol)
             if beta is not None and beta > 1.5:
                 new_qty = max(1, int(qty * (1.0 / beta)))
                 logger.info("beta_adjusted", symbol=symbol, beta=beta, qty=new_qty)
@@ -477,11 +493,11 @@ class RiskAgent:
         self, pool, signal_id: int, signal: dict, symbol: str, side: str, qty: int,
     ) -> dict:
         strategy_id = signal.get("strategy_id")
-        trade_id = await tools.store_approved_trade(
+        trade_id = await store_approved_trade(
             pool, signal_id=signal_id, symbol=symbol, side=side,
             qty=float(qty), order_type="market", strategy_id=strategy_id,
         )
-        await tools.update_trade_status(pool, "trade_signals", signal_id, "processed")
+        await update_trade_status(pool, "trade_signals", signal_id, "processed")
         logger.info(
             "trade_approved",
             signal_id=signal_id, trade_id=trade_id,
@@ -521,7 +537,7 @@ class RiskAgent:
     ) -> float | None:
         # / fit t-copula to portfolio returns; returns lambda_lower or None
         position_symbols = [p.symbol for p in positions] + [symbol]
-        rows = await tools.fetch_close_history_batch(
+        rows = await fetch_close_history_batch(
             pool, position_symbols, bars_per_symbol=252,
         )
         if not rows:

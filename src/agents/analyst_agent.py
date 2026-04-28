@@ -13,7 +13,9 @@ from typing import Any
 
 import structlog
 
-from src.agents import tools
+from src.agents.data_tools import log_event, store_analysis_score
+from src.agents.market_tools import fetch_latest_regime
+from src.agents.position_tools import get_strategy_positions
 from src.analysis.ai_summary import (
     DualAnalysis,
     _build_fallback_summary,
@@ -292,7 +294,7 @@ class AnalystAgent:
                     "analyst_symbol_timeout", symbol=symbol,
                     timeout_s=per_symbol_timeout_s,
                 )
-                await tools.log_event(
+                await log_event(
                     pool, "warning", "analyst",
                     f"timeout after {per_symbol_timeout_s}s", symbol=symbol,
                 )
@@ -302,7 +304,7 @@ class AnalystAgent:
                 logger.warning(
                     "analyst_symbol_failed", symbol=symbol, error=str(exc),
                 )
-                await tools.log_event(
+                await log_event(
                     pool, "warning", "analyst",
                     f"analysis failed: {str(exc)[:200]}", symbol=symbol,
                 )
@@ -321,7 +323,7 @@ class AnalystAgent:
             duration_s=duration,
         )
         cycle_level = "warning" if successful == 0 and len(results) > 0 else "info"
-        await tools.log_event(
+        await log_event(
             pool, cycle_level, "analyst",
             f"cycle complete: {successful}/{len(results)} symbols in {duration}s"
             + (f" (budget hit, {len(ordered) - len(results)} deferred)" if budget_hit else ""),
@@ -387,7 +389,7 @@ class AnalystAgent:
         # / crypto: NVT from coingecko + sentiment + LLM analysis
         sentiment_score, nvt, coin_data, funding_rate, oi_rank = await self._fetch_crypto_components(pool, symbol)
 
-        regime = await tools.fetch_latest_regime(pool, "crypto")
+        regime = await fetch_latest_regime(pool, "crypto")
         fear_greed: float | None = None
         try:
             async with pool.acquire() as conn:
@@ -423,7 +425,7 @@ class AnalystAgent:
         }
 
         # / fetch strategy positions for llm context
-        strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+        strat_positions = await get_strategy_positions(pool, symbol=symbol)
 
         deepseek_text: str | None = None
         ai_confidence: float = 0.0
@@ -505,7 +507,7 @@ class AnalystAgent:
         if deepseek_text:
             details["llm_analysis_deepseek"] = deepseek_text
 
-        await tools.store_analysis_score(
+        await store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
             fundamental_score=composite, technical_score=None, composite_score=composite,
             regime=regime, regime_confidence=None, used_fundamentals=nvt is not None,
@@ -551,7 +553,7 @@ class AnalystAgent:
 
     async def _fetch_equity_enrichment(self, pool, symbol: str) -> tuple:
         # / returns (regime, symbol_trend, indicator_data, sentiment_data)
-        regime = await tools.fetch_latest_regime(pool, "equity")
+        regime = await fetch_latest_regime(pool, "equity")
 
         # / compute per-symbol trend for consensus gate
         symbol_trend = "unknown"
@@ -822,7 +824,7 @@ class AnalystAgent:
         vix_level = await self._fetch_vix_level(pool)
 
         await self._store_dcf_safe(pool, dcf_result, regime, symbol)
-        strat_positions = await tools.get_strategy_positions(pool, symbol=symbol)
+        strat_positions = await get_strategy_positions(pool, symbol=symbol)
         await self._enrich_position_metrics(pool, strat_positions, symbol)
 
         dual = await self._run_dual_llm(
@@ -849,7 +851,7 @@ class AnalystAgent:
         composite_score = self._compute_composite(fundamental_score, technical_score, kronos_score)
 
         used_fundamentals = ratio_score is not None or dcf_result is not None
-        await tools.store_analysis_score(
+        await store_analysis_score(
             pool, symbol=symbol, as_of=date.today(),
             fundamental_score=fundamental_score,
             technical_score=technical_score,

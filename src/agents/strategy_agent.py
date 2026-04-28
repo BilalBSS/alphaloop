@@ -12,7 +12,21 @@ from typing import Any
 import pandas as pd
 import structlog
 
-from src.agents import tools
+from src.agents.data_tools import (
+    dict_to_analysis_data,
+    fetch_analysis_score,
+    log_event,
+    log_observation,
+)
+from src.agents.market_tools import (
+    fetch_daily_ohlcv,
+    fetch_intraday_ohlcv,
+    store_computed_indicators,
+    store_ict_indicators,
+)
+from src.agents.position_tools import get_strategy_positions, mark_partial_exit_fired
+from src.agents.trade_tools import store_trade_signal
+from src.data.strategy_metrics import store_strategy_evaluation
 from src.indicators.mean_reversion import hurst_exponent
 from src.indicators.momentum import rsi
 from src.indicators.structure import fair_value_gaps, order_blocks, structure_breaks
@@ -52,7 +66,7 @@ class StrategyAgent:
         if symbol in self._df_cache:
             return self._df_cache[symbol]
 
-        rows = await tools.fetch_daily_ohlcv(pool, symbol, limit=250)
+        rows = await fetch_daily_ohlcv(pool, symbol, limit=250)
 
         if len(rows) < min_bars:
             self._df_cache[symbol] = None
@@ -124,7 +138,7 @@ class StrategyAgent:
 
         try:
             notify_strategy_evaluation(stats)
-            await tools.store_strategy_evaluation(pool, stats)
+            await store_strategy_evaluation(pool, stats)
         except Exception as exc:
             logger.warning("strategy_eval_observability_failed", error=str(exc))
 
@@ -132,7 +146,7 @@ class StrategyAgent:
                      total_evaluated=stats["total"])
         # / log strategy eval cycle to system_events
         entry_hits = stats["total"] - stats["no_entry"] - stats.get("insufficient_data", 0)
-        await tools.log_event(
+        await log_event(
             pool, "info", "strategy",
             f"eval: {stats['total']} pairs, {entry_hits} entry hits, "
             f"{stats.get('blocked_consensus', 0)} consensus blocked, "
@@ -242,7 +256,7 @@ class StrategyAgent:
 
         # / store + return
         regime = analysis_row.get("regime") if analysis_row else None
-        signal_id = await tools.store_trade_signal(
+        signal_id = await store_trade_signal(
             pool,
             strategy_id=strategy.strategy_id,
             symbol=symbol,
@@ -271,7 +285,7 @@ class StrategyAgent:
 
     async def _load_analysis(self, pool, symbol: str):
         # / fetch analysis_score row + parse details into AnalysisData
-        analysis_row = await tools.fetch_analysis_score(pool, symbol)
+        analysis_row = await fetch_analysis_score(pool, symbol)
         analysis_data = None
         raw_details: dict | None = None
         if analysis_row and analysis_row.get("details"):
@@ -280,7 +294,7 @@ class StrategyAgent:
                 import json
                 details = json.loads(details)
             raw_details = details if isinstance(details, dict) else None
-            analysis_data = tools.dict_to_analysis_data(details)
+            analysis_data = dict_to_analysis_data(details)
         return analysis_data, raw_details, analysis_row
 
     async def _log_near_miss(
@@ -304,7 +318,7 @@ class StrategyAgent:
                 return
             failed_str = "; ".join(entry_signal.failed_reasons or entry_signal.reasons)[:500]
             nm_type = "fundamental_gate" if is_fundamental_fail else "n_minus_1_technical"
-            await tools.log_observation(
+            await log_observation(
                 pool, strategy.strategy_id, symbol,
                 near_miss_type=nm_type,
                 passed_count=passed_n, total_count=total_n,
@@ -502,7 +516,7 @@ class StrategyAgent:
             return self._intraday_cache[symbol]
 
         try:
-            rows = await tools.fetch_intraday_ohlcv(
+            rows = await fetch_intraday_ohlcv(
                 pool, symbol, timeframe="1Hour", limit=100,
             )
 
@@ -563,7 +577,7 @@ class StrategyAgent:
             }
             # / filter NaN
             indicators = {k: (v if v == v else None) for k, v in indicators.items()}
-            await tools.store_computed_indicators(pool, symbol, indicators)
+            await store_computed_indicators(pool, symbol, indicators)
 
             # / compute and store 2h intraday indicators
             intraday_df = await self._fetch_intraday_df(pool, symbol)
@@ -591,7 +605,7 @@ class StrategyAgent:
                         intraday_ind["bb_middle"] = float(bb_2h.middle.iloc[-1]) if not bb_2h.middle.empty else None
                         intraday_ind["bb_lower"] = float(bb_2h.lower.iloc[-1]) if not bb_2h.lower.empty else None
                     intraday_ind = {k: (v if v == v else None) for k, v in intraday_ind.items()}
-                    await tools.store_computed_indicators(pool, symbol, intraday_ind, timeframe="1Hour")
+                    await store_computed_indicators(pool, symbol, intraday_ind, timeframe="1Hour")
                 except Exception as exc2:
                     logger.debug("intraday_indicator_compute_failed", symbol=symbol, error=str(exc2))
 
@@ -616,7 +630,7 @@ class StrategyAgent:
                         for s in sb_result.breaks[-8:]
                     ],
                 }
-                await tools.store_ict_indicators(pool, symbol, ict_data)
+                await store_ict_indicators(pool, symbol, ict_data)
             except Exception as exc3:
                 logger.debug("ict_indicator_compute_failed", symbol=symbol, error=str(exc3))
         except Exception as exc:
@@ -664,7 +678,7 @@ class StrategyAgent:
         for entry in active:
             strategy = entry.strategy
             # / get this strategy's positions from db
-            strat_positions = await tools.get_strategy_positions(pool, strategy_id=strategy.strategy_id)
+            strat_positions = await get_strategy_positions(pool, strategy_id=strategy.strategy_id)
             for sp in strat_positions:
                 checked_symbols.add(sp["symbol"])
                 exit_sig = await self._eval_exit(pool, strategy, sp)
@@ -674,7 +688,7 @@ class StrategyAgent:
         # / also check untracked positions using the first active strategy's exit rules
         if active:
             default_strategy = active[0].strategy
-            untracked = await tools.get_strategy_positions(pool, strategy_id="untracked")
+            untracked = await get_strategy_positions(pool, strategy_id="untracked")
             for sp in untracked:
                 if sp["symbol"] in checked_symbols:
                     continue
@@ -744,7 +758,7 @@ class StrategyAgent:
             # / and partial_exit_fired is still false, sell `fraction` of the position.
             partial_sig = self._eval_partial_exit(strategy, sp, df, override_strategy_id)
             if partial_sig is not None:
-                signal_id = await tools.store_trade_signal(
+                signal_id = await store_trade_signal(
                     pool,
                     strategy_id=partial_sig["strategy_id"],
                     symbol=sp["symbol"],
@@ -760,7 +774,7 @@ class StrategyAgent:
                 )
                 # / mark the position so we don't re-fire next cycle; best-effort
                 try:
-                    await tools.mark_partial_exit_fired(
+                    await mark_partial_exit_fired(
                         pool, partial_sig["strategy_id"], sp["symbol"],
                     )
                 except Exception as exc:
@@ -788,7 +802,7 @@ class StrategyAgent:
 
             if exit_signal.should_exit:
                 strat_id = override_strategy_id or strategy.strategy_id
-                signal_id = await tools.store_trade_signal(
+                signal_id = await store_trade_signal(
                     pool,
                     strategy_id=strat_id,
                     symbol=sp["symbol"],

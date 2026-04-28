@@ -6,7 +6,7 @@ import time
 
 import structlog
 
-from src.agents import tools
+from src.agents.market_tools import fetch_peak_equity, store_peak_equity
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +25,7 @@ class CircuitBreakerState:
         # / one-shot restore from portfolio_snapshots
         if self._initialized:
             return
-        restored = await tools.fetch_peak_equity(pool)
+        restored = await fetch_peak_equity(pool)
         if restored > 0:
             self._peak_equity = restored
             logger.info("peak_equity_restored", peak=restored)
@@ -48,7 +48,7 @@ class CircuitBreakerState:
         if equity > self._peak_equity:
             self._peak_equity = equity
         try:
-            await tools.store_peak_equity(pool, equity, self._peak_equity)
+            await store_peak_equity(pool, equity, self._peak_equity)
         except Exception as exc:
             logger.debug("store_peak_equity_failed", error=str(exc)[:80])
         return self._peak_equity

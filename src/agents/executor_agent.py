@@ -12,8 +12,21 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
-from src.agents import tools
+from src.agents.data_tools import fire_and_forget, log_event
+from src.agents.market_tools import fetch_latest_regime
+from src.agents.position_tools import (
+    close_strategy_position,
+    fetch_most_recent_open_entry,
+    open_strategy_position,
+)
 from src.agents.task_tracker import ExecutorTaskTracker
+from src.agents.trade_tools import (
+    attach_broker_order_id,
+    claim_approved_trade_atomic,
+    fetch_approved_trade_by_id,
+    store_trade_log,
+    update_trade_status,
+)
 from src.brokers.base import BrokerInterface
 from src.data.symbols import is_crypto
 from src.notifications.notifier import notify_trade_error, notify_trade_executed
@@ -32,13 +45,13 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
     if not _ws_clients:
         return
     try:
-        tools.fire_and_forget(broadcast("trade_executed", {
+        fire_and_forget(broadcast("trade_executed", {
             "symbol": symbol, "side": side, "qty": float(qty),
             "price": float(price) if price else 0.0,
             "strategy_id": strategy_id, "log_id": log_id,
             "pnl": float(pnl) if pnl is not None else None,
         }))
-        tools.fire_and_forget(broadcast("position_update", {"symbol": symbol}))
+        fire_and_forget(broadcast("position_update", {"symbol": symbol}))
     except Exception as exc:
         logger.debug("broadcast_fill_failed", error=str(exc)[:120])
 
@@ -116,7 +129,7 @@ class ExecutorAgent:
         self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
     ) -> dict:
         # / place order for one approved trade
-        trade = await tools.fetch_approved_trade_by_id(pool, trade_id)
+        trade = await fetch_approved_trade_by_id(pool, trade_id)
         if not trade:
             return {"status": "error", "reason": "trade_not_found"}
 
@@ -142,13 +155,13 @@ class ExecutorAgent:
                 "executor_order_failed",
                 trade_id=trade_id, symbol=symbol, error=str(exc),
             )
-            await tools.update_trade_status(pool, "approved_trades", trade_id, "error")
+            await update_trade_status(pool, "approved_trades", trade_id, "error")
             notify_trade_error(symbol, side, str(exc))
             return {"status": "error", "reason": str(exc)}
 
         # / persist broker order_id so alpaca_sync can recover strategy_id later
         if getattr(order, "order_id", None):
-            await tools.attach_broker_order_id(pool, trade_id, order.order_id)
+            await attach_broker_order_id(pool, trade_id, order.order_id)
 
         if order.status == "filled":
             return await self._handle_fill(
@@ -156,7 +169,7 @@ class ExecutorAgent:
             )
 
         if order.status in ("rejected", "cancelled"):
-            await tools.update_trade_status(pool, "approved_trades", trade_id, "failed")
+            await update_trade_status(pool, "approved_trades", trade_id, "failed")
             logger.warning(
                 "trade_rejected_by_broker",
                 trade_id=trade_id, symbol=symbol,
@@ -184,14 +197,14 @@ class ExecutorAgent:
                 except Exception:
                     killed = False
             if killed:
-                await tools.update_trade_status(pool, "approved_trades", trade_id, "killed_strategy")
+                await update_trade_status(pool, "approved_trades", trade_id, "killed_strategy")
                 logger.warning(
                     "executor_rejected_killed_strategy",
                     trade_id=trade_id, strategy_id=strategy_id, symbol=trade["symbol"],
                 )
                 return {"status": "cancelled", "reason": f"strategy_{strategy_id}_killed"}
 
-        claimed = await tools.claim_approved_trade_atomic(pool, trade_id)
+        claimed = await claim_approved_trade_atomic(pool, trade_id)
         if not claimed:
             logger.warning(
                 "executor_skip_non_pending",
@@ -213,7 +226,7 @@ class ExecutorAgent:
                     order = updated
                     break
                 if updated.status in ("rejected", "cancelled"):
-                    await tools.update_trade_status(pool, "approved_trades", trade_id, "failed")
+                    await update_trade_status(pool, "approved_trades", trade_id, "failed")
                     return {"status": "failed", "reason": updated.status}
             except Exception:
                 pass
@@ -223,7 +236,7 @@ class ExecutorAgent:
                 pool, trade_id, broker, order, trade, strategy_id, polled=True,
             )
 
-        await tools.update_trade_status(pool, "approved_trades", trade_id, order.status)
+        await update_trade_status(pool, "approved_trades", trade_id, order.status)
         logger.warning(
             "trade_not_filled_after_poll",
             trade_id=trade_id, symbol=trade["symbol"], status=order.status,
@@ -241,8 +254,8 @@ class ExecutorAgent:
         order_type = trade.get("order_type", "market")
 
         if order.filled_price is None or float(order.filled_price) <= 0:
-            await tools.update_trade_status(pool, "approved_trades", trade_id, "pending_reconcile")
-            await tools.log_event(
+            await update_trade_status(pool, "approved_trades", trade_id, "pending_reconcile")
+            await log_event(
                 pool, level="error", source="executor",
                 message="fill_missing_price",
                 symbol=symbol,
@@ -261,14 +274,14 @@ class ExecutorAgent:
             )
             return {"status": "failed", "reason": "fill_missing_price"}
 
-        regime = await tools.fetch_latest_regime(pool, "equity")
+        regime = await fetch_latest_regime(pool, "equity")
 
         # / track strategy-level position; capture entry_price for sells
         pnl, entry_price = await self._update_position_and_pnl(
             pool, side, strategy_id, symbol, order,
         )
 
-        log_id = await tools.store_trade_log(
+        log_id = await store_trade_log(
             pool,
             trade_id=trade_id,
             symbol=symbol,
@@ -285,7 +298,7 @@ class ExecutorAgent:
                 "order_type": order_type,
             },
         )
-        await tools.update_trade_status(pool, "approved_trades", trade_id, "filled")
+        await update_trade_status(pool, "approved_trades", trade_id, "filled")
 
         notify_trade_executed(symbol, side, order.filled_qty, order.filled_price, strategy_id, pnl=pnl)
         _broadcast_fill(symbol, side, order.filled_qty, order.filled_price,
@@ -316,7 +329,7 @@ class ExecutorAgent:
     ) -> tuple[float | None, float | None]:
         # / opens a buy position or closes a sell; returns (pnl, entry_price)
         if side == "buy" and strategy_id:
-            await tools.open_strategy_position(
+            await open_strategy_position(
                 pool, strategy_id, symbol, order.filled_qty, order.filled_price,
             )
             return None, None
@@ -324,11 +337,11 @@ class ExecutorAgent:
             return None, None
         entry_price: float | None = None
         if strategy_id:
-            entry_price = await tools.close_strategy_position(
+            entry_price = await close_strategy_position(
                 pool, strategy_id, symbol, order.filled_qty,
             )
         if entry_price is None:
-            fallback = await tools.fetch_most_recent_open_entry(pool, symbol)
+            fallback = await fetch_most_recent_open_entry(pool, symbol)
             if fallback and fallback.get("entry_price") is not None:
                 entry_price = fallback["entry_price"]
             else:

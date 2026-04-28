@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 
-from src.agents import tools
+from src.agents.data_tools import fire_and_forget
 from src.data.loop_registry import upsert_service_state
 from src.data.market_data import store_latest_prices
 from src.data.streams.alpaca_ws import AlpacaStream
@@ -112,7 +112,7 @@ class StreamManager:
                 "timestamp_ms": tick.timestamp_ms,
                 "vendor": tick.vendor,
             }
-            tools.fire_and_forget(self._bounded_broadcast("price_tick", payload))
+            fire_and_forget(self._bounded_broadcast("price_tick", payload))
         except Exception:
             # / dashboard not mounted in this process
             pass
