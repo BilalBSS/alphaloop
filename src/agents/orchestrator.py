@@ -245,6 +245,12 @@ class AgentOrchestrator:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
+        # / drain executor's fire-and-forget post-mortem tasks
+        try:
+            await self._executor.tasks.drain(timeout=10)
+        except Exception as exc:
+            logger.debug("executor_task_drain_failed", error=str(exc)[:120])
+
         # / close shared http clients (best-effort, may already be torn down)
         try:
             from src.data.alpaca_client import close_alpaca_client

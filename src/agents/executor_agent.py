@@ -13,14 +13,12 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from src.agents import tools
+from src.agents.task_tracker import ExecutorTaskTracker
 from src.brokers.base import BrokerInterface
 from src.data.symbols import is_crypto
 from src.notifications.notifier import notify_trade_error, notify_trade_executed
 
 logger = structlog.get_logger(__name__)
-
-# / strong refs so event loop doesn't gc background post-mortem tasks
-_POST_MORTEM_TASKS: set = set()
 
 
 def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
@@ -63,7 +61,8 @@ def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> boo
 
 
 def _spawn_post_mortem(
-    pool, trade_id: int | None, strategy_id: str | None,
+    tracker: ExecutorTaskTracker, pool,
+    trade_id: int | None, strategy_id: str | None,
     symbol: str, pnl: float, trigger_type: str,
 ) -> None:
     # / fire-and-forget launcher; cooldown enforced inside writer
@@ -71,21 +70,14 @@ def _spawn_post_mortem(
         return
     try:
         from src.knowledge.post_mortem_writer import write_post_mortem
-        task = asyncio.create_task(
-            write_post_mortem(
-                pool=pool,
-                trade_id=trade_id,
-                strategy_id=strategy_id,
-                symbol=symbol,
-                pnl=float(pnl),
-                trigger_type=trigger_type,
-            )
-        )
-        _POST_MORTEM_TASKS.add(task)
-        task.add_done_callback(_POST_MORTEM_TASKS.discard)
-    except RuntimeError:
-        # / no running loop
-        pass
+        tracker.spawn(write_post_mortem(
+            pool=pool,
+            trade_id=trade_id,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            pnl=float(pnl),
+            trigger_type=trigger_type,
+        ))
     except Exception as exc:
         logger.info("post_mortem_spawn_failed", error=str(exc)[:120])
 
@@ -116,6 +108,9 @@ def _compute_extended_hours(symbol: str, order_type: str) -> bool:
 
 
 class ExecutorAgent:
+
+    def __init__(self) -> None:
+        self.tasks = ExecutorTaskTracker()
 
     async def execute_trade(
         self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
@@ -306,7 +301,7 @@ class ExecutorAgent:
         if side == "sell" and pnl is not None:
             entry_notional = float(entry_price) * float(order.filled_qty) if entry_price else 0.0
             if _should_trigger_post_mortem(pnl, entry_notional):
-                _spawn_post_mortem(pool, log_id, strategy_id, symbol, pnl, "loss_threshold")
+                _spawn_post_mortem(self.tasks, pool, log_id, strategy_id, symbol, pnl, "loss_threshold")
 
         return {
             "status": "filled",
