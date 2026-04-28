@@ -26,9 +26,7 @@ def validate_indicator_params(params: Any) -> bool:
         encoded = json.dumps(params)
     except (TypeError, ValueError):
         return False
-    if len(encoded) > _PARAMS_MAX_BYTES:
-        return False
-    return True
+    return len(encoded) <= _PARAMS_MAX_BYTES
 
 
 def _default_state(symbol: str) -> dict:

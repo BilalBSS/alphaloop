@@ -50,9 +50,7 @@ def validate_payload(payload: Any) -> bool:
         encoded = json.dumps(payload)
     except (TypeError, ValueError):
         return False
-    if len(encoded) > _PAYLOAD_MAX_BYTES:
-        return False
-    return True
+    return len(encoded) <= _PAYLOAD_MAX_BYTES
 
 
 def _parse_jsonb(value: Any) -> Any:

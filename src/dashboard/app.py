@@ -2265,7 +2265,7 @@ def _serialize_one(row: dict | None) -> dict | None:
     for k, v in row.items():
         if hasattr(v, "isoformat"):
             result[k] = v.isoformat()
-        elif isinstance(v, (int, float, str, bool, type(None))) or isinstance(v, (dict, list)):
+        elif isinstance(v, (int, float, str, bool, type(None), dict, list)):
             result[k] = v
         else:
             result[k] = str(v)

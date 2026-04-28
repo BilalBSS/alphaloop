@@ -59,9 +59,7 @@ def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> boo
         pnl_pct = 0.02
     if abs(pnl) > pnl_abs:
         return True
-    if entry_notional > 0 and abs(pnl) / entry_notional > pnl_pct:
-        return True
-    return False
+    return entry_notional > 0 and abs(pnl) / entry_notional > pnl_pct
 
 
 def _spawn_post_mortem(

@@ -234,8 +234,7 @@ class StrategyAgent:
 
         # / 2h intraday confirmation gate
         intraday_confirm = strategy.config.get("intraday_confirm", True)
-        if intraday_confirm:
-            if intraday_df is not None and len(intraday_df) >= 14:
+        if intraday_confirm and intraday_df is not None and len(intraday_df) >= 14:
                 try:
                     ic = intraday_df["close"]
                     rsi_2h = rsi(ic, 14)

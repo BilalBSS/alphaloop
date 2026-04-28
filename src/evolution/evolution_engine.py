@@ -831,9 +831,11 @@ class EvolutionEngine:
         # / check if a tier-2 strategy already exists for this symbol in this sector
         for entry in strategy_pool.all_entries():
             c = entry.strategy.config
-            if c.get("tier") in ("tweaked", "graduated") and c.get("symbol") == symbol and c.get("sector") == sector:
-                if entry.status != "killed":
-                    return True
+            if (c.get("tier") in ("tweaked", "graduated")
+                    and c.get("symbol") == symbol
+                    and c.get("sector") == sector
+                    and entry.status != "killed"):
+                return True
         return False
 
     @staticmethod
@@ -865,7 +867,8 @@ class EvolutionEngine:
         best = 0.0
         for entry in strategy_pool.all_entries():
             c = entry.strategy.config
-            if c.get("sector") == sector and c.get("tier", "sector") == "sector":
-                if entry.score and entry.score.sharpe_ratio > best:
-                    best = entry.score.sharpe_ratio
+            if (c.get("sector") == sector
+                    and c.get("tier", "sector") == "sector"
+                    and entry.score and entry.score.sharpe_ratio > best):
+                best = entry.score.sharpe_ratio
         return best
