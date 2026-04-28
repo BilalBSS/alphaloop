@@ -900,27 +900,17 @@ class AgentOrchestrator:
                 logger.debug("bounded_broadcast_failed",
                              event=event_type, error=str(exc)[:120])
 
+    @staticmethod
+    def _stream_healthy(s) -> bool:
+        if s is None or s.state.circuit_breaker.is_open or s.state.last_tick_at is None:
+            return False
+        return (time.monotonic() - s.state.last_tick_at) < STREAM_FRESH_TICK_S
+
     def _streams_healthy_equity(self) -> bool:
-        s = self._alpaca_stream
-        if s is None:
-            return False
-        if s.state.circuit_breaker.is_open:
-            return False
-        if s.state.last_tick_at is None:
-            return False
-        idle = time.monotonic() - s.state.last_tick_at
-        return idle < STREAM_FRESH_TICK_S
+        return self._stream_healthy(self._alpaca_stream)
 
     def _streams_healthy_crypto(self) -> bool:
-        s = self._coinbase_stream
-        if s is None:
-            return False
-        if s.state.circuit_breaker.is_open:
-            return False
-        if s.state.last_tick_at is None:
-            return False
-        idle = time.monotonic() - s.state.last_tick_at
-        return idle < STREAM_FRESH_TICK_S
+        return self._stream_healthy(self._coinbase_stream)
 
     async def _stream_aggregator_loop(self) -> None:
         # / every 60s, drain the tick buffer and write the newest tick per symbol
@@ -1343,57 +1333,32 @@ class AgentOrchestrator:
 
     # / ---- phase 2: knowledge base loops ----
 
-    async def _wiki_embedding_loop(self) -> None:
-        # / backfill missing wiki_embeddings every 6h via ollama nomic-embed-text.
-        # / the inner is a one-shot pass; orchestrator owns the cadence — matches
-        # / the monitoring/strategy loop shape.
-        if await self._wait_or_stop(300):
+    async def _wiki_periodic(self, name: str, inner, initial_wait: int, interval: int) -> None:
+        # / shared shape for wiki_embedding + wiki_archive loops
+        if await self._wait_or_stop(initial_wait):
             return
-        timeout = loop_registry.timeout_for("wiki_embedding")
+        timeout = loop_registry.timeout_for(name)
         while not self._stop_event.is_set():
             try:
-                async with loop_registry.track(self._pool, "wiki_embedding"):
-                    from src.knowledge.loops import wiki_embedding_backfill_loop
-                    await asyncio.wait_for(
-                        wiki_embedding_backfill_loop(self._pool),
-                        timeout=timeout,
-                    )
+                async with loop_registry.track(self._pool, name):
+                    await asyncio.wait_for(inner(self._pool), timeout=timeout)
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                logger.warning("wiki_embedding_pass_timeout", timeout_s=timeout)
+                logger.warning(f"{name}_pass_timeout", timeout_s=timeout)
             except Exception as exc:
-                logger.error("wiki_embedding_loop_error", error=str(exc)[:200])
-                notify_system_error(str(exc), "wiki_embedding_loop")
-            # / 6h between backfill passes
-            if await self._wait_or_stop(6 * 3600):
+                logger.error(f"{name}_loop_error", error=str(exc)[:200])
+                notify_system_error(str(exc), f"{name}_loop")
+            if await self._wait_or_stop(interval):
                 return
 
+    async def _wiki_embedding_loop(self) -> None:
+        from src.knowledge.loops import wiki_embedding_backfill_loop
+        await self._wiki_periodic("wiki_embedding", wiki_embedding_backfill_loop, 300, 6 * 3600)
+
     async def _wiki_archive_loop(self) -> None:
-        # / daily archive of wiki docs older than 180 days. one-shot inner,
-        # / outer owns cadence (was `while True` in both layers — outer asyncio
-        # / timeout fired because the inner never returned).
-        if await self._wait_or_stop(600):
-            return
-        timeout = loop_registry.timeout_for("wiki_archive")
-        while not self._stop_event.is_set():
-            try:
-                async with loop_registry.track(self._pool, "wiki_archive"):
-                    from src.knowledge.loops import wiki_archive_loop
-                    await asyncio.wait_for(
-                        wiki_archive_loop(self._pool),
-                        timeout=timeout,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                logger.warning("wiki_archive_pass_timeout", timeout_s=timeout)
-            except Exception as exc:
-                logger.error("wiki_archive_loop_error", error=str(exc)[:200])
-                notify_system_error(str(exc), "wiki_archive_loop")
-            # / 24h between archive passes
-            if await self._wait_or_stop(24 * 3600):
-                return
+        from src.knowledge.loops import wiki_archive_loop
+        await self._wiki_periodic("wiki_archive", wiki_archive_loop, 600, 24 * 3600)
 
     # / ---- phase 5 step 3: daily symbol wiki hydration ----
 
