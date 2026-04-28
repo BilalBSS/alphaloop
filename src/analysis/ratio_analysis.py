@@ -37,43 +37,31 @@ WEIGHTS = {
 }
 
 
-def score_pe(pe: Decimal | None, sector_avg: Decimal | None) -> float | None:
-    # / lower pe vs sector = better score
-    # / pe < 0 means negative earnings = score 0
-    if pe is None:
+def _ratio_score(
+    value: Decimal | None, sector_avg: Decimal | None, abs_max: float, abs_min: float,
+) -> float | None:
+    # / lower value vs sector = better; negative = 0
+    if value is None:
         return None
-    pe_f = float(pe)
-    if pe_f < 0:
+    val_f = float(value)
+    if val_f < 0:
         return 0.0
-
     if sector_avg is not None and float(sector_avg) > 0:
-        ratio = pe_f / float(sector_avg)
+        ratio = val_f / float(sector_avg)
         # / ratio < 0.5 = 100, ratio > 2.0 = 0, linear between
         score = max(0.0, min(100.0, (2.0 - ratio) / 1.5 * 100))
     else:
-        # / no sector avg — use absolute scale
-        # / pe < 10 = 100, pe > 50 = 0
-        score = max(0.0, min(100.0, (50.0 - pe_f) / 40.0 * 100))
-
+        # / absolute: val < abs_min = 100, val > abs_max = 0
+        score = max(0.0, min(100.0, (abs_max - val_f) / (abs_max - abs_min) * 100))
     return round(score, 1)
+
+
+def score_pe(pe: Decimal | None, sector_avg: Decimal | None) -> float | None:
+    return _ratio_score(pe, sector_avg, 50.0, 10.0)
 
 
 def score_ps(ps: Decimal | None, sector_avg: Decimal | None) -> float | None:
-    # / lower ps vs sector = better
-    if ps is None:
-        return None
-    ps_f = float(ps)
-    if ps_f < 0:
-        return 0.0
-
-    if sector_avg is not None and float(sector_avg) > 0:
-        ratio = ps_f / float(sector_avg)
-        score = max(0.0, min(100.0, (2.0 - ratio) / 1.5 * 100))
-    else:
-        # / absolute: ps < 2 = 100, ps > 15 = 0
-        score = max(0.0, min(100.0, (15.0 - ps_f) / 13.0 * 100))
-
-    return round(score, 1)
+    return _ratio_score(ps, sector_avg, 15.0, 2.0)
 
 
 def score_peg(peg: Decimal | None) -> float | None:
