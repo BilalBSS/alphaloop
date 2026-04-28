@@ -1002,7 +1002,7 @@ async def get_health():
     try:
         from src.agents.loop_registry import describe_loops
         loops_rows = await describe_loops(_pool)
-        analyst_row = next((l for l in loops_rows if l.get("name") == "analyst"), None)
+        analyst_row = next((loop for loop in loops_rows if loop.get("name") == "analyst"), None)
         if analyst_row and analyst_row.get("last_fire_ts"):
             lft = analyst_row["last_fire_ts"]
             last_analysis_ts = lft.isoformat() if hasattr(lft, "isoformat") else str(lft)
@@ -1717,7 +1717,7 @@ async def get_hydration_status():
             pass
 
     loops = await describe_loops(_pool)
-    hydration = next((l for l in loops if l["name"] == "knowledge_hydration"), None)
+    hydration = next((loop for loop in loops if loop["name"] == "knowledge_hydration"), None)
     # / never-fired hydration was rendering as status="ok" while last_fire_ts
     # / was null — a contradiction in the UI. force "pending" until the loop
     # / has produced at least one event.

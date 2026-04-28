@@ -76,8 +76,8 @@ def validate_market_data(row: dict) -> list[ValidationResult]:
     close = row.get("close")
 
     if high is not None and low is not None:
-        h, l = Decimal(str(high)), Decimal(str(low))
-        if h < l:
+        hi, lo = Decimal(str(high)), Decimal(str(low))
+        if hi < lo:
             results.append(ValidationResult(
                 valid=False, field="high_low",
                 value=f"high={high}, low={low}",
@@ -87,7 +87,7 @@ def validate_market_data(row: dict) -> list[ValidationResult]:
         for fname, fval in [("open", open_val), ("close", close)]:
             if fval is not None:
                 v = Decimal(str(fval))
-                if v > h or v < l:
+                if v > hi or v < lo:
                     results.append(ValidationResult(
                         valid=False, field=f"{fname}_range",
                         value=f"{fname}={fval}, high={high}, low={low}",
