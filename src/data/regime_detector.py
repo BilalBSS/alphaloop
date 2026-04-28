@@ -310,7 +310,7 @@ async def backfill_regimes(
     async with pool.acquire() as conn:
         if market == "crypto":
             # / crypto symbols contain '-' or '/' (e.g. BTC-USD)
-            updated = await conn.execute(
+            await conn.execute(
                 """
                 UPDATE market_data md
                 SET regime = rh.regime,
@@ -325,7 +325,7 @@ async def backfill_regimes(
             )
         else:
             # / equity symbols are plain tickers (no '-')
-            updated = await conn.execute(
+            await conn.execute(
                 """
                 UPDATE market_data md
                 SET regime = rh.regime,

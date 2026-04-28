@@ -552,7 +552,6 @@ class AnalystAgent:
 
         # / compute per-symbol trend for consensus gate
         symbol_trend = "unknown"
-        df = None
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(

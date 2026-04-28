@@ -514,9 +514,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         if current_bar_idx >= len(market_data):
             return ExitSignal(should_exit=False)
 
-        current = market_data.iloc[current_bar_idx]
-        current_price = float(current["close"])
-
         # / check time exit first
         time_exit = self._exit_conditions.get("time_exit")
         if time_exit:

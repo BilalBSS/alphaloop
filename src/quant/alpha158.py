@@ -91,7 +91,6 @@ def _rolling_residual(y: pd.Series, window: int) -> pd.Series:
 
 def _k_features(df: pd.DataFrame) -> dict[str, pd.Series]:
     # / K family — candle shape (ratios of open/high/low to close)
-    c = df["close"]
     features = {}
     features["KMID"] = (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
     features["KLEN"] = (df["high"] - df["low"]) / df["open"].replace(0, np.nan)

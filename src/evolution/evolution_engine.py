@@ -726,7 +726,7 @@ class EvolutionEngine:
         # / 11. DOCUMENT: generate report and update docs
         pool_summary = strategy_pool.summary()
         try:
-            report = await generate_report(
+            await generate_report(
                 generation=generation,
                 killed=summary["killed"],
                 mutated=summary["mutated"],
