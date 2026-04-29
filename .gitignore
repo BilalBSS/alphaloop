@@ -5,7 +5,6 @@ __pycache__/
 *.db
 .venv/
 venv/
-tests/
 node_modules/
 .gstack/
 reports/
