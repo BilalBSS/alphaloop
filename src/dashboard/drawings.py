@@ -59,7 +59,7 @@ def _parse_jsonb(value: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except Exception:
+        except (ValueError, TypeError):
             return None
     return None
 

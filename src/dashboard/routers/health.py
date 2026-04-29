@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import asyncpg
 from fastapi import APIRouter
 
 from src.dashboard.helpers import db, serializers
@@ -14,7 +15,7 @@ async def _health_db_ping() -> bool:
     try:
         await db.query_one("SELECT 1 as ok")
         return True
-    except Exception:
+    except (asyncpg.PostgresError, ConnectionError, OSError):
         return False
 
 
@@ -132,7 +133,7 @@ async def _health_last_analysis_ts() -> str | None:
         if analyst_row and analyst_row.get("last_fire_ts"):
             lft = analyst_row["last_fire_ts"]
             return lft.isoformat() if hasattr(lft, "isoformat") else str(lft)
-    except Exception:
+    except (asyncpg.PostgresError, KeyError, AttributeError):
         return None
     return None
 

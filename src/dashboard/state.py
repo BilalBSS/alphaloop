@@ -11,6 +11,8 @@ import asyncpg
 import structlog
 from fastapi import WebSocket
 
+from src.brokers.alpaca_broker import AlpacaBroker
+
 logger = structlog.get_logger(__name__)
 
 
@@ -99,7 +101,6 @@ class DashboardState:
     def get_broker(self) -> Any:
         # / lazy alpaca init
         if self.broker is None:
-            from src.brokers.alpaca_broker import AlpacaBroker
             self.broker = AlpacaBroker()
         return self.broker
 

@@ -48,7 +48,7 @@ def _parse_jsonb(value: Any, fallback: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except Exception:
+        except (ValueError, TypeError):
             return fallback
     return fallback
 
