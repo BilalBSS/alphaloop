@@ -145,6 +145,31 @@ async def _cache_hot_endpoints(request, call_next):
     return response
 
 
+_AUDIT_SKIP_PATHS = {"/api/health", "/api/version", "/api/loops"}
+
+
+@app.middleware("http")
+async def _audit_log(request, call_next):
+    import time
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    path = request.url.path
+    if not path.startswith("/api/") or path in _AUDIT_SKIP_PATHS:
+        return response
+    if request.method == "GET" and response.status_code < 400:
+        return response
+    if STATE.pool is None:
+        return response
+    from src.agents.data_tools import fire_and_forget, log_event
+    level = "warning" if response.status_code >= 400 else "info"
+    fire_and_forget(log_event(
+        STATE.pool, level, "api", f"{request.method} {path}",
+        details={"status": response.status_code, "ms": elapsed_ms},
+    ))
+    return response
+
+
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     logger.error(
