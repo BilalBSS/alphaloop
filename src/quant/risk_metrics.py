@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import structlog
@@ -192,7 +193,7 @@ def risk_summary(
     returns: np.ndarray,
     equity_curve: np.ndarray | None = None,
     confidence: float = 0.95,
-) -> dict:
+) -> dict[str, Any]:
     # / one-call comprehensive risk report
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
@@ -200,7 +201,7 @@ def risk_summary(
     if len(clean) == 0:
         raise ValueError("returns must not be empty")
 
-    result = {
+    result: dict[str, Any] = {
         "var_parametric": var_parametric(clean, confidence) if len(clean) >= 2 else float("nan"),
         "var_historical": var_historical(clean, confidence),
         "expected_shortfall": expected_shortfall(clean, confidence),

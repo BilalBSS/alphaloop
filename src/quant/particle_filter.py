@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import structlog
 from scipy.special import expit
@@ -49,7 +51,7 @@ class ParticleFilter:
         self._logits = np.clip(self._logits, -10, 10)
         self._step += 1
 
-    def update(self, observation: float, likelihood_fn=None) -> None:
+    def update(self, observation: float, likelihood_fn: Callable[[float, float], float] | None = None) -> None:
         # / reweight particles based on observation
         # / likelihood_fn(observation, particle_state) -> non-negative likelihood
         # / if no likelihood_fn provided, uses gaussian likelihood
@@ -113,7 +115,7 @@ class ParticleFilter:
     @property
     def particles(self) -> np.ndarray:
         # / current particle probabilities
-        return expit(self._logits)
+        return np.asarray(expit(self._logits))
 
     @property
     def weights(self) -> np.ndarray:

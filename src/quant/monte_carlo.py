@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 
 
@@ -53,7 +56,7 @@ def stratified_sample(
     u_all = np.concatenate(all_samples)
     # / clip to avoid inf from ppf(0) or ppf(1)
     u_all = np.clip(u_all, 1e-10, 1 - 1e-10)
-    return norm.ppf(u_all)
+    return np.asarray(norm.ppf(u_all))
 
 
 def control_variate_adjust(
@@ -108,12 +111,12 @@ def variance_reduction_ratio(crude_var: float, reduced_var: float) -> float:
 
 
 def run_simulation(
-    func,
+    func: Callable[[np.ndarray], np.ndarray],
     n_samples: int = 10_000,
     variance_reduction: str = "antithetic",
     rng: np.random.Generator | None = None,
     dim: int = 1,
-) -> dict:
+) -> dict[str, Any]:
     # / orchestrator that runs MC with chosen VR technique
     # / func: callable(samples: np.ndarray) -> np.ndarray of per-sample estimates
     # / returns dict with mean, std, ci_lower, ci_upper, n_effective, vr_method
