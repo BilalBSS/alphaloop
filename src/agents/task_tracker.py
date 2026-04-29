@@ -1,4 +1,3 @@
-# / strong refs for fire-and-forget background tasks
 
 from __future__ import annotations
 
@@ -11,14 +10,12 @@ logger = structlog.get_logger(__name__)
 
 
 class ExecutorTaskTracker:
-    # / retains refs to spawned coroutines so they aren't gc'd mid-run
 
     def __init__(self, name: str = "executor") -> None:
         self._tasks: set[asyncio.Task] = set()
         self._name = name
 
     def spawn(self, coro: Awaitable) -> asyncio.Task | None:
-        # / schedule coro, retain ref, auto-discard on completion
         try:
             task = asyncio.create_task(coro)
         except RuntimeError:
@@ -29,7 +26,6 @@ class ExecutorTaskTracker:
         return task
 
     async def drain(self, timeout: float | None = None) -> None:
-        # / await all in-flight tasks; called at shutdown
         if not self._tasks:
             return
         pending = list(self._tasks)

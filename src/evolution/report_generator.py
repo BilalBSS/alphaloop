@@ -1,4 +1,3 @@
-# / generates markdown reports after each evolution cycle
 # / writes to reports/evolution_gen_{N}.md
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ async def generate_report(
     promoted: list[dict[str, Any]],
     pool_summary: dict[str, Any],
 ) -> str:
-    # / generate a markdown evolution report and write to file
     # / returns the report string
     today = date.today().isoformat()
     report_lines = [

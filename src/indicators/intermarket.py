@@ -1,5 +1,3 @@
-# / intermarket signals from bonds, dollar, credit, gold
-# / tracks cross-asset regime (risk-on vs risk-off)
 
 from __future__ import annotations
 
@@ -42,13 +40,10 @@ def compute_intermarket(
     hyg_mom = _momentum(hyg, window)
     gld_mom = _momentum(gld, window)
 
-    # / bond/equity divergence: TLT up + SPY down = risk-off
     bond_eq_div = float(np.clip(tlt_mom - spy_mom, -1.0, 1.0)) if tlt is not None else 0.0
 
-    # / credit stress: HYG declining relative to TLT
     credit = float(np.clip(tlt_mom - hyg_mom, -1.0, 1.0)) if (tlt is not None and hyg is not None) else 0.0
 
-    # / composite: negative = risk-off, positive = risk-on
     composite = -0.3 * bond_eq_div - 0.2 * uup_mom - 0.3 * credit - 0.2 * gld_mom
     composite = float(np.clip(composite, -1.0, 1.0))
 

@@ -1,5 +1,4 @@
 # / continuous portfolio correlation monitoring
-# / alerts when positions become too correlated (hidden concentration)
 
 from __future__ import annotations
 
@@ -27,12 +26,10 @@ async def check_portfolio_correlation(
     threshold: float = 0.85,
     avg_threshold: float = 0.6,
 ) -> CorrelationAlert | None:
-    # / compute pairwise correlation of held positions
     symbols = [p["symbol"] if isinstance(p, dict) else p.symbol for p in positions]
     if len(symbols) < 2:
         return None
 
-    # / batch fetch all symbols in one query, bucket per-symbol in python
     returns_map = {}
     async with pool.acquire() as conn:
         rows = await conn.fetch(

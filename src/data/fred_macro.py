@@ -1,5 +1,3 @@
-# / fred macro data: yield curve, cpi, fed funds, unemployment
-# / normalizes each series to -1.0 to 1.0 score
 
 from __future__ import annotations
 
@@ -27,8 +25,6 @@ SERIES_CONFIG: dict[str, dict[str, float]] = {
 
 
 def _fred_params(series_id: str, days: int = 180) -> dict[str, str]:
-    # / pull 180 days so monthly series (CPI, FEDFUNDS, UNRATE) always have at
-    # / least one observation and daily series (DGS10/DGS2) have a full sparkline window
     key = os.environ.get("FRED_API_KEY", "")
     start = (date.today() - timedelta(days=days)).isoformat()
     return {
@@ -55,7 +51,6 @@ def _normalize(series_id: str, value: float) -> float:
 
 @with_retry(source="fred", max_retries=2, base_delay=1.0)
 async def _fetch_series(series_id: str) -> list[dict[str, Any]]:
-    # / returns every valid observation in window, oldest first
     if not os.environ.get("FRED_API_KEY"):
         return []
     params = _fred_params(series_id)
@@ -77,15 +72,11 @@ async def _fetch_series(series_id: str) -> list[dict[str, Any]]:
             })
         except (ValueError, TypeError):
             continue
-    # / fred returns desc; flip to asc so insert order + sparkline draw left->right
     out.sort(key=lambda r: r["date"])
     return out
 
 
 async def fetch_macro_indicators(pool: Any) -> dict[str, Any]:
-    # / returns the latest point per series (plus yield-curve spread) for the
-    # / analyst/strategy layer, but writes the full window to macro_data so the
-    # / dashboard's /api/macro-history can render sparklines.
     results: dict[str, Any] = {}
     for series_id in SERIES_CONFIG:
         try:

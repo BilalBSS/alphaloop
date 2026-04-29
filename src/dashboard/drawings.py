@@ -1,5 +1,3 @@
-# / user drawing persistence — trendlines, fibs, rects, hlines, vlines, text
-# / payload is opaque jsonb coming from lightweight-charts-drawing serialization
 from __future__ import annotations
 
 import json
@@ -13,8 +11,6 @@ from ._serialize import whitelist as _whitelist
 
 logger = structlog.get_logger(__name__)
 
-# / whitelist of drawing_type values accepted from the client
-# / keeps garbage out of the table and prevents users from inflating the type column
 VALID_DRAWING_TYPES: set[str] = {
     "trendline",
     "horizontal_line",
@@ -30,8 +26,6 @@ VALID_DRAWING_TYPES: set[str] = {
     "brush",
 }
 
-# / payload size cap — payloads are anchor lists + style dicts, real drawings fit in a few kb
-# / 32kb is comfortable for extremes (brushes with many vertices) while rejecting pathological inputs
 _PAYLOAD_MAX_BYTES = 32 * 1024
 
 
@@ -40,7 +34,6 @@ def sanitize_drawing_type(dt: Any) -> str | None:
 
 
 def validate_payload(payload: Any) -> bool:
-    # / minimal sanity: must be dict, serializable, under the size cap
     if not isinstance(payload, dict):
         return False
     try:
@@ -51,7 +44,6 @@ def validate_payload(payload: Any) -> bool:
 
 
 def _parse_jsonb(value: Any) -> Any:
-    # / asyncpg returns jsonb as native dict/list or str depending on driver config — normalize
     if value is None:
         return None
     if isinstance(value, (dict, list)):
@@ -59,7 +51,7 @@ def _parse_jsonb(value: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except Exception:
+        except (ValueError, TypeError):
             return None
     return None
 
@@ -75,7 +67,6 @@ def _row_to_drawing(row: dict) -> dict:
 
 
 async def list_drawings(pool: asyncpg.Pool, symbol: str) -> list[dict]:
-    # / all drawings for a symbol, oldest first so clients render them in creation order
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -92,7 +83,6 @@ async def list_drawings(pool: asyncpg.Pool, symbol: str) -> list[dict]:
 
 
 async def create_drawing(pool: asyncpg.Pool, symbol: str, drawing_type: str, payload: dict) -> dict:
-    # / insert a new drawing row and return the serialized shape
     payload_json = json.dumps(payload)
     try:
         async with pool.acquire() as conn:
@@ -113,8 +103,6 @@ async def create_drawing(pool: asyncpg.Pool, symbol: str, drawing_type: str, pay
 
 
 async def update_drawing(pool: asyncpg.Pool, symbol: str, drawing_id: int, payload: dict) -> dict | None:
-    # / update payload for an existing drawing scoped to symbol, returns None when the row is missing
-    # / scoping prevents a cross-symbol mutation via a mismatched url segment
     payload_json = json.dumps(payload)
     try:
         async with pool.acquire() as conn:
@@ -136,8 +124,6 @@ async def update_drawing(pool: asyncpg.Pool, symbol: str, drawing_id: int, paylo
 
 
 async def delete_drawing(pool: asyncpg.Pool, symbol: str, drawing_id: int) -> bool:
-    # / delete a single drawing by id scoped to symbol, returns true on hit
-    # / scoping prevents a cross-symbol delete via a mismatched url segment
     try:
         async with pool.acquire() as conn:
             result = await conn.execute(
@@ -148,7 +134,6 @@ async def delete_drawing(pool: asyncpg.Pool, symbol: str, drawing_id: int) -> bo
     except Exception as exc:
         logger.debug("drawings_delete_failed", drawing_id=drawing_id, error=str(exc))
         return False
-    # / asyncpg execute returns a status string like "DELETE 1" or "DELETE 0"
     if isinstance(result, str) and result.startswith("DELETE "):
         try:
             return int(result.split(" ", 1)[1]) > 0
@@ -158,7 +143,6 @@ async def delete_drawing(pool: asyncpg.Pool, symbol: str, drawing_id: int) -> bo
 
 
 async def delete_all_drawings(pool: asyncpg.Pool, symbol: str) -> int:
-    # / bulk delete all drawings for a symbol, returns the deleted count
     try:
         async with pool.acquire() as conn:
             result = await conn.execute(

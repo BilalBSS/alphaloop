@@ -1,7 +1,4 @@
 # / loop introspection registry
-# / orchestrator loops call record_fire_start / record_fire_end on every cycle;
-# / the dashboard reads describe_loops() via /api/loops. trigger_requests is a
-# / cross-process command queue for /api/admin/trigger/{service}.
 
 from __future__ import annotations
 
@@ -14,8 +11,6 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# / canonical metadata per loop — name -> kind + cadence/cron hour
-# / interval loops declare cadence_seconds; cron loops declare cron_hour_et (ET)
 LOOP_METADATA: dict[str, dict[str, Any]] = {
     "analyst":              {"kind": "interval", "cadence_seconds": 1200, "description": "groq analyst pass (batched, staleness-ordered)"},
     "deepseek":             {"kind": "interval", "cadence_seconds": 1800, "description": "deepseek dual-llm pass (batched, staleness-ordered)"},
@@ -47,34 +42,26 @@ LOOP_METADATA: dict[str, dict[str, Any]] = {
 ALL_LOOP_NAMES: list[str] = list(LOOP_METADATA.keys())
 
 
-# / per-loop cycle-body timeout (seconds). wedged loops don't block the next tick
-# / forever — asyncio.wait_for raises TimeoutError, the tracker records an error,
-# / the next interval re-attempts. only set for loops that historically wedged.
 LOOP_TIMEOUTS: dict[str, float] = {
-    # / hard ceiling — run() has its own wall_clock_budget_s (shorter, see
-    # / orchestrator.ANALYST_BUDGET_S). timeout only fires if one batch truly
-    # / hangs past the budget + some slack.
-    "analyst":         720.0,   # / 12 min (budget 7 min + 5 slack)
-    "deepseek":        780.0,   # / 13 min (budget 8 min + 5 slack)
-    "wiki_embedding":  900.0,   # / 15 min — ollama backfill batches
-    "wiki_archive":    900.0,   # / 15 min — archive + rewrite old docs
+    "analyst":         720.0,  # / 12 min (budget 7
+    "deepseek":        780.0,  # / 13 min (budget 8
+    "wiki_embedding":  900.0,  # / 15 min — ollama
+    "wiki_archive":    900.0,  # / 15 min — archive
 }
 
 
 def timeout_for(name: str) -> float | None:
-    # / returns cycle-body timeout for `name`, or None (no enforced timeout).
     return LOOP_TIMEOUTS.get(name)
 
 
 def _compute_next_fire(meta: dict[str, Any], base: datetime | None = None) -> datetime | None:
-    # / project the next fire from now + cadence (interval) or next et cron hour
     now = base or datetime.now(timezone.utc)
     if meta.get("kind") == "cron":
         hour = int(meta.get("cron_hour_et", 0))
         try:
             from zoneinfo import ZoneInfo
             et = ZoneInfo("America/New_York")
-        except Exception:
+        except (ImportError, KeyError):
             et = timezone(timedelta(hours=-5))
         et_now = now.astimezone(et)
         target = et_now.replace(hour=hour, minute=0, second=0, microsecond=0)
@@ -88,9 +75,6 @@ def _compute_next_fire(meta: dict[str, Any], base: datetime | None = None) -> da
 
 
 async def record_fire_start(pool: asyncpg.Pool | None, name: str) -> None:
-    # / set last_status=running so the dashboard can show in-flight loops.
-    # / clears last_error so the previous cycle's failure message doesn't bleed
-    # / through on /api/loops while the new cycle is mid-flight.
     if pool is None:
         return
     meta = LOOP_METADATA.get(name, {})
@@ -115,8 +99,6 @@ async def record_fire_start(pool: asyncpg.Pool | None, name: str) -> None:
 
 
 async def is_loop_running(pool: asyncpg.Pool | None, name: str) -> bool:
-    # / cross-process check for the "already in-flight" trigger guard. returns
-    # / True when loop_activity has last_status='running' for this service.
     if pool is None:
         return False
     try:
@@ -138,10 +120,6 @@ async def upsert_service_state(
     error: str | None = None,
     duration_ms: int = 0,
 ) -> None:
-    # / write a synthetic "service state" row into loop_activity for components
-    # / that aren't loops but still want their status surfaced on /api/loops and
-    # / consumed by the dashboard without cross-process module-global dependence.
-    # / used by kronos HF load success/failure so the dashboard reads ground truth.
     if pool is None:
         return
     try:
@@ -171,8 +149,6 @@ async def fetch_service_state(
     pool: asyncpg.Pool | None,
     name: str,
 ) -> dict[str, Any] | None:
-    # / returns the latest status row for a named service (or None).
-    # / dashboard reads via this to avoid importing process-local module globals.
     if pool is None:
         return None
     try:
@@ -195,7 +171,6 @@ async def record_fire_end(
     duration_ms: int,
     error: str | None = None,
 ) -> None:
-    # / persist outcome + project next fire time based on the loop's metadata
     if pool is None:
         return
     meta = LOOP_METADATA.get(name, {})
@@ -230,8 +205,6 @@ async def record_fire_end(
 
 
 async def describe_loops(pool: asyncpg.Pool | None) -> list[dict[str, Any]]:
-    # / returns one row per known loop, merged with its metadata so newly-added
-    # / loops that haven't fired yet still surface with 'never' timestamps
     rows_by_name: dict[str, dict] = {}
     if pool is not None:
         try:
@@ -261,8 +234,6 @@ async def describe_loops(pool: asyncpg.Pool | None) -> list[dict[str, Any]]:
 
 
 async def enqueue_trigger(pool: asyncpg.Pool | None, service: str) -> int | None:
-    # / insert a pending trigger request; returns row id or None on failure
-    # / rate-limit: reject if an unclaimed request for the same service already exists
     if pool is None or service not in LOOP_METADATA:
         return None
     try:
@@ -284,7 +255,6 @@ async def enqueue_trigger(pool: asyncpg.Pool | None, service: str) -> int | None
 
 
 async def claim_pending_triggers(pool: asyncpg.Pool | None) -> list[tuple[int, str]]:
-    # / called by orchestrator poll loop; returns [(id, service), ...] and marks them running
     if pool is None:
         return []
     try:
@@ -330,7 +300,6 @@ async def complete_trigger(
 
 
 class _LoopTracker:
-    # / async context manager that times a loop body and records start/end
     __slots__ = ("_name", "_pool", "_started")
 
     def __init__(self, pool: asyncpg.Pool | None, name: str) -> None:
@@ -348,8 +317,6 @@ class _LoopTracker:
         import asyncio as _asyncio
         import time
         duration_ms = int((time.monotonic() - self._started) * 1000)
-        # / CancelledError is a normal shutdown signal (orchestrator.stop), not a bug.
-        # / marking it as "error" pollutes the System tab's error count on every restart.
         if exc is None:
             status = "ok"
             err_msg = None
@@ -364,5 +331,4 @@ class _LoopTracker:
 
 
 def track(pool: asyncpg.Pool | None, name: str) -> _LoopTracker:
-    # / usage: `async with track(pool, "macro_backfill"):` inside a loop body
     return _LoopTracker(pool, name)

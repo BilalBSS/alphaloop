@@ -1,5 +1,3 @@
-# / chart alert persistence + crud — price-cross alerts fired by orchestrator alert engine
-# / rows live in chart_alerts (migration 037); status machine: active -> fired (atomic), active -> disabled
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
@@ -23,10 +21,8 @@ STATUS_DISABLED = "disabled"
 VALID_DIRECTIONS: set[str] = {DIRECTION_ABOVE, DIRECTION_BELOW}
 VALID_STATUSES: set[str] = {STATUS_ACTIVE, STATUS_FIRED, STATUS_DISABLED}
 
-# / label length cap matches the varchar(200) column in the migration
 _LABEL_MAX = 200
 
-# / whitelist of fields that can be updated via update_alert
 _UPDATE_WHITELIST: set[str] = {"price", "direction", "label", "status"}
 
 
@@ -39,7 +35,6 @@ def sanitize_status(s: Any) -> str | None:
 
 
 def validate_label(label: Any) -> str | None:
-    # / optional, max 200 chars, strip, returns None for empty/non-string/whitespace
     if label is None:
         return None
     if not isinstance(label, str):
@@ -53,7 +48,6 @@ def validate_label(label: Any) -> str | None:
 
 
 def _coerce_price(price: Any) -> Decimal | None:
-    # / accept int/float/str, reject nan/inf/negative/zero, returns Decimal for pg numeric
     if price is None or isinstance(price, bool):
         return None
     try:
@@ -68,7 +62,6 @@ def _coerce_price(price: Any) -> Decimal | None:
 
 
 def _row_to_alert(row: dict) -> dict:
-    # / consistent shape for every endpoint — decimal is serialized as float for json
     price = row.get("price")
     return {
         "id": row.get("id"),
@@ -88,7 +81,6 @@ async def list_alerts(
     symbol: str | None = None,
     status: str | None = None,
 ) -> list[dict]:
-    # / optional symbol + status filters, newest first so latest alerts render on top
     if pool is None:
         return []
     clauses: list[str] = []
@@ -114,7 +106,6 @@ async def list_alerts(
 
 
 async def get_alert(pool: asyncpg.Pool | None, alert_id: int) -> dict | None:
-    # / single row by id, None when missing
     if pool is None:
         return None
     try:
@@ -140,7 +131,6 @@ async def create_alert(
     direction: Any,
     label: Any = None,
 ) -> dict:
-    # / insert a new active alert; validates direction + price; returns {"error": ...} on bad input
     if pool is None:
         return {"error": "db_not_ready"}
     dir_ok = sanitize_direction(direction)
@@ -177,8 +167,6 @@ async def update_alert(
     alert_id: int,
     **fields: Any,
 ) -> dict | None:
-    # / partial update, only whitelisted fields; returns None on miss or empty patch
-    # / scoped to symbol so a mismatched url segment cannot bleed across symbols
     if pool is None:
         return None
     sets: list[str] = []
@@ -225,8 +213,6 @@ async def update_alert(
 
 
 async def delete_alert(pool: asyncpg.Pool | None, symbol: str, alert_id: int) -> bool:
-    # / hard delete by id scoped to symbol, returns true on hit
-    # / scoping prevents a cross-symbol delete via a mismatched url segment
     if pool is None:
         return False
     try:
@@ -252,8 +238,6 @@ async def mark_fired(
     alert_id: int,
     fired_at: Any,
 ) -> dict | None:
-    # / atomic check-and-set guards against double-fire when two ticks race
-    # / the WHERE status='active' clause means a second call returns None
     if pool is None:
         return None
     try:
@@ -280,7 +264,6 @@ async def mark_checked(
     alert_ids: list[int],
     checked_at: Any,
 ) -> None:
-    # / batch update last_check across all scanned alerts in a single statement
     if pool is None or not alert_ids:
         return
     try:

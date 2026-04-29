@@ -1,5 +1,4 @@
 # / kronos candle-sequence signal
-# / hf model when enabled, statistical fallback otherwise
 
 from __future__ import annotations
 
@@ -25,11 +24,11 @@ class KronosPrediction:
     """
     symbol: str
     probability: float
-    confidence: float  # / 0..1, higher when model more certain
+    confidence: float  # / 0..1, higher when model
     source: SignalSource
     lookback: int
     model_version: str | None = None
-    components: dict | None = None  # / breakdown (for fallback) or attention (for hf)
+    components: dict | None = None  # / breakdown (for fallback) or
 
 
 # / module-level model handle; lazy-loaded
@@ -40,32 +39,25 @@ _model_load_failed_reason: str | None = None
 
 
 def _available_memory_mb() -> float | None:
-    # / used by the memory guard — returns None when psutil is unavailable
     try:
         import psutil  # type: ignore
     except ImportError:
         return None
     try:
         return psutil.virtual_memory().available / (1024 * 1024)
-    except Exception:
+    except (AttributeError, OSError):
         return None
 
 
-KRONOS_MIN_MEMORY_MB = 1500  # / skip load if the box has less than ~1.5 GB free
+KRONOS_MIN_MEMORY_MB = 1500  # / skip load if the
 
-# / NeoQuasar is the canonical HF org for Kronos (the shiyu-coder github repo publishes
-# / weights to NeoQuasar/Kronos-*). both the tokenizer and model use trust_remote_code
-# / so the custom `Kronos`, `KronosTokenizer`, `KronosPredictor` classes get pulled in.
-# / defaults: Kronos-small (25M params) balances quality with 8GB vps memory budget.
 DEFAULT_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"
 DEFAULT_MODEL_ID = "NeoQuasar/Kronos-small"
 
-_predictor = None  # / KronosPredictor instance after successful load
+_predictor = None  # / KronosPredictor instance after successful
 
 
 def _try_load_hf_model() -> bool:
-    # / attempt to lazy-load the real Kronos HF model. returns True on success.
-    # / caches result so we don't retry on every call.
     global _model, _tokenizer, _predictor, _model_load_attempted, _model_load_failed_reason
     if _model_load_attempted:
         return _predictor is not None
@@ -76,20 +68,14 @@ def _try_load_hf_model() -> bool:
         _model_load_failed_reason = "disabled_via_env"
         return False
 
-    # / memory guard — refuse to load on a box that's already under pressure.
-    # / a single-cycle skip is far better than taking the orchestrator down.
     avail_mb = _available_memory_mb()
     if avail_mb is not None and avail_mb < KRONOS_MIN_MEMORY_MB:
         _model_load_failed_reason = f"memory_guard_triggered: {avail_mb:.0f}MB < {KRONOS_MIN_MEMORY_MB}MB"
         logger.warning("kronos_mem_guard_triggered", available_mb=round(avail_mb))
-        # / don't latch — let a future call retry once memory frees up
         _model_load_attempted = False
         return False
 
     try:
-        # / vendored from github.com/shiyu-coder/Kronos (see src/quant/vendor/kronos/)
-        # / the HF repo only ships weights + config; loading classes aren't in HF auto-map
-        # / so we need the upstream KronosTokenizer/Kronos/KronosPredictor classes locally.
         from src.quant.vendor.kronos import Kronos, KronosPredictor, KronosTokenizer
     except ImportError as exc:
         _model_load_failed_reason = f"kronos_import_failed: {str(exc)[:180]}"
@@ -101,8 +87,6 @@ def _try_load_hf_model() -> bool:
     device = os.environ.get("KRONOS_DEVICE", "cpu")
     max_context = int(os.environ.get("KRONOS_MAX_CONTEXT", "512"))
     try:
-        # / KronosTokenizer and Kronos both inherit PyTorchModelHubMixin so
-        # / .from_pretrained downloads weights from HF hub on first call
         _tokenizer = KronosTokenizer.from_pretrained(tokenizer_id)
         _model = Kronos.from_pretrained(model_id)
         _predictor = KronosPredictor(_model, _tokenizer, device=device, max_context=max_context)
@@ -118,7 +102,6 @@ def _try_load_hf_model() -> bool:
 
 
 def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, float, dict]:
-    # / momentum + vol-compression + short-term reversion, sigmoid blend
     window = ohlcv.tail(lookback).copy()
     if len(window) < 20:
         return 0.5, 0.0, {"reason": "insufficient_data", "bars": len(window)}
@@ -126,12 +109,10 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
     closes = window["close"].to_numpy()
     returns = np.diff(closes) / closes[:-1]
 
-    # / momentum: normalized 20-day return, winsorized at +/-20%
     lookback_n = min(20, len(returns))
     momentum_raw = (closes[-1] / closes[-lookback_n - 1] - 1) if len(closes) > lookback_n else 0.0
     momentum = float(np.clip(momentum_raw / 0.20, -1.0, 1.0))
 
-    # / vol compression: current 5d realized vol vs 20d median
     if len(returns) >= 20:
         vol_recent = float(np.std(returns[-5:])) if len(returns) >= 5 else 0.0
         vol_baseline = float(np.median(np.abs(returns[-20:]))) + 1e-9
@@ -139,7 +120,6 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
     else:
         compression = 0.0
 
-    # / short-term mean reversion: if last day was an extreme move, expect reversion
     if len(returns) >= 5:
         last_return = float(returns[-1])
         vol_20d = float(np.std(returns[-20:])) if len(returns) >= 20 else float(np.std(returns))
@@ -151,13 +131,11 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
     else:
         reversion = 0.0
 
-    # / weighted combine — weights chosen so each component has similar influence
     combined = 0.5 * momentum + 0.3 * compression + 0.2 * reversion
 
     # / sigmoid to probability
     prob_up = 1.0 / (1.0 + np.exp(-2.0 * combined))
 
-    # / confidence: how extreme is the combined signal? |combined| -> higher confidence
     confidence = float(min(abs(combined), 1.0))
 
     components = {
@@ -172,7 +150,6 @@ def _fallback_heuristic(ohlcv: pd.DataFrame, lookback: int) -> tuple[float, floa
 def _run_hf_inference(
     ohlcv: pd.DataFrame, lookback: int
 ) -> tuple[float, float, dict] | None:
-    # / loop sample_count=1 N times; predictor averages internally
     global _predictor
     if _predictor is None:
         return None
@@ -182,12 +159,8 @@ def _run_hf_inference(
         if len(window) < 32:
             return None
 
-        # / Kronos expects pandas DataFrame with columns open/high/low/close,
-        # / optionally volume + amount. we have ohlcv; skip `amount`.
         df_in = window[["open", "high", "low", "close", "volume"]].astype(float).reset_index(drop=True)
 
-        # / synthetic daily timestamps — only the cadence matters to the positional
-        # / embedding. real timestamps aren't exposed here so we fabricate them.
         x_timestamp = pd.Series(pd.date_range(end=pd.Timestamp.utcnow().normalize(), periods=len(df_in), freq="D"))
         y_timestamp = pd.Series(pd.date_range(start=x_timestamp.iloc[-1] + pd.Timedelta(days=1), periods=1, freq="D"))
 
@@ -214,7 +187,6 @@ def _run_hf_inference(
 
         closes_arr = np.asarray(sample_closes, dtype=float)
         prob_up = float(np.mean(closes_arr > last_close))
-        # / confidence = directional conviction; |0.5 - p| * 2 ∈ [0, 1]
         confidence = float(min(abs(prob_up - 0.5) * 2.0, 1.0))
         pred_std_pct = float(np.std(closes_arr) / max(abs(last_close), 1e-9))
         components = {
@@ -258,7 +230,6 @@ def predict(symbol: str, ohlcv: pd.DataFrame, lookback: int = 64) -> KronosPredi
             source="insufficient_data", lookback=lookback,
         )
 
-    # / try real model first if enabled + available
     if _try_load_hf_model():
         result = _run_hf_inference(ohlcv, lookback)
         if result is not None:

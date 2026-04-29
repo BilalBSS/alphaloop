@@ -1,6 +1,3 @@
-# / isolated price-cross alert loop — runs in orchestrator process
-# / fetches active alerts on a fixed tick, resolves per-symbol prices, fires crossings,
-# / pushes to discord + websocket. never shares state with strategy/risk agents.
 from __future__ import annotations
 
 import asyncio
@@ -16,20 +13,16 @@ from src.data.resilience import api_post
 
 logger = structlog.get_logger(__name__)
 
-# / default tick, short enough to catch crossings in low-vol regimes without hammering alpaca
 DEFAULT_INTERVAL_SEC = 30
 
-# / discord hard cap is ~30 req/min per webhook; we send at most one batched message per tick
 _DISCORD_EMBED_LIMIT = 10
 
 
 def _prev_price_cache() -> dict[str, float]:
-    # / module-level cache indirection keeps the loop stateful across ticks without globals leaking into tests
     return {}
 
 
 async def _resolve_price(broker: Any, symbol: str) -> float | None:
-    # / guard against broker returning None / 0 / raising — those are not a cross condition
     try:
         value = await broker.get_price(symbol)
     except Exception as exc:
@@ -47,8 +40,6 @@ async def _resolve_price(broker: Any, symbol: str) -> float | None:
 
 
 def _is_crossed(direction: str, prev: float | None, current: float, target: float) -> bool:
-    # / edge-triggered: fires on transition across the target, not on already-past levels
-    # / if we have no prev (first observation) we fall back to a level test so cold start still fires
     if direction == alerts_mod.DIRECTION_ABOVE:
         if prev is None:
             return current >= target
@@ -61,8 +52,6 @@ def _is_crossed(direction: str, prev: float | None, current: float, target: floa
 
 
 def _build_discord_body(fired: list[dict]) -> dict[str, Any]:
-    # / batch all fires this tick into a single message with embeds so we never spam
-    # / discord caps at 10 embeds per message, overflow goes into the content line
     overflow = len(fired) - _DISCORD_EMBED_LIMIT
     embeds: list[dict[str, Any]] = []
     for alert in fired[:_DISCORD_EMBED_LIMIT]:
@@ -92,9 +81,6 @@ def _build_discord_body(fired: list[dict]) -> dict[str, Any]:
 
 
 async def _send_discord(webhook_url: str, fired: list[dict]) -> bool:
-    # / single POST per tick; swallow failures so one bad webhook call never breaks the loop
-    # / httpx does not raise on 4xx/5xx by default, so we check the status ourselves
-    # / and only log the exception type (never the url) to avoid leaking the webhook into logs
     if not webhook_url or not fired:
         return False
     body = _build_discord_body(fired)
@@ -114,7 +100,6 @@ async def _broadcast_fires(
     ws_broadcast: Callable[[str, dict], Awaitable[None]] | None,
     fired: list[dict],
 ) -> None:
-    # / fan out each fire as its own ws message so clients can render a toast per alert
     if ws_broadcast is None:
         return
     for alert in fired:
@@ -131,23 +116,19 @@ async def check_and_fire(
     webhook_url: str | None,
     prev_prices: dict[str, float],
 ) -> list[dict]:
-    # / single-tick scan: fetch active alerts, group by symbol, one price fetch per symbol,
-    # / check every alert, mark fires atomically, accumulate a batch for discord + ws.
-    # / returns the fired list for observability / tests.
     active = await alerts_mod.list_alerts(pool, status=alerts_mod.STATUS_ACTIVE)
     logger.info("alert_check_tick", active_count=len(active))
     if not active:
         return []
 
-    symbols = sorted({a.get("symbol") for a in active if isinstance(a.get("symbol"), str)})
-    # / fetch prices in parallel so one tick is one round-trip per broker, not N sequential calls
+    symbols: list[str] = sorted({a["symbol"] for a in active if isinstance(a.get("symbol"), str)})
     price_results = await asyncio.gather(
         *(_resolve_price(broker, sym) for sym in symbols),
         return_exceptions=True,
     )
     prices: dict[str, float] = {}
     for sym, res in zip(symbols, price_results, strict=False):
-        if isinstance(res, Exception):
+        if isinstance(res, BaseException):
             logger.debug("alert_price_fetch_failed", symbol=sym, error=str(res))
             continue
         if res is not None:
@@ -188,7 +169,6 @@ async def check_and_fire(
             logger.warning("alert_mark_fired_exception", alert_id=alert_id, error=str(exc))
             continue
         if updated is None:
-            # / lost the race to another tick / process — already fired
             continue
         updated["current_price"] = current
         fired.append(updated)
@@ -224,8 +204,6 @@ async def alert_loop(
     webhook_url: str | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    # / long-running isolated loop; stop_event is optional so orchestrator can inject its own
-    # / never touches strategy/risk state — all side effects go through chart_alerts + ws + webhook
     if webhook_url is None:
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     prev_prices = _prev_price_cache()
@@ -239,8 +217,8 @@ async def alert_loop(
         try:
             await check_and_fire(pool, broker, ws_broadcast, webhook_url, prev_prices)
         except Exception:
+            # / swallow loop tick error
             logger.error("alert_loop_error", exc_info=True)
-        # / sleep on error too — guarantees even pacing and yields to the event loop
         if stop_event is not None:
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)

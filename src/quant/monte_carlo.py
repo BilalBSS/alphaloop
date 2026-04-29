@@ -1,8 +1,8 @@
-# / production monte carlo with variance reduction
-# / antithetic variates, control variates, stratified sampling
-# / stacks all three for 100-500x reduction over crude MC
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -12,8 +12,6 @@ def antithetic_sample(
     n: int,
     dim: int = 1,
 ) -> np.ndarray:
-    # / generates Z and -Z pairs, returns (2*n, dim) array
-    # / free 50-75% variance reduction on monotone payoffs
     if n <= 0:
         raise ValueError("n must be positive")
     rng = rng or np.random.default_rng()
@@ -26,8 +24,6 @@ def stratified_sample(
     n: int,
     strata: int = 10,
 ) -> np.ndarray:
-    # / partitions [0,1] into strata, samples uniformly within each,
-    # / transforms to normal via ppf. returns (n,) array
     if n <= 0:
         raise ValueError("n must be positive")
     if strata <= 0:
@@ -36,7 +32,6 @@ def stratified_sample(
 
     from scipy.stats import norm
 
-    # / allocate samples per stratum (Neyman-like: equal allocation baseline)
     samples_per = n // strata
     remainder = n % strata
 
@@ -51,9 +46,8 @@ def stratified_sample(
         all_samples.append(u)
 
     u_all = np.concatenate(all_samples)
-    # / clip to avoid inf from ppf(0) or ppf(1)
     u_all = np.clip(u_all, 1e-10, 1 - 1e-10)
-    return norm.ppf(u_all)
+    return np.asarray(norm.ppf(u_all))
 
 
 def control_variate_adjust(
@@ -62,7 +56,6 @@ def control_variate_adjust(
     control_exact: float,
 ) -> tuple[float, float]:
     # / applies control variate correction
-    # / theta_cv = theta_mc - c * (f_mc - f_exact)
     # / returns (adjusted_mean, variance_reduction_ratio)
     if len(mc_estimates) == 0 or len(control_estimates) == 0:
         raise ValueError("input arrays must not be empty")
@@ -80,7 +73,6 @@ def control_variate_adjust(
     if len(mc) < 2:
         return float(np.nanmean(mc_estimates)), 1.0
 
-    # / optimal coefficient c = -cov(mc, ctrl) / var(ctrl)
     ctrl_var = np.var(ctrl, ddof=1)
     if ctrl_var < 1e-15:
         return float(np.mean(mc)), 1.0
@@ -108,15 +100,12 @@ def variance_reduction_ratio(crude_var: float, reduced_var: float) -> float:
 
 
 def run_simulation(
-    func,
+    func: Callable[[np.ndarray], np.ndarray],
     n_samples: int = 10_000,
     variance_reduction: str = "antithetic",
     rng: np.random.Generator | None = None,
     dim: int = 1,
-) -> dict:
-    # / orchestrator that runs MC with chosen VR technique
-    # / func: callable(samples: np.ndarray) -> np.ndarray of per-sample estimates
-    # / returns dict with mean, std, ci_lower, ci_upper, n_effective, vr_method
+) -> dict[str, Any]:
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
     rng = rng or np.random.default_rng()

@@ -1,6 +1,3 @@
-# / file i/o + db metadata for trading-wiki markdown docs
-# / async locks per path to serialize concurrent writes
-# / categories: regimes post-mortems strategies evolution symbols meta archive
 
 from __future__ import annotations
 
@@ -22,12 +19,10 @@ VALID_CATEGORIES = {
 _WIKI_ROOT: Path | None = None
 _PATH_LOCKS: dict[str, asyncio.Lock] = {}
 _LOCKS_GUARD = asyncio.Lock()
-# / strong refs to fire-and-forget embed tasks so the event loop doesn't gc them
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 def get_wiki_root() -> Path:
-    # / wiki root defaults to trading-wiki/ under project root
     global _WIKI_ROOT
     if _WIKI_ROOT is None:
         _WIKI_ROOT = Path(__file__).resolve().parents[2] / "trading-wiki"
@@ -48,7 +43,6 @@ async def _lock_for(path: str) -> asyncio.Lock:
 
 
 def _slugify(text: str) -> str:
-    # / lowercase, spaces→underscores, drop non [a-z0-9_-]
     s = re.sub(r"[^\w\s-]", "", text.lower())
     s = re.sub(r"[\s_-]+", "_", s).strip("_")
     return s[:80] or "untitled"
@@ -64,7 +58,6 @@ def _count_words(text: str) -> int:
 
 
 class WikiWriter:
-    # / writes markdown files to trading-wiki/ + registers metadata in wiki_documents
 
     def __init__(self, pool=None, root: Path | None = None):
         self._pool = pool
@@ -87,14 +80,11 @@ class WikiWriter:
         strategy_ids: list[str] | None = None,
         confidence: str = "emerging",
     ) -> str:
-        # / write (or overwrite) a markdown file, register in wiki_documents
         _validate_category(category)
-        # / security: slugify filename to block ../, backslash, null, and other path-escape chars
         stem = filename[:-3] if filename.endswith(".md") else filename
         safe_stem = _slugify(stem)
         rel_path = f"{category}/{safe_stem}.md"
         abs_path = self._abs_path(rel_path)
-        # / security: confirm resolved path stays under the wiki root
         try:
             resolved = abs_path.resolve()
             root_resolved = self._root.resolve()
@@ -118,14 +108,12 @@ class WikiWriter:
                 )
         logger.info("wiki_document_written", path=rel_path, words=_count_words(content))
 
-        # / fire-and-forget embedding; failures must never break the write
         if document_id is not None:
             try:
                 task = asyncio.create_task(self._embed_async(document_id, content))
                 _BACKGROUND_TASKS.add(task)
                 task.add_done_callback(_BACKGROUND_TASKS.discard)
             except RuntimeError:
-                # / no running loop (e.g., sync test context) — skip background embed
                 pass
         return rel_path
 
@@ -135,7 +123,6 @@ class WikiWriter:
         heading: str,
         body: str,
     ) -> None:
-        # / append a new section to an existing doc (atomic read-append-write)
         abs_path = self._abs_path(rel_path)
         lock = await _lock_for(rel_path)
         async with lock:
@@ -196,7 +183,6 @@ class WikiWriter:
         return [dict(r) for r in rows]
 
     async def archive_old(self, older_than_days: int = 180) -> int:
-        # / move docs older than N days to archive/ — returns count archived
         if self._pool is None:
             return 0
         async with self._pool.acquire() as conn:
@@ -262,8 +248,6 @@ class WikiWriter:
         return int(row["id"]) if row else None
 
     async def _embed_async(self, document_id: int, content: str) -> None:
-        # / background task: chunk + embed + upsert into wiki_embeddings
-        # / any failure is logged and swallowed — never propagates to the caller
         from src.knowledge.chunker import chunk_markdown
         from src.knowledge.embedder import OllamaEmbedder
         from src.knowledge.vector_store import VectorStore
@@ -281,7 +265,6 @@ class WikiWriter:
                 store = VectorStore(self._pool)
                 await store.upsert_chunks(document_id, chunks, embeddings)
             finally:
-                # / prevent httpx client leak on fire-and-forget tasks
                 await embedder.close()
         except Exception as exc:
             logger.info(
@@ -302,7 +285,6 @@ class WikiWriter:
             )
 
 
-# / ---- phase 5 step 3: symbol wiki enrichment ----
 
 _SYMBOL_ENRICH_SYSTEM_MSG = (
     "You are a senior equity research analyst maintaining an internal playbook "
@@ -323,7 +305,6 @@ def _build_symbol_enrichment_prompt(
     fundamentals: dict | None,
     insider_trades: list[dict] | None,
 ) -> str:
-    # / compose the enrichment prompt from the symbol's recent analysis + fundamentals + insider activity
     import json as _json
 
     parts: list[str] = [
@@ -333,7 +314,6 @@ def _build_symbol_enrichment_prompt(
 
     if analysis_history:
         parts.append("\n## Analysis History")
-        # / surface up to the 10 most recent scores + summary deltas so the model can spot trends
         for row in analysis_history[:10]:
             fund = row.get("fundamental_score")
             tech = row.get("technical_score")
@@ -360,7 +340,6 @@ def _build_symbol_enrichment_prompt(
         sells = sum(1 for t in insider_trades if t.get("transaction_type") == "sell")
         parts.append("\n## Insider Activity (last 90d)")
         parts.append(f"  buys: {buys}, sells: {sells}")
-        # / show top 5 largest transactions by total_value for context
         def _val(t: dict) -> float:
             try:
                 return float(t.get("total_value") or 0)
@@ -385,7 +364,6 @@ def _build_symbol_enrichment_prompt(
 
 
 async def _generate_symbol_enrichment(prompt: str, symbol: str) -> tuple[str | None, str | None]:
-    # / reuse the 4-tier groq/cerebras fallback chain, mirroring post_mortem_writer
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.info("wiki_enrich_no_groq_key", symbol=symbol)
@@ -433,7 +411,6 @@ async def _generate_symbol_enrichment(prompt: str, symbol: str) -> tuple[str | N
 def _compose_symbol_markdown(
     symbol: str, body: str, model_used: str | None,
 ) -> str:
-    # / wrap the llm body with a small metadata header so readers know provenance
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     header = [
         f"# {symbol} Playbook",
@@ -452,8 +429,6 @@ async def enrich_symbol_doc(
     fundamentals: dict | None,
     insider_trades: list[dict] | None,
 ) -> tuple[int | None, str | None]:
-    # / rewrite the wiki entry for a symbol using llm + recent data
-    # / returns (document_id, new_content) or (none, none) on total failure
     if not symbol:
         return None, None
 
@@ -482,7 +457,6 @@ async def enrich_symbol_doc(
         logger.error("wiki_enrich_write_failed", symbol=symbol, error=str(exc)[:200])
         return None, None
 
-    # / look up the id we just wrote/updated so callers (hydration loop) can log it
     doc_id: int | None = None
     if pool is not None:
         try:

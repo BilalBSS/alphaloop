@@ -16,7 +16,6 @@ async def get_markers_endpoint(
     kinds: str = "trades,signals,insiders,earnings,regime,consensus",
     days: int = 30,
 ):
-    # / unified markers endpoint — returns a dict keyed by marker kind
     if not symbol or len(symbol) > CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if STATE.pool is None:

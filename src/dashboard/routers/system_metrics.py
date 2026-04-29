@@ -4,6 +4,7 @@ import os
 import time as _time
 import traceback
 
+import asyncpg
 import structlog
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -195,7 +196,7 @@ async def get_hydration_status():
             if row:
                 hydrated_today = int(row.get("n") or 0)
                 last_event_ts = row.get("last_ts")
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, ValueError):
             pass
 
     loops = await describe_loops(STATE.pool)
@@ -226,7 +227,7 @@ async def get_costs():
         costs = [dict(r) for r in rows]
         total = sum(float(r.get("estimated_cost_usd", 0) or 0) for r in costs)
         return {"costs": costs, "total_usd": round(total, 4)}
-    except Exception:
+    except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
         return {"costs": [], "total_usd": 0}
 
 
@@ -251,7 +252,7 @@ async def get_staleness():
              "is_stale": s.is_stale}
             for s in results
         ]}
-    except Exception:
+    except (asyncpg.PostgresError, ImportError, AttributeError, KeyError):
         return {"sources": []}
 
 
@@ -272,5 +273,5 @@ async def get_strategy_decay():
             for ds in await check_all_decay(STATE.pool)
         ]
         return {"signals": signals}
-    except Exception:
+    except (asyncpg.PostgresError, ImportError, AttributeError, KeyError):
         return {"signals": []}

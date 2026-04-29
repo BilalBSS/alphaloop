@@ -18,7 +18,6 @@ async def compare_endpoint(
     timeframe: str = "1Day",
     days: int = 90,
 ):
-    # / pair normalized overlay — % change from first common timestamp
     if not base and not against and symbols:
         parts = [s.strip() for s in symbols.split(",") if s.strip()]
         if len(parts) >= 2:

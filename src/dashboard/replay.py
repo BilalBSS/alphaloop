@@ -1,5 +1,4 @@
 # / read-only replay snapshot
-# / pure SELECT — never call agents, brokers, llm, or any state mutator
 
 from __future__ import annotations
 
@@ -15,17 +14,14 @@ from ._serialize import num as _num
 
 logger = structlog.get_logger(__name__)
 
-# / bounds for the days_back window — mirrors /api/markers clamp
 _DAYS_BACK_MIN = 1
 _DAYS_BACK_MAX = 365
 _DAYS_BACK_DEFAULT = 30
 
-# / signal strength threshold matches marker_aggregator for consistency
 _SIGNAL_STRENGTH_MIN = 0.5
 
 
 def _parse_cutoff(value: str | None) -> datetime | None:
-    # / accepts iso 8601 strings (with or without trailing Z); returns None on failure
     if not value or not isinstance(value, str):
         return None
     raw = value.strip()
@@ -38,7 +34,6 @@ def _parse_cutoff(value: str | None) -> datetime | None:
 
 
 def _clamp_days_back(days_back: Any) -> int:
-    # / coerce + clamp — tolerant of None / strings / negatives
     try:
         n = int(days_back)
     except (TypeError, ValueError):
@@ -70,7 +65,6 @@ def _empty_payload(symbol: str, cutoff_dt: datetime, min_t: datetime) -> dict:
 async def _fetch_bars(
     pool: asyncpg.Pool, symbol: str, min_t: datetime, cutoff_dt: datetime
 ) -> dict[str, list]:
-    # / intraday candles inside [min_t, cutoff] — ascending so chart can consume directly
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -100,7 +94,6 @@ async def _fetch_bars(
 async def _fetch_trades(
     pool: asyncpg.Pool, symbol: str, min_t: datetime, cutoff_dt: datetime
 ) -> list[dict]:
-    # / closed + open trades visible at time t
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -131,7 +124,6 @@ async def _fetch_trades(
 async def _fetch_signals(
     pool: asyncpg.Pool, symbol: str, min_t: datetime, cutoff_dt: datetime
 ) -> list[dict]:
-    # / trade signals above the strength threshold (matches marker_aggregator)
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -167,7 +159,6 @@ async def _fetch_signals(
 async def _fetch_consensus(
     pool: asyncpg.Pool, symbol: str, min_t: datetime, cutoff_dt: datetime
 ) -> list[dict]:
-    # / latest dual-llm consensus per day inside the window, extracted from analysis_scores.details
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -200,14 +191,10 @@ async def fetch_replay_snapshot(
     cutoff_iso: str,
     days_back: int = _DAYS_BACK_DEFAULT,
 ) -> dict:
-    # / observation-only snapshot of everything knowable at time t
-    # / invalid cutoff_iso -> defaults to NOW (utc) so the chart falls back to live view
-    # / days_back is clamped into [1, 365]
     days = _clamp_days_back(days_back)
     cutoff_dt = _parse_cutoff(cutoff_iso)
     if cutoff_dt is None:
         cutoff_dt = datetime.now(timezone.utc)
-    # / normalize naive datetimes to utc so asyncpg comparisons against TIMESTAMPTZ succeed
     if cutoff_dt.tzinfo is None:
         cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
     min_t = cutoff_dt - timedelta(days=days)
@@ -215,8 +202,6 @@ async def fetch_replay_snapshot(
     if pool is None:
         return _empty_payload(symbol, cutoff_dt, min_t)
 
-    # / all four queries hit independent tables — run in parallel so one replay fetch
-    # / is one round-trip instead of four sequential awaits
     bars_res, trades_res, signals_res, consensus_res = await asyncio.gather(
         _fetch_bars(pool, symbol, min_t, cutoff_dt),
         _fetch_trades(pool, symbol, min_t, cutoff_dt),

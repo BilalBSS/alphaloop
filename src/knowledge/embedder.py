@@ -1,5 +1,3 @@
-# / ollama nomic-embed-text client for local, free embeddings
-# / failure returns None — callers skip embed and backfill later
 
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ DEFAULT_TIMEOUT = 5.0
 
 
 class OllamaEmbedder:
-    # / local ollama embeddings via http
 
     def __init__(
         self,
@@ -47,7 +44,6 @@ class OllamaEmbedder:
         self._client = None
 
     async def embed(self, text: str) -> list[float] | None:
-        # / embed a single string via ollama /api/embed, returns None on any failure
         if not text or not text.strip():
             return None
         try:
@@ -59,7 +55,6 @@ class OllamaEmbedder:
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
-            # / /api/embed returns {"embeddings": [[...]]}; take the first vector
             vecs = data.get("embeddings")
             if not isinstance(vecs, list) or not vecs:
                 logger.warning("ollama_embed_empty_response", keys=list(data.keys()))
@@ -80,13 +75,11 @@ class OllamaEmbedder:
     async def embed_batch(
         self, texts: list[str], batch_size: int = 8,
     ) -> list[list[float] | None]:
-        # / embed many strings server-side via /api/embed; one http call per batch_size chunk
         if not texts:
             return []
         results: list[list[float] | None] = [None] * len(texts)
         for start in range(0, len(texts), batch_size):
             chunk = texts[start:start + batch_size]
-            # / filter out empty/whitespace strings per /api/embed contract
             valid_pairs = [(i, t) for i, t in enumerate(chunk) if t and t.strip()]
             if not valid_pairs:
                 continue

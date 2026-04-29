@@ -1,5 +1,3 @@
-# / shared alpaca http client with connection pooling
-# / lazy-initialized, reused across broker + tools + market_data + dashboard
 
 from __future__ import annotations
 
@@ -18,7 +16,6 @@ _client: httpx.AsyncClient | None = None
 
 
 def alpaca_headers() -> dict[str, str]:
-    # / auth headers -- reads env at call time so tests can mock
     return {
         "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
         "APCA-API-SECRET-KEY": os.environ.get("ALPACA_SECRET_KEY", ""),

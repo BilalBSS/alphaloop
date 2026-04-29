@@ -14,7 +14,6 @@ router = APIRouter()
 
 @router.get("/api/portfolio/correlation")
 async def get_portfolio_correlation():
-    # / pairwise correlation matrix of held positions via correlation_monitor
     try:
         broker = STATE.get_broker()
         positions = await broker.get_positions()
@@ -62,7 +61,6 @@ async def get_portfolio_correlation():
 
 @router.get("/api/portfolio/sectors")
 async def get_portfolio_sectors():
-    # / sector concentration from broker positions
     from src.data.symbols import get_sector
     if STATE.pool is None:
         return {"sectors": [], "total_value": 0.0}
@@ -90,7 +88,6 @@ async def get_portfolio_sectors():
 
 @router.get("/api/portfolio/tail-dependence")
 async def get_portfolio_tail_dependence():
-    # / t-copula tail-dependence on held positions; 5min cache by (positions tuple, utc date)
     if STATE.pool is None:
         return {"lambda_lower": None, "positions_count": 0, "status": "pool_unavailable"}
     try:

@@ -1,10 +1,9 @@
 # / comprehensive risk metrics
-# / VaR (parametric, historical, MC), CVaR, max drawdown, EVT tail estimation
-# / canonical max_drawdown lives here — backtest.py should import from this module
 
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import structlog
@@ -18,8 +17,6 @@ def var_parametric(
     confidence: float = 0.95,
     distribution: str = "normal",
 ) -> float:
-    # / parametric VaR assuming normal or student-t distribution
-    # / returns positive number representing potential loss
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
 
@@ -37,7 +34,6 @@ def var_parametric(
     if distribution == "normal":
         z = stats.norm.ppf(1 - confidence)
     elif distribution == "student_t":
-        # / fit student-t to get degrees of freedom
         params = stats.t.fit(clean)
         df = params[0]
         z = stats.t.ppf(1 - confidence, df)
@@ -66,7 +62,6 @@ def var_monte_carlo(
     n_simulations: int = 10_000,
     rng: np.random.Generator | None = None,
 ) -> float:
-    # / simulated VaR — resample from historical returns
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
 
@@ -75,7 +70,6 @@ def var_monte_carlo(
 
     rng = rng or np.random.default_rng()
 
-    # / bootstrap: sample daily returns, sum to get period return
     sim_returns = rng.choice(clean, size=(n_simulations, len(clean)), replace=True)
     portfolio_returns = np.sum(sim_returns, axis=1)
 
@@ -84,8 +78,6 @@ def var_monte_carlo(
 
 
 def expected_shortfall(returns: np.ndarray, confidence: float = 0.95) -> float:
-    # / CVaR = E[X | X < VaR]. average loss beyond VaR
-    # / better for fat tails than VaR alone
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
 
@@ -96,14 +88,12 @@ def expected_shortfall(returns: np.ndarray, confidence: float = 0.95) -> float:
     tail = clean[clean <= threshold]
 
     if len(tail) == 0:
-        # / no observations beyond VaR — fall back to VaR
         return float(-threshold)
 
     return float(-np.mean(tail))
 
 
 def max_drawdown(equity_curve: np.ndarray) -> tuple[float, float]:
-    # / peak-to-trough decline from equity curve
     # / returns (max_drawdown_absolute, max_drawdown_pct)
     equity_curve = np.asarray(equity_curve, dtype=np.float64)
     clean = equity_curve[~np.isnan(equity_curve)]
@@ -134,15 +124,12 @@ def evt_tail_estimation(
     returns: np.ndarray,
     threshold_quantile: float = 0.95,
 ) -> dict:
-    # / fit Generalized Pareto Distribution to tail exceedances
-    # / returns shape (xi), scale (sigma), extreme quantile estimates
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
 
     if len(clean) == 0:
         raise ValueError("returns must not be empty")
 
-    # / work with losses (negative returns)
     losses = -clean
     threshold = np.percentile(losses, threshold_quantile * 100)
     exceedances = losses[losses > threshold] - threshold
@@ -192,7 +179,7 @@ def risk_summary(
     returns: np.ndarray,
     equity_curve: np.ndarray | None = None,
     confidence: float = 0.95,
-) -> dict:
+) -> dict[str, Any]:
     # / one-call comprehensive risk report
     returns = np.asarray(returns, dtype=np.float64)
     clean = returns[~np.isnan(returns)]
@@ -200,7 +187,7 @@ def risk_summary(
     if len(clean) == 0:
         raise ValueError("returns must not be empty")
 
-    result = {
+    result: dict[str, Any] = {
         "var_parametric": var_parametric(clean, confidence) if len(clean) >= 2 else float("nan"),
         "var_historical": var_historical(clean, confidence),
         "expected_shortfall": expected_shortfall(clean, confidence),
@@ -226,7 +213,6 @@ def risk_summary(
         result["max_drawdown"] = dd_abs
         result["max_drawdown_pct"] = dd_pct
     else:
-        # / reconstruct equity curve from returns
         eq = np.cumprod(1 + clean) * 10000
         dd_abs, dd_pct = max_drawdown(eq)
         result["max_drawdown"] = dd_abs

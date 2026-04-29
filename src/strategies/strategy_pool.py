@@ -1,6 +1,3 @@
-# / manages n concurrent strategies — tracks status, rankings, lifecycle
-# / strategies flow: backtest_pending -> backtesting -> paper_trading -> live -> killed
-# / evolution engine kills bottom 25%, promotes top performers
 
 from __future__ import annotations
 
@@ -44,8 +41,6 @@ def compute_composite_score(
     max_drawdown: float,
     brier: float | None = None,
 ) -> float:
-    # / composite score formula from evolution.md
-    # / score = sharpe * 0.4 + win_rate * 0.3 - abs(max_drawdown) * 0.2 + (0.25 - brier) * 0.1
     score = sharpe * 0.4 + win_rate * 0.3 - abs(max_drawdown) * 0.2
     if brier is not None:
         score += (0.25 - brier) * 0.1
@@ -57,7 +52,6 @@ class StrategyPool:
         self._strategies: dict[str, StrategyEntry] = {}
 
     def add(self, strategy: ConfigDrivenStrategy, status: str = "backtest_pending") -> None:
-        # / add a strategy to the pool
         if strategy.strategy_id in self._strategies:
             logger.warning("strategy_already_in_pool", id=strategy.strategy_id)
             return
@@ -69,7 +63,6 @@ class StrategyPool:
         logger.info("strategy_added", id=strategy.strategy_id, name=strategy.name, status=status)
 
     def remove(self, strategy_id: str) -> bool:
-        # / remove a strategy from the pool entirely
         if strategy_id in self._strategies:
             del self._strategies[strategy_id]
             logger.info("strategy_removed", id=strategy_id)
@@ -77,7 +70,6 @@ class StrategyPool:
         return False
 
     def update_status(self, strategy_id: str, new_status: str) -> bool:
-        # / transition a strategy to a new status
         valid_statuses = ("backtest_pending", "backtesting", "paper_trading", "live", "killed")
         if new_status not in valid_statuses:
             raise ValueError(f"invalid status: {new_status}, must be one of {valid_statuses}")
@@ -93,7 +85,6 @@ class StrategyPool:
         return True
 
     def update_score(self, strategy_id: str, score: StrategyScore) -> bool:
-        # / update the performance score for a strategy
         entry = self._strategies.get(strategy_id)
         if entry is None:
             return False
@@ -115,20 +106,16 @@ class StrategyPool:
         return entry.strategy if entry else None
 
     def all_entries(self) -> list[StrategyEntry]:
-        # / get all strategy entries regardless of status
         return list(self._strategies.values())
 
     def list_by_status(self, status: str) -> list[StrategyEntry]:
-        # / get all strategies with a given status
         return [e for e in self._strategies.values() if e.status == status]
 
     def ranked(self, status: str | None = None) -> list[StrategyEntry]:
-        # / get strategies ranked by composite score (highest first)
         # / optionally filter by status
         entries = list(self._strategies.values())
         if status:
             entries = [e for e in entries if e.status == status]
-        # / strategies without scores go to the bottom
         return sorted(
             entries,
             key=lambda e: e.score.composite_score if e.score else float("-inf"),
@@ -136,17 +123,13 @@ class StrategyPool:
         )
 
     def bottom_quartile(self, status: str | None = None) -> list[StrategyEntry]:
-        # / get the bottom 25% of strategies by composite score
-        # / these are candidates for killing in the evolution loop
         ranked = self.ranked(status=status)
         if len(ranked) < 4:
-            # / need at least 4 strategies to have a bottom quartile
             return []
         cutoff = max(1, len(ranked) // 4)
         return ranked[-cutoff:]
 
     def top_performers(self, n: int = 5, status: str | None = None) -> list[StrategyEntry]:
-        # / get the top n strategies by composite score
         ranked = self.ranked(status=status)
         return ranked[:n]
 
@@ -156,7 +139,6 @@ class StrategyPool:
 
     @property
     def active_count(self) -> int:
-        # / strategies that are live or paper trading
         return sum(1 for e in self._strategies.values() if e.status in ("paper_trading", "live"))
 
     def summary(self) -> dict[str, Any]:

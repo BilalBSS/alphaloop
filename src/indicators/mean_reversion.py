@@ -1,5 +1,3 @@
-# / mean reversion detection via hurst exponent
-# / H < 0.5 = mean-reverting, H > 0.5 = trending, H = 0.5 = random walk
 
 from __future__ import annotations
 
@@ -40,7 +38,6 @@ def hurst_exponent(prices: pd.Series, max_lag: int = 20) -> float:
 
 
 def rolling_hurst(prices: pd.Series, window: int = 100, max_lag: int = 20) -> pd.Series:
-    # / rolling hurst exponent over a window
     result = pd.Series(index=prices.index, dtype=float)
     result[:] = np.nan
     for i in range(window, len(prices)):
@@ -50,7 +47,6 @@ def rolling_hurst(prices: pd.Series, window: int = 100, max_lag: int = 20) -> pd
 
 
 def classify_regime_hurst(h: float) -> str:
-    # / classify based on hurst value
     if h < 0.4:
         return "mean_reverting"
     elif h > 0.6:

@@ -1,5 +1,3 @@
-# / congressional trading: senate stock watcher (free) + finnhub fallback
-# / tracks buy/sell activity by congress members per symbol
 
 from __future__ import annotations
 
@@ -7,6 +5,7 @@ import os
 from datetime import date
 from typing import Any
 
+import httpx
 import structlog
 
 from .resilience import api_get, with_retry
@@ -16,7 +15,6 @@ logger = structlog.get_logger(__name__)
 FINNHUB_BASE = "https://finnhub.io/api/v1"
 SENATE_S3_URL = "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json"
 
-# / module-level cache: fetched once per cycle
 _senate_cache: dict[str, Any] = {"data": None, "date": None}
 
 
@@ -26,7 +24,6 @@ def _finnhub_headers() -> dict[str, str]:
 
 
 async def _fetch_senate_bulk() -> list[dict[str, Any]]:
-    # / fetch full senate transaction dump, cache per day
     today = date.today().isoformat()
     if _senate_cache["data"] is not None and _senate_cache["date"] == today:
         return _senate_cache["data"]
@@ -44,7 +41,6 @@ async def _fetch_senate_bulk() -> list[dict[str, Any]]:
 
 
 async def _fetch_senate_trades(symbol: str) -> list[dict[str, Any]]:
-    # / filter cached senate data for symbol
     bulk = await _fetch_senate_bulk()
     if not bulk:
         return []
@@ -61,7 +57,6 @@ async def _fetch_senate_trades(symbol: str) -> list[dict[str, Any]]:
             "transaction_type": item.get("type") or item.get("transaction_type", ""),
             "amount_range": item.get("amount") or item.get("amount_range", ""),
         })
-    # / sort by date descending, return last 50
     trades.sort(key=lambda t: t.get("filing_date", ""), reverse=True)
     return trades[:50]
 
@@ -89,8 +84,6 @@ async def _fetch_finnhub_congressional(symbol: str) -> list[dict[str, Any]]:
 
 
 async def fetch_congressional_trades(symbol: str) -> list[dict[str, Any]]:
-    # / primary: senate stock watcher s3 (free, no auth)
-    # / fallback: finnhub (if api key available and premium)
     trades = await _fetch_senate_trades(symbol)
     if trades:
         return trades
@@ -99,7 +92,7 @@ async def fetch_congressional_trades(symbol: str) -> list[dict[str, Any]]:
         return []
     try:
         return await _fetch_finnhub_congressional(symbol)
-    except Exception:
+    except (httpx.HTTPError, ValueError, KeyError):
         return []
 
 
@@ -132,7 +125,6 @@ async def store_congressional_trades(pool: Any, trades: list[dict[str, Any]]) ->
 
 
 def compute_net_buy_ratio(trades: list[dict[str, Any]]) -> float:
-    # / ratio of buys vs sells: 1.0 = all buys, -1.0 = all sells
     if not trades:
         return 0.0
     buys = sum(1 for t in trades if "purchase" in (t.get("transaction_type") or "").lower())

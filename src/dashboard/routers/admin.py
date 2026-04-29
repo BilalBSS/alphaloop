@@ -21,8 +21,6 @@ async def get_loops():
 
 @router.post("/api/admin/trigger/{service}")
 async def admin_trigger(service: str, request: Request):
-    # / queue a one-shot run; gated by ADMIN_TOKEN
-    # / secure-by-default: missing ADMIN_TOKEN returns 503
     from src.data.loop_registry import LOOP_METADATA, enqueue_trigger
     if not STATE.admin_token:
         return JSONResponse(
@@ -43,7 +41,6 @@ async def admin_trigger(service: str, request: Request):
 
 @router.get("/api/env-health")
 async def get_env_health():
-    # / presence check only — never returns values
     required = [
         "DATABASE_URL", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
         "GROQ_API_KEY", "DEEPSEEK_API_KEY", "CEREBRAS_API_KEY",

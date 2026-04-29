@@ -1,6 +1,3 @@
-# / support/resistance indicators: pivot points, fibonacci, s/r zones
-# / all take pandas series, return dataclasses
-# / nan-safe: insufficient data returns nan/empty
 
 from __future__ import annotations
 
@@ -25,7 +22,6 @@ def pivot_points(
     high: float, low: float, close: float,
     method: str = "standard",
 ) -> PivotPoints:
-    # / calculate pivot points from previous period high/low/close
     if method == "fibonacci":
         pivot = (high + low + close) / 3
         diff = high - low
@@ -70,7 +66,6 @@ class FibonacciLevels:
 def fibonacci_retracement(
     high: pd.Series, low: pd.Series, lookback: int = 50,
 ) -> FibonacciLevels:
-    # / fibonacci retracement levels from swing high/low over lookback
     window_high = high.iloc[-lookback:] if len(high) >= lookback else high
     window_low = low.iloc[-lookback:] if len(low) >= lookback else low
 
@@ -79,7 +74,6 @@ def fibonacci_retracement(
     diff = swing_high - swing_low
 
     if diff == 0:
-        # / flat data — all levels equal
         return FibonacciLevels(
             swing_high=swing_high, swing_low=swing_low,
             level_236=swing_high, level_382=swing_high,
@@ -109,7 +103,6 @@ def sr_zones(
     close: pd.Series, high: pd.Series, low: pd.Series,
     num_zones: int = 5, tolerance_pct: float = 0.02,
 ) -> list[SupportResistanceZone]:
-    # / find s/r zones by clustering price touches
     if len(close) < 2:
         return []
 
@@ -132,7 +125,6 @@ def sr_zones(
             current_cluster = [p]
     clusters.append(current_cluster)
 
-    # / sort by cluster size (most touches first)
     clusters.sort(key=len, reverse=True)
 
     # / take top N
@@ -161,8 +153,6 @@ def fib_auto(
     high: pd.Series, low: pd.Series, close: pd.Series,
     lookback: int = 100,
 ) -> FibonacciLevels:
-    # / auto-anchor fibonacci: picks swing high/low over lookback, direction from trend
-    # / wraps existing fibonacci_retracement — chooses lookback based on available data
     effective = min(lookback, len(close))
     return fibonacci_retracement(high, low, effective)
 
@@ -171,7 +161,6 @@ def sr_zones_series(
     close: pd.Series, high: pd.Series, low: pd.Series,
     num_zones: int = 5, tolerance_pct: float = 0.02,
 ) -> pd.Series:
-    # / per-bar distance to nearest s/r zone (negative = below, positive = above)
     zones = sr_zones(close, high, low, num_zones, tolerance_pct)
     if not zones:
         return pd.Series(0.0, index=close.index, dtype=float)

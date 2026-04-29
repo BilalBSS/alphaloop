@@ -1,4 +1,3 @@
-# / trade signals, approved trades, trade log, executor helpers
 
 from __future__ import annotations
 
@@ -8,7 +7,6 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# / whitelist prevents sql injection in update_trade_status
 _STATUS_TABLES = {"trade_signals", "approved_trades"}
 
 
@@ -16,7 +14,6 @@ async def store_trade_signal(
     pool, strategy_id: str, symbol: str, signal_type: str,
     strength: float, regime: str | None, details: dict | None = None,
 ) -> int:
-    # / upsert trade signal — one pending per strategy+symbol+type per day
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
             """SELECT id, status FROM trade_signals
@@ -46,7 +43,6 @@ async def store_trade_signal(
 
 
 async def fetch_pending_signals(pool, limit: int = 50) -> list[dict]:
-    # / pending signals, strongest first, fifo on ties
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT * FROM trade_signals
@@ -90,7 +86,6 @@ async def fetch_pending_trades(pool, limit: int = 50) -> list[dict]:
 
 
 async def count_today_approved_trades(pool) -> int:
-    # / count trades approved today for daily trade limit
     async with pool.acquire() as conn:
         count = await conn.fetchval(
             """SELECT COUNT(*) FROM approved_trades
@@ -113,7 +108,6 @@ async def count_today_approved_trades_for_strategy(pool, strategy_id: str) -> in
 
 
 async def count_pending_signals_for_strategy(pool, strategy_id: str) -> int:
-    # / risk agent activity-scaling: shrink size by 1/sqrt(N) on bursts
     async with pool.acquire() as conn:
         count = await conn.fetchval(
             """SELECT COUNT(*) FROM trade_signals
@@ -129,7 +123,6 @@ async def update_trade_status(
     pool, table: str, row_id: int, status: str,
     rejection_reason: str | None = None,
 ) -> bool:
-    # / update status on trade_signals or approved_trades
     if table not in _STATUS_TABLES:
         raise ValueError(f"invalid table '{table}', must be one of {_STATUS_TABLES}")
     async with pool.acquire() as conn:
@@ -179,7 +172,6 @@ async def fetch_pending_signal_by_id(pool, signal_id: int) -> dict | None:
 
 
 async def fetch_approved_trade_by_id(pool, trade_id: int) -> dict | None:
-    # / executor re-hydrates a trade before placing
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM approved_trades WHERE id = $1", trade_id,
@@ -188,7 +180,6 @@ async def fetch_approved_trade_by_id(pool, trade_id: int) -> dict | None:
 
 
 async def claim_approved_trade_atomic(pool, trade_id: int) -> bool:
-    # / atomic pending->executing flip; toctou guard
     async with pool.acquire() as conn:
         result = await conn.execute(
             "UPDATE approved_trades SET status = 'executing' WHERE id = $1 AND status = 'pending'",
@@ -198,7 +189,6 @@ async def claim_approved_trade_atomic(pool, trade_id: int) -> bool:
 
 
 async def attach_broker_order_id(pool, trade_id: int, order_id: str) -> None:
-    # / persist broker order id for sync recovery
     if not order_id:
         return
     try:
@@ -213,7 +203,6 @@ async def attach_broker_order_id(pool, trade_id: int, order_id: str) -> None:
 
 
 async def fetch_strategy_id_by_order(pool, order_id: str) -> tuple[int | None, str | None]:
-    # / (approved_trade_id, strategy_id) for reconciled fill, or (None, None)
     if not order_id:
         return None, None
     try:

@@ -10,7 +10,6 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# / below this trade count, kelly is too noisy — fall back to half max_position_pct
 MIN_TRADES_FOR_KELLY = 30
 
 
@@ -25,7 +24,6 @@ class StrategyAllocation:
 
 
 def _rank_weight(rank_pct: float) -> float:
-    # / top 25% -> 2.0, middle 50% -> 1.0, bottom 25% -> 0.5
     if rank_pct <= 0.25:
         return 2.0
     if rank_pct >= 0.75:
@@ -34,8 +32,6 @@ def _rank_weight(rank_pct: float) -> float:
 
 
 def _load_kelly_fractions_from_disk() -> dict[str, float]:
-    # / kelly_fraction lives in configs/strategies/<id>.json position_sizing block
-    # / strategy_scores table has no `config` column; read from disk source of truth
     from src.strategies.strategy_loader import load_all_configs
     out: dict[str, float] = {}
     try:
@@ -51,7 +47,6 @@ def _load_kelly_fractions_from_disk() -> dict[str, float]:
 
 
 async def _fetch_strategy_rows(pool: asyncpg.Pool) -> list[dict]:
-    # / pull each strategy's latest composite score + trade count
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -91,7 +86,6 @@ def _build_allocations(
 ) -> list[StrategyAllocation]:
     if not rows:
         return []
-    # / rank by composite_score desc; missing scores sort to the bottom
     scored = [r for r in rows if r["composite_score"] is not None]
     unscored = [r for r in rows if r["composite_score"] is None]
     scored.sort(key=lambda r: r["composite_score"], reverse=True)
@@ -100,12 +94,10 @@ def _build_allocations(
     for i, r in enumerate(scored):
         rank_pct = i / max(1, n - 1) if n > 1 else 0.0
         rw = _rank_weight(rank_pct)
-        # / if we don't have enough trades, drop to half the default cap
         if r["trade_count"] < MIN_TRADES_FOR_KELLY:
             allocated = 0.5 * max_position_pct
         else:
             allocated = r["kelly_fraction"] * rw * max_position_pct
-        # / clamp: no single strategy gets more than 3x the default cap, and no less than 0.25x
         allocated = max(0.25 * max_position_pct, min(3.0 * max_position_pct, allocated))
         allocs.append(StrategyAllocation(
             strategy_id=r["strategy_id"],
@@ -115,7 +107,6 @@ def _build_allocations(
             composite_score=r["composite_score"],
             trade_count=r["trade_count"],
         ))
-    # / unscored strategies get the floor
     for r in unscored:
         allocs.append(StrategyAllocation(
             strategy_id=r["strategy_id"],
@@ -158,7 +149,6 @@ async def compute_allocations(
     pool: asyncpg.Pool,
     max_position_pct: float = 0.04,
 ) -> list[StrategyAllocation]:
-    # / orchestrator entry point; returns the list it wrote
     rows = await _fetch_strategy_rows(pool)
     allocs = _build_allocations(rows, max_position_pct)
     if allocs:
@@ -178,7 +168,6 @@ async def get_allocation(
     max_position_pct_default: float = 0.04,
 ) -> float:
     # / weight in [0.01, 3*max_position_pct]
-    # / no row → return default unmodified
     if pool is None or not strategy_id:
         return max_position_pct_default
     try:

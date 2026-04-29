@@ -1,4 +1,3 @@
-# / analysis scores, event log, near-miss observations, fire-and-forget util
 
 from __future__ import annotations
 
@@ -15,12 +14,10 @@ from src.strategies.base_strategy import AnalysisData
 
 logger = structlog.get_logger(__name__)
 
-# / strong refs prevent gc of fire-and-forget tasks
 _BG_TASKS: set[asyncio.Task] = set()
 
 
 def fire_and_forget(coro: Coroutine) -> asyncio.Task:
-    # / spawn background task that won't be gc'd mid-flight
     task = asyncio.create_task(coro)
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
@@ -33,7 +30,6 @@ async def store_analysis_score(
     regime: str | None, regime_confidence: float | None,
     used_fundamentals: bool, details: dict[str, Any] | None = None,
 ) -> int:
-    # / upsert analysis_scores row, returns id
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -65,7 +61,6 @@ async def store_analysis_score(
 async def fetch_analysis_score(
     pool, symbol: str, as_of: date | None = None,
 ) -> dict | None:
-    # / latest analysis_scores row for symbol
     as_of = as_of or date.today()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -78,7 +73,6 @@ async def fetch_analysis_score(
 
 
 def dict_to_analysis_data(d: dict) -> AnalysisData:
-    # / deserialize jsonb dict to AnalysisData
     return AnalysisData(
         pe_ratio=d.get("pe_ratio"),
         pe_forward=d.get("pe_forward"),
@@ -120,7 +114,6 @@ async def log_event(
     pool, level: str, source: str, message: str,
     symbol: str | None = None, details: dict | None = None,
 ) -> None:
-    # / fire-and-forget event log — never blocks pipeline
     try:
         async with pool.acquire() as conn:
             await conn.execute(
@@ -139,7 +132,6 @@ async def log_observation(
     strength: float | None = None, failed_reason: str | None = None,
     regime: str | None = None,
 ) -> None:
-    # / fire-and-forget near-miss log; powers "close to firing" panel
     try:
         async with pool.acquire() as conn:
             await conn.execute(

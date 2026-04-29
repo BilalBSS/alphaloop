@@ -20,7 +20,6 @@ STRATEGY_CONFIGS_DIR = (Path(__file__).parent.parent.parent.parent / "configs" /
 
 @router.get("/api/portfolio")
 async def get_portfolio():
-    # / pull live data from alpaca, fall back to trade_log
     try:
         broker = STATE.get_broker()
         balance, positions = await asyncio.gather(
@@ -159,7 +158,6 @@ async def get_trade_detail(trade_id: int):
 
 @router.get("/api/strategies")
 async def get_strategies():
-    # / build baseline from config files; overlay live + trade rows
     strategies_by_id: dict = {}
     for config_path in sorted(STRATEGY_CONFIGS_DIR.glob("*.json")):
         try:

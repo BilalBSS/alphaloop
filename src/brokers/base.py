@@ -1,5 +1,3 @@
-# / abstract broker interface — all brokers implement this
-# / strategies never touch brokers directly, always through this interface
 
 from __future__ import annotations
 
@@ -17,7 +15,7 @@ class Order:
     side: str           # buy, sell
     qty: float
     order_type: str     # market, limit, stop, stop_limit
-    status: str         # pending, filled, partial, cancelled, rejected
+    status: str  # / pending, filled, partial, cancelled,
     filled_qty: float = 0.0
     filled_price: float | None = None
     limit_price: float | None = None
@@ -50,7 +48,6 @@ class AccountBalance:
 class BrokerInterface(ABC):
     @abstractmethod
     async def get_price(self, symbol: str) -> float:
-        # / get current/latest price for a symbol
         ...
 
     @abstractmethod
@@ -64,7 +61,6 @@ class BrokerInterface(ABC):
         stop_price: float | None = None,
         extended_hours: bool = False,
     ) -> Order:
-        # / place an order, returns order object
         ...
 
     @abstractmethod
@@ -74,17 +70,14 @@ class BrokerInterface(ABC):
 
     @abstractmethod
     async def get_account_balance(self) -> AccountBalance:
-        # / get account equity, cash, buying power
         ...
 
     @abstractmethod
     async def cancel_order(self, order_id: str) -> bool:
-        # / cancel an open order, returns success
         ...
 
     @abstractmethod
     async def get_order_status(self, order_id: str) -> Order:
-        # / get current status of an order
         ...
 
     @abstractmethod
@@ -93,5 +86,4 @@ class BrokerInterface(ABC):
         symbols: list[str],
         callback: Callable[[str, float], Any],
     ) -> None:
-        # / stream real-time prices, calls callback(symbol, price)
         ...

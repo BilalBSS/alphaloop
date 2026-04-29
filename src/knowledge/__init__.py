@@ -1,4 +1,3 @@
-# / knowledge base: trading-wiki markdown + hybrid search + llm context assembly
 
 from src.knowledge.chunker import chunk_markdown
 from src.knowledge.cooldown import can_write_post_mortem

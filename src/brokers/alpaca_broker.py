@@ -1,6 +1,3 @@
-# / alpaca broker: rest api for stocks + crypto
-# / uses shared alpaca client for connection pooling
-# / supports market, limit, stop, stop_limit order types
 
 from __future__ import annotations
 
@@ -36,7 +33,6 @@ def _base_url() -> str:
 
 
 def _parse_order(data: dict[str, Any]) -> Order:
-    # / parse alpaca order response into our order dataclass
     filled_price = None
     if data.get("filled_avg_price"):
         filled_price = float(data["filled_avg_price"])
@@ -101,7 +97,6 @@ class AlpacaBroker(BrokerInterface):
         alpaca_sym = to_alpaca(symbol)
         crypto = is_crypto(symbol)
 
-        # / auto-convert market orders to limit during extended hours for stocks
         if extended_hours and not crypto and order_type == "market":
             if limit_price is None:
                 price = await self.get_price(symbol)
@@ -209,8 +204,6 @@ class AlpacaBroker(BrokerInterface):
         symbols: list[str],
         callback: Callable[[str, float], Any],
     ) -> None:
-        # / poll-based price streaming (websocket upgrade in future)
-        # / fetches latest prices for all symbols and calls callback
         for symbol in symbols:
             try:
                 price = await self.get_price(symbol)

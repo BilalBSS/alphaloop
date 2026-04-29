@@ -1,4 +1,3 @@
-# / pure-price signal handlers: indicator -> (sig, market_data) -> (passed, strength, reason)
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -76,7 +75,6 @@ def _eval_macd(sig: dict[str, Any], market_data: pd.DataFrame) -> tuple[bool, fl
     from src.indicators.trend import macd as macd_fn
     close = market_data["close"]
     condition = sig.get("condition", "")
-    # / lookback widens crossover detection from 1-bar to last N bars
     lookback = max(1, int(sig.get("lookback") or 3))
     hist_series = macd_fn(close).histogram.dropna()
     if len(hist_series) < 2:
@@ -190,7 +188,6 @@ def _eval_atr(sig: dict[str, Any], market_data: pd.DataFrame) -> tuple[bool, flo
     elif condition == "below":
         passed = atr_pct < threshold
         return passed, 0.5 if passed else 0.0, f"atr%={atr_pct:.4f} {'<' if passed else '>='} {threshold}"
-    # / no condition specified: informational only, always passes
     return True, 0.5, f"atr={last_atr:.2f} ({atr_pct:.2%} of price)"
 
 
@@ -356,7 +353,6 @@ def _eval_donchian(sig: dict[str, Any], market_data: pd.DataFrame) -> tuple[bool
     if len(market_data) < period + 1:
         return False, 0.0, f"donchian: need {period + 1} bars"
     dc = donchian_channel(market_data["high"], market_data["low"], period=period)
-    # / donchian high: rolling max ENDING at previous bar; breakout = today's close > that
     last_close = float(market_data["close"].iloc[-1])
     prev_high = float(dc.upper.iloc[-2]) if len(dc.upper) >= 2 else float("nan")
     prev_low = float(dc.lower.iloc[-2]) if len(dc.lower) >= 2 else float("nan")
@@ -422,7 +418,6 @@ def _eval_zscore_return(sig: dict[str, Any], market_data: pd.DataFrame) -> tuple
 
 @register_signal("fib_retrace")
 def _eval_fib_retrace(sig: dict[str, Any], market_data: pd.DataFrame) -> tuple[bool, float, str]:
-    # / retrace: check whether close sits within a fib band (last lookback swing)
     lookback = int(sig.get("lookback", 30))
     if len(market_data) < lookback + 1:
         return False, 0.0, f"fib_retrace: need {lookback + 1} bars"

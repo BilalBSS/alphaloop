@@ -1,4 +1,3 @@
-# / db helpers for knowledge tables — kept out of agents/tools.py to avoid clutter
 
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ async def store_evolution_mutation(
     wiki_guided: bool,
     wiki_context_tokens: int,
 ) -> int:
-    # / insert a tracking row before mutation, returns the new row id
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -42,7 +40,6 @@ async def update_evolution_mutation_outcome(
     sharpe_delta: float | None = None,
     survived: bool | None = None,
 ) -> None:
-    # / patch any mutation-outcome fields that are known at this point
     sets: list[str] = []
     params: list[Any] = []
 
@@ -54,7 +51,6 @@ async def update_evolution_mutation_outcome(
 
     _add("mutant_strategy_id", mutant_strategy_id)
     if mutation_diff is not None:
-        # / asyncpg jsonb codec (registered in db.init_db) auto-encodes dicts
         params.append(mutation_diff)
         sets.append(f"mutation_diff = ${len(params)}")
     _add("parent_sharpe", Decimal(str(parent_sharpe)) if parent_sharpe is not None else None)
@@ -81,7 +77,6 @@ async def update_evolution_mutation_by_mutant(
     parent_sharpe: float | None = None,
     survived: bool | None = None,
 ) -> None:
-    # / update most-recent evolution_mutations row for a mutant strategy id
     if not mutant_strategy_id:
         return
 
@@ -124,7 +119,6 @@ async def store_post_mortem_row(
     details: dict | None,
     wiki_path: str | None,
 ) -> int:
-    # / insert a post_mortems row unconditionally, returns the id
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -155,9 +149,6 @@ async def claim_post_mortem_slot(
     details: dict | None,
     cooldown_hours: int = 24,
 ) -> int | None:
-    # / atomic cooldown + insert — closes the TOCTOU window between check & insert
-    # / returns row id if the slot was claimed, None if cooldown blocks it
-    # / wiki_path starts NULL; callers update it via set_post_mortem_wiki_path after the write
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -183,7 +174,6 @@ async def claim_post_mortem_slot(
 
 
 async def set_post_mortem_wiki_path(pool, row_id: int, wiki_path: str | None) -> None:
-    # / patch wiki_path on a previously-claimed post_mortems row
     if row_id is None:
         return
     async with pool.acquire() as conn:
@@ -194,7 +184,6 @@ async def set_post_mortem_wiki_path(pool, row_id: int, wiki_path: str | None) ->
 
 
 async def update_post_mortem_details(pool, row_id: int, details: dict | None) -> None:
-    # / patch details JSONB on a previously-claimed post_mortems row
     if row_id is None:
         return
     async with pool.acquire() as conn:
@@ -212,7 +201,6 @@ async def store_regime_shift_row(
     confidence: float | None,
     wiki_path: str | None,
 ) -> int:
-    # / insert a regime_shifts row, returns the id
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """

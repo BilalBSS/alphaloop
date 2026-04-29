@@ -1,4 +1,3 @@
-# / market data, regime, indicators, volume/beta, peak equity
 
 from __future__ import annotations
 
@@ -41,7 +40,6 @@ async def fetch_intraday_ohlcv(
 async def fetch_close_history_batch(
     pool, symbols: list[str], bars_per_symbol: int = 252,
 ) -> list[dict]:
-    # / batch closes for risk_agent copula tail-dependence
     if not symbols:
         return []
     async with pool.acquire() as conn:
@@ -55,7 +53,6 @@ async def fetch_close_history_batch(
 
 
 async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
-    # / latest regime label for equity or crypto
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -76,7 +73,6 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
 
 
 async def fetch_recent_pnl(pool, limit: int = 5) -> list[float]:
-    # / most recent realized pnl values
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT pnl FROM trade_log
@@ -127,14 +123,12 @@ async def fetch_symbol_beta(
 
 
 async def fetch_peak_equity(pool) -> float:
-    # / restore peak from portfolio_snapshots on startup
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT MAX(peak_equity) FROM portfolio_snapshots")
         return float(row[0]) if row and row[0] else 0.0
 
 
 async def store_peak_equity(pool, equity: float, peak: float) -> None:
-    # / persist peak for circuit breaker survival
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO portfolio_snapshots (date, equity, peak_equity)
@@ -179,7 +173,6 @@ async def store_computed_indicators(
 async def store_ict_indicators(
     pool, symbol: str, ict_data: dict[str, Any],
 ) -> None:
-    # / ict smart money indicators as jsonb
     try:
         async with pool.acquire() as conn:
             await conn.execute(

@@ -1,5 +1,3 @@
-# / earnings revisions: yfinance (free) + finnhub fallback
-# / tracks estimate changes over time to detect analyst sentiment shifts
 
 from __future__ import annotations
 
@@ -23,7 +21,6 @@ def _finnhub_headers() -> dict[str, str]:
 
 
 async def _fetch_estimates_yfinance(symbol: str) -> list[dict[str, Any]]:
-    # / yfinance earnings estimates (free, no auth)
     def _fetch():
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -69,7 +66,6 @@ async def _fetch_estimates_finnhub(symbol: str) -> list[dict[str, Any]]:
 
 
 async def fetch_earnings_estimates(symbol: str) -> list[dict[str, Any]]:
-    # / primary: yfinance (free, no auth)
     try:
         estimates = await _fetch_estimates_yfinance(symbol)
         if estimates:

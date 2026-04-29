@@ -1,5 +1,3 @@
-# / social sentiment: apewisdom (reddit mentions) + fear & greed + vix
-# / stores to social_sentiment table, computes aggregate -1.0 to 1.0
 
 from __future__ import annotations
 
@@ -8,6 +6,7 @@ import math
 from datetime import date
 from typing import Any
 
+import asyncpg
 import structlog
 
 from src.notifications.notifier import notify_sentiment_shift
@@ -27,13 +26,10 @@ configure_rate_limit("fng", max_concurrent=2, delay=0.5)
 
 
 # ---------------------------------------------------------------------------
-# / apewisdom: reddit mention tracking (no api key needed)
 # ---------------------------------------------------------------------------
 
 @with_retry(source="apewisdom", max_retries=2, base_delay=2.0)
 async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str, Any]]:
-    # / fetch trending tickers from reddit via apewisdom
-    # / returns dict keyed by ticker with mentions, upvotes, rank, raw_score
     result: dict[str, dict[str, Any]] = {}
     try:
         resp = await api_get(
@@ -57,7 +53,6 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
             mentions = r.get("mentions", 0)
             upvotes = r.get("upvotes", 0)
             rank = r.get("rank", 999)
-            # / log-scaled buzz: top ticker ~1.0, tail ~0.2-0.4
             raw = math.log1p(mentions) / math.log1p(max_mentions) if max_mentions > 0 else 0.0
             result[ticker] = {
                 "mentions": mentions,
@@ -74,13 +69,10 @@ async def fetch_apewisdom(filter_type: str = "all-stocks") -> dict[str, dict[str
 
 
 # ---------------------------------------------------------------------------
-# / stocktwits (kept as fallback, api registrations currently paused)
 # ---------------------------------------------------------------------------
 
 @with_retry(source="stocktwits", max_retries=2, base_delay=2.0)
 async def fetch_stocktwits_sentiment(symbol: str) -> dict[str, Any] | None:
-    # / fetch bullish/bearish ratio and volume from stocktwits
-    # / crypto uses BTC.X format on stocktwits, not BTC-USD
     st_symbol = symbol.replace("-USD", ".X") if symbol.endswith("-USD") else symbol
     url = f"{STOCKTWITS_BASE}/streams/symbol/{st_symbol}.json"
     try:
@@ -113,12 +105,10 @@ async def fetch_stocktwits_sentiment(symbol: str) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# / fear & greed index (crypto)
 # ---------------------------------------------------------------------------
 
 @with_retry(source="fng", max_retries=2, base_delay=1.0)
 async def fetch_fear_greed_index() -> dict[str, Any] | None:
-    # / fetch fear & greed index, normalize 0-100 to -1.0 to 1.0
     try:
         resp = await api_get(FNG_URL, source="fng")
         data = resp.json()
@@ -135,7 +125,6 @@ async def fetch_fear_greed_index() -> dict[str, Any] | None:
         if value < 0:
             logger.warning("fng_negative_sentinel", raw_value=value)
             return None
-        # / 0 = extreme fear = -1.0, 50 = neutral = 0.0, 100 = extreme greed = 1.0
         normalized = (value - 50.0) / 50.0
 
         return {
@@ -152,7 +141,6 @@ async def fetch_fear_greed_index() -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 def _fetch_vix_sync() -> dict[str, float] | None:
-    # / yfinance is sync, runs in thread pool
     try:
         import yfinance as yf
         ticker = yf.Ticker("^VIX")
@@ -160,7 +148,6 @@ def _fetch_vix_sync() -> dict[str, float] | None:
         if hist.empty:
             return None
         vix = float(hist["Close"].iloc[-1])
-        # / 10 = extreme greed (1.0), 30 = neutral (0.0), 50 = extreme fear (-1.0)
         normalized = max(-1.0, min(1.0, (30.0 - vix) / 20.0))
         return {"raw_level": vix, "normalized": normalized}
     except Exception:
@@ -168,7 +155,6 @@ def _fetch_vix_sync() -> dict[str, float] | None:
 
 
 async def fetch_vix() -> dict[str, float] | None:
-    # / VIX fear gauge for equities, wrapped to avoid blocking event loop
     try:
         result = await asyncio.to_thread(_fetch_vix_sync)
         if result is not None:
@@ -218,20 +204,16 @@ async def run_social_sentiment(
     pool: Any,
     symbols: list[str],
 ) -> dict[str, float]:
-    # / run social sentiment pipeline for all symbols
     results: dict[str, float] = {}
 
-    # / fetch market-wide gauges once (not per-symbol)
     fng_data = await fetch_fear_greed_index()  # / crypto fear & greed
     vix_score = await fetch_vix()              # / equity VIX-based fear gauge
 
-    # / fetch apewisdom trending lists once (stocks + crypto)
     aw_stocks = await fetch_apewisdom("all-stocks")
     aw_crypto = await fetch_apewisdom("all-crypto")
 
     for symbol in symbols:
         try:
-            # / apewisdom per-symbol lookup (replaces stocktwits)
             if is_crypto(symbol):
                 aw_ticker = symbol.replace("-USD", "")
                 aw_data = aw_crypto.get(aw_ticker)
@@ -249,7 +231,6 @@ async def run_social_sentiment(
                     aw_data["raw_score"],
                 )
 
-            # / store fear gauge per symbol — VIX for equity, FNG for crypto
             if is_crypto(symbol):
                 if fng_data:
                     await store_social_sentiment(
@@ -268,7 +249,6 @@ async def run_social_sentiment(
                 fear_score = vix_score["normalized"] if vix_score else None
 
             # / compute aggregate score
-            # / social buzz 60% + fear gauge 40%
             scores: list[float] = []
             weights: list[float] = []
 
@@ -288,7 +268,6 @@ async def run_social_sentiment(
             else:
                 results[symbol] = 0.0
 
-            # / notify on large fear gauge swings (>0.3 delta, same source)
             try:
                 fear_source = "vix" if not is_crypto(symbol) else "fear_greed"
                 if fear_score is not None:
@@ -302,8 +281,9 @@ async def run_social_sentiment(
                         )
                         if prev is not None and abs(fear_score - float(prev)) > 0.3:
                             notify_sentiment_shift(symbol, float(prev), fear_score)
-            except Exception:
-                pass  # / notification is best-effort
+            except (asyncpg.PostgresError, ValueError, TypeError):
+                # / swallow notification best-effort
+                pass
 
             logger.info("social_sentiment_processed", symbol=symbol, score=results[symbol])
         except Exception as exc:

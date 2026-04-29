@@ -1,6 +1,3 @@
-# / volume indicators: obv, vwap, volume profile, mfi
-# / all take pandas series/dataframe, return series
-# / nan-safe: insufficient data returns nan
 
 from __future__ import annotations
 
@@ -11,7 +8,6 @@ import pandas as pd
 
 
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
-    # / on-balance volume: cumulative volume signed by price direction
     direction = pd.Series(np.where(close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0)), index=close.index)
     return (volume * direction).cumsum()
 
@@ -23,13 +19,9 @@ def vwap(
     volume: pd.Series,
     dates: pd.Series | None = None,
 ) -> pd.Series:
-    # / volume-weighted average price (cumulative within session)
-    # / dates param: pass bar dates to reset cumsum at each session boundary
-    # / without dates: running vwap across entire series (daily bars)
     tp = (high + low + close) / 3
     tp_vol = tp * volume
     if dates is not None:
-        # / group by date, cumsum within each session
         cum_tp_vol = tp_vol.groupby(dates).cumsum()
         cum_vol = volume.groupby(dates).cumsum()
     else:
@@ -42,7 +34,7 @@ def vwap(
 class VolumeProfile:
     price_levels: pd.Series  # price bins
     volume_at_price: pd.Series  # volume per bin
-    poc: float  # point of control (highest volume price)
+    poc: float  # / point of control (highest
     value_area_high: float
     value_area_low: float
 
@@ -53,7 +45,6 @@ def volume_profile(
     num_bins: int = 50,
     value_area_pct: float = 0.70,
 ) -> VolumeProfile:
-    # / volume profile: distribution of volume across price levels
     price_min = close.min()
     price_max = close.max()
 
@@ -78,7 +69,6 @@ def volume_profile(
     poc_idx = np.argmax(vol_at_price)
     poc = float(bin_centers[poc_idx])
 
-    # / value area: expand from poc until value_area_pct of total volume
     total_vol = vol_at_price.sum()
     if total_vol == 0:
         return VolumeProfile(
@@ -126,8 +116,6 @@ def mfi(
     volume: pd.Series,
     period: int = 14,
 ) -> pd.Series:
-    # / money flow index (0-100) — volume-weighted rsi
-    # / mfi > 80 = overbought, mfi < 20 = oversold
     tp = (high + low + close) / 3
     raw_mf = tp * volume
 
@@ -151,7 +139,6 @@ def anchored_vwap(
     high: pd.Series, low: pd.Series, close: pd.Series,
     volume: pd.Series, anchor_idx: int = 0,
 ) -> pd.Series:
-    # / vwap anchored from a specific bar index
     typical = (high + low + close) / 3
     result = pd.Series(index=close.index, dtype=float)
     result[:] = np.nan

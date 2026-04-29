@@ -1,5 +1,3 @@
-# / pair normalized overlay — pulls bars for two symbols and normalizes to % change from first close
-# / purely observational: zero re-simulation, pure select against market_data / market_data_intraday
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +11,6 @@ from ._serialize import num as _num
 
 logger = structlog.get_logger(__name__)
 
-# / daily timeframes route to market_data, everything else to market_data_intraday
 _DAILY_TIMEFRAMES: set[str] = {"1Day", "1day", "1D"}
 
 _DAYS_MIN = 1
@@ -36,7 +33,6 @@ def _clamp_days(days: Any) -> int:
 async def _fetch_closes(
     pool: asyncpg.Pool, symbol: str, timeframe: str, days: int
 ) -> list[tuple[str, float]]:
-    # / returns ordered list of (iso_time, close) pairs, empty on failure
     is_daily = timeframe in _DAILY_TIMEFRAMES
     try:
         async with pool.acquire() as conn:
@@ -67,7 +63,10 @@ async def _fetch_closes(
         close = _num(r.get("close"))
         if ts is None or close is None:
             continue
-        out.append((_iso(ts), close))
+        ts_iso = _iso(ts)
+        if ts_iso is None:
+            continue
+        out.append((ts_iso, close))
     return out
 
 
@@ -78,8 +77,6 @@ async def fetch_compare(
     timeframe: str = "1Day",
     days: int = _DAYS_DEFAULT,
 ) -> dict:
-    # / pair comparison snapshot: % change from first common timestamp for both symbols
-    # / alignment: intersect on timestamp so chart overlay can render directly without gaps
     days_clamped = _clamp_days(days)
     empty = {
         "base": base,
@@ -93,18 +90,16 @@ async def fetch_compare(
     if pool is None:
         return empty
 
-    # / two independent queries — fire them in parallel to halve wall time
     base_res, against_res = await asyncio.gather(
         _fetch_closes(pool, base, timeframe, days_clamped),
         _fetch_closes(pool, against, timeframe, days_clamped),
         return_exceptions=True,
     )
-    base_closes = [] if isinstance(base_res, Exception) else base_res
-    against_closes = [] if isinstance(against_res, Exception) else against_res
+    base_closes: list[tuple[str, float]] = [] if isinstance(base_res, BaseException) else base_res
+    against_closes: list[tuple[str, float]] = [] if isinstance(against_res, BaseException) else against_res
     if not base_closes or not against_closes:
         return empty
 
-    # / intersect on timestamp so both series share the same x axis
     against_map = {t: c for t, c in against_closes}
     common_pairs: list[tuple[str, float, float]] = []
     for t, bc in base_closes:

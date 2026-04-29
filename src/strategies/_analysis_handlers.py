@@ -1,4 +1,3 @@
-# / analysis-data signal handlers: indicator -> (sig, market_data, analysis_data) -> (passed, strength, reason)
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -72,7 +71,6 @@ def _eval_earnings_surprise(
     thr = float(thr_raw) if thr_raw is not None else 0.05
     max_days_raw = sig.get("max_days_since_report")
     max_days = int(max_days_raw) if max_days_raw is not None else 10
-    # / days_to_earnings: negative = days since, positive = days until
     days_since = None
     if analysis_data.days_to_earnings is not None:
         dte = int(analysis_data.days_to_earnings)
@@ -107,11 +105,9 @@ def _eval_insider_cluster(
     sig: dict[str, Any], market_data: pd.DataFrame,
     analysis_data: AnalysisData | None,
 ) -> tuple[bool, float, str]:
-    # / approximate cluster from net_buy_ratio (raw count not in analysis_data)
     if analysis_data is None or analysis_data.insider_net_buy_ratio is None:
         return False, 0.0, "insider_cluster: no analysis data"
     ratio = float(analysis_data.insider_net_buy_ratio)
-    # / count threshold reinterpreted: 2 -> ratio>0.5, 3 -> ratio>0.7 (linear)
     count_threshold = int(sig.get("threshold", 2))
     implied_ratio_floor = 0.5 + (count_threshold - 2) * 0.1
     condition = sig.get("condition", "count_above")
@@ -126,12 +122,10 @@ def _eval_insider_net_dollar(
     sig: dict[str, Any], market_data: pd.DataFrame,
     analysis_data: AnalysisData | None,
 ) -> tuple[bool, float, str]:
-    # / proxy via net_buy_ratio (analysis_data lacks raw dollar amounts)
     if analysis_data is None or analysis_data.insider_net_buy_ratio is None:
         return False, 0.0, "insider_net_dollar: no analysis data"
     ratio = float(analysis_data.insider_net_buy_ratio)
     threshold_usd = float(sig.get("threshold_usd", 100000))
-    # / rescale: $100k -> 0.55, $500k -> 0.70
     implied_ratio_floor = 0.55 + (threshold_usd - 100000) * 0.15 / 400000
     passed = ratio >= implied_ratio_floor
     return passed, min(1.0, ratio) if passed else 0.0, f"insider_net_ratio={ratio:.2f} {'>=' if passed else '<'} {implied_ratio_floor:.2f} (proxy for ${threshold_usd:,.0f})"
@@ -142,7 +136,6 @@ def _eval_intermarket_correlation(
     sig: dict[str, Any], market_data: pd.DataFrame,
     analysis_data: AnalysisData | None,
 ) -> tuple[bool, float, str]:
-    # / proxy via intermarket_score (second series not loaded here)
     if analysis_data is None or analysis_data.intermarket_score is None:
         return False, 0.0, "intermarket_correlation: no analysis data"
     score = float(analysis_data.intermarket_score)
@@ -156,12 +149,10 @@ def _eval_macro_not_implemented(
     sig: dict[str, Any], market_data: pd.DataFrame,
     analysis_data: AnalysisData | None,
 ) -> tuple[bool, float, str]:
-    # / macro indicators not yet plumbed to evaluator; registered to avoid "unknown indicator"
     indicator = sig.get("indicator", "?")
     return False, 0.0, f"{indicator}: macro data not threaded to evaluator (requires data plumbing)"
 
 
-# / register macro stubs explicitly so they don't read as "unknown indicator"
 ANALYSIS_HANDLERS["yield_curve"] = _eval_macro_not_implemented
 ANALYSIS_HANDLERS["yield_curve_slope"] = _eval_macro_not_implemented
 ANALYSIS_HANDLERS["vix"] = _eval_macro_not_implemented

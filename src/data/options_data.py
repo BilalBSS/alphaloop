@@ -1,5 +1,3 @@
-# / options data: yfinance options chains for iv rank, put/call ratio, max pain
-# / skips crypto symbols (no options available)
 
 from __future__ import annotations
 
@@ -15,7 +13,6 @@ logger = structlog.get_logger(__name__)
 
 
 def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
-    # / sync yfinance call — run via asyncio.to_thread
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -23,7 +20,6 @@ def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
         if not expirations:
             return None
 
-        # / use nearest expiration for current iv and ratios
         chain = ticker.option_chain(expirations[0])
         calls = chain.calls
         puts = chain.puts
@@ -31,13 +27,11 @@ def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
         if calls.empty and puts.empty:
             return None
 
-        # / implied volatility from near-the-money options
         call_ivs = calls["impliedVolatility"].dropna().tolist() if not calls.empty else []
         put_ivs = puts["impliedVolatility"].dropna().tolist() if not puts.empty else []
         all_ivs = call_ivs + put_ivs
         iv_current = sum(all_ivs) / len(all_ivs) if all_ivs else None
 
-        # / iv rank: needs historical context, approximate with current vs range in chain
         iv_rank = None
         if all_ivs and len(all_ivs) > 2:
             iv_min = min(all_ivs)
@@ -53,7 +47,6 @@ def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
         if call_vol and call_vol > 0:
             put_call_ratio = float(put_vol) / float(call_vol)
 
-        # / max pain: strike price that minimizes total option premium
         max_pain = _compute_max_pain(calls, puts)
 
         return {
@@ -69,7 +62,6 @@ def _fetch_options_sync(symbol: str) -> dict[str, Any] | None:
 
 
 def _compute_max_pain(calls, puts) -> float | None:
-    # / find strike minimizing total premium paid by option holders
     try:
         if calls.empty and puts.empty:
             return None
@@ -86,14 +78,12 @@ def _compute_max_pain(calls, puts) -> float | None:
 
         for strike in sorted(strikes):
             total_pain = 0.0
-            # / call holders lose when price < strike
             if not calls.empty:
                 for _, row in calls.iterrows():
                     oi = row.get("openInterest", 0) or 0
                     call_strike = row.get("strike", 0)
                     if strike > call_strike:
                         total_pain += (strike - call_strike) * oi
-            # / put holders lose when price > strike
             if not puts.empty:
                 for _, row in puts.iterrows():
                     oi = row.get("openInterest", 0) or 0
@@ -106,7 +96,7 @@ def _compute_max_pain(calls, puts) -> float | None:
                 max_pain_strike = strike
 
         return max_pain_strike
-    except Exception:
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
 
 

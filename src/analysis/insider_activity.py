@@ -1,6 +1,3 @@
-# / insider activity analysis: aggregate buy/sell from insider_trades table
-# / net buy ratio, cluster detection, officer vs director weighting
-# / produces a score indicating insider sentiment
 
 from __future__ import annotations
 
@@ -12,10 +9,6 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# / weighting: officer-level buys matter more than director buys
-# / ordered list — checked first to last, first match wins
-# / longer/more-specific patterns before shorter ones to avoid substring collisions
-# / e.g. "director" contains "cto", "vice president" contains "president"
 TITLE_WEIGHTS: list[tuple[str, float]] = [
     ("ceo", 3.0),
     ("chief executive", 3.0),
@@ -24,7 +17,7 @@ TITLE_WEIGHTS: list[tuple[str, float]] = [
     ("chief operating", 2.0),
     ("coo", 2.0),
     ("chief technology", 2.0),
-    ("director", 1.0),      # before "cto" — "director" contains "cto"
+    ("director", 1.0),  # / before "cto" — "director"
     ("cto", 2.0),
     ("vice president", 1.5),  # before "president"
     ("vp ", 1.5),
@@ -32,7 +25,6 @@ TITLE_WEIGHTS: list[tuple[str, float]] = [
     ("officer", 1.5),
 ]
 
-# / cluster detection: N+ insiders buying within M days
 CLUSTER_MIN_INSIDERS = 3
 CLUSTER_WINDOW_DAYS = 30
 
@@ -43,7 +35,7 @@ class InsiderSignal:
     date: date
     signal: str            # bullish, bearish, neutral
     strength: float        # 0-100
-    net_buy_ratio: float   # -1 to 1 (1 = all buys, -1 = all sells)
+    net_buy_ratio: float  # / -1 to 1 (1
     total_buys: int
     total_sells: int
     buy_value: float
@@ -52,12 +44,11 @@ class InsiderSignal:
     unique_buyers: int
     unique_sellers: int
     details: dict[str, Any] = field(default_factory=dict)
-    top_trades: list[dict[str, Any]] = field(default_factory=list)  # / top trades by value for llm context
-    signed_strength: float = 0.0  # / bullish=+strength, bearish=-strength, neutral=0 (bug b)
+    top_trades: list[dict[str, Any]] = field(default_factory=list)  # / top trades by value
+    signed_strength: float = 0.0  # / bullish=+strength, bearish=-strength, neutral=0 (bug
 
 
 def _title_weight(title: str) -> float:
-    # / return weight based on insider title — first match wins
     if not title:
         return 1.0
     title_lower = title.lower()
@@ -68,12 +59,10 @@ def _title_weight(title: str) -> float:
 
 
 def _detect_cluster(trades: list[dict[str, Any]], window_days: int = CLUSTER_WINDOW_DAYS) -> bool:
-    # / detect if multiple insiders bought within a short window
     buys = [t for t in trades if t.get("transaction_type") == "buy"]
     if len(buys) < CLUSTER_MIN_INSIDERS:
         return False
 
-    # / check for cluster: N+ unique insiders buying within window
     for trade in buys:
         trade_date = trade.get("filing_date")
         if not trade_date:
@@ -95,7 +84,6 @@ def compute_insider_signal(
     trades: list[dict[str, Any]],
     symbol: str = "UNKNOWN",
 ) -> InsiderSignal:
-    # / analyze insider trades and produce a signal
     if not trades:
         return InsiderSignal(
             symbol=symbol,
@@ -114,7 +102,6 @@ def compute_insider_signal(
             details={"reason": "no_trades"},
         )
 
-    # / separate buys and sells (exclude option exercises)
     buys = [t for t in trades if t.get("transaction_type") == "buy"]
     sells = [t for t in trades if t.get("transaction_type") == "sell"]
 
@@ -136,7 +123,6 @@ def compute_insider_signal(
         weighted_sell_value += val * weight
         raw_sell_value += val
 
-    # / net buy ratio: weighted buys vs sells (-1 to 1)
     total_weighted = weighted_buy_value + weighted_sell_value
     if total_weighted > 0:
         net_buy_ratio = (weighted_buy_value - weighted_sell_value) / total_weighted
@@ -153,7 +139,6 @@ def compute_insider_signal(
     # / compute signal and strength
     strength = 0.0
 
-    # / net ratio contribution (0-50 points)
     ratio_points = abs(net_buy_ratio) * 50
     strength += ratio_points
 
@@ -161,14 +146,12 @@ def compute_insider_signal(
     if cluster:
         strength += 25.0
 
-    # / volume of activity (0-25 points) — more trades = stronger signal
     trade_count = len(buys) + len(sells)
     activity_points = min(25.0, trade_count * 3.0)
     strength += activity_points
 
     strength = min(100.0, round(strength, 1))
 
-    # / signed strength: +strength bullish, -strength bearish, 0 neutral (bug b)
     signed_strength = strength if net_buy_ratio > 0 else (-strength if net_buy_ratio < 0 else 0.0)
 
     # / determine direction
@@ -179,7 +162,6 @@ def compute_insider_signal(
     else:
         signal = "neutral"
 
-    # / top trades by value for llm prompt context
     all_trades = buys + sells
     sorted_trades = sorted(all_trades, key=lambda t: abs(float(t.get("total_value", 0))), reverse=True)
     top = []
@@ -211,7 +193,6 @@ def compute_insider_signal(
             "weighted_buy_value": round(weighted_buy_value, 2),
             "weighted_sell_value": round(weighted_sell_value, 2),
             "trade_count": trade_count,
-            # / non-conviction transaction counts for llm context
             "option_exercise_count": sum(1 for t in trades if t.get("transaction_type") == "option_exercise"),
             "tax_payment_count": sum(1 for t in trades if t.get("transaction_type") == "tax_payment"),
             "gift_count": sum(1 for t in trades if t.get("transaction_type") == "gift"),
@@ -225,7 +206,6 @@ async def analyze_insider_activity(
     symbol: str,
     days: int = 90,
 ) -> InsiderSignal:
-    # / fetch insider trades from db and analyze
     cutoff = date.today() - timedelta(days=days)
 
     async with pool.acquire() as conn:

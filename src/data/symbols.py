@@ -1,28 +1,16 @@
-# / centralized symbol normalization and classification
-# / internal: "AAPL", "BTC-USD" | alpaca: "AAPL", "BTC/USD"
-# / universe names: strategies reference these instead of hardcoding tickers
 
 from __future__ import annotations
 
 _CRYPTO_SUFFIXES = ("-USD", "-USDT", "-EUR", "-GBP")
 
 EQUITY_UNIVERSE = [
-    # / first 30 stream via alpaca iex ws (free tier cap, ALPACA_STREAM_MAX_SYMBOLS).
-    # / order = priority for real-time ticks; overflow falls to 5-min rest poll.
     # /
-    # / etfs — benchmarks, always streamed
     "SPY", "QQQ", "SPUS",
-    # / mega-cap tech — core movers
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    # / semiconductors — high intraday range
     "AMD", "AVGO", "QCOM", "MRVL", "ARM",
-    # / high-mover cyber/cloud (dropped ADBE/PANW/ZS — stable enterprise, low vol)
     "CRM", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB",
-    # / fintech — generally high beta
     "SHOP", "XYZ", "COIN", "HOOD", "SOFI",
-    # / retail/day-trader favorites promoted into streamed tier (high intraday range)
     "HIMS", "RKLB", "ASTS",
-    # / --- below = overflow, 5-min rest poll ---
     # / stable enterprise cyber/cloud
     "ADBE", "PANW", "ZS",
     # / fintech tail
@@ -41,7 +29,6 @@ CRYPTO_UNIVERSE = [
 ]
 FULL_UNIVERSE = EQUITY_UNIVERSE + CRYPTO_UNIVERSE
 
-# / sector groupings for hierarchical evolution
 SECTORS: dict[str, list[str]] = {
     "mega_tech":     ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA"],
     "semis":         ["NVDA", "AMD", "AVGO", "QCOM", "MRVL", "ARM"],
@@ -56,7 +43,6 @@ SECTORS: dict[str, list[str]] = {
     "etfs":          ["SPY", "QQQ", "SPUS"],
 }
 
-# / reverse lookup cache: symbol -> sector
 _SYMBOL_TO_SECTOR: dict[str, str] = {}
 for _sec, _syms in SECTORS.items():
     for _sym in _syms:
@@ -64,34 +50,26 @@ for _sec, _syms in SECTORS.items():
 
 
 def get_sector(symbol: str) -> str | None:
-    # / returns the sector a symbol belongs to, or None
     return _SYMBOL_TO_SECTOR.get(symbol.upper())
 
 
 def get_sector_symbols(sector: str) -> list[str]:
-    # / returns all symbols in a sector, or empty list
     return SECTORS.get(sector, [])
 
 
-# / named universes — strategies reference these by name
-# / the resolver expands names to symbol lists at runtime
-# / "all" means scan everything in the database
 NAMED_UNIVERSES: dict[str, list[str]] = {
-    "sp500": [],       # / resolved at runtime from market_data table
-    "nasdaq100": [],   # / resolved at runtime from market_data table
+    "sp500": [],  # / resolved at runtime from
+    "nasdaq100": [],  # / resolved at runtime from
     "crypto": CRYPTO_UNIVERSE,
     "default_equity": EQUITY_UNIVERSE,
     "default_crypto": CRYPTO_UNIVERSE,
-    "all": [],         # / resolved at runtime — every symbol in the database
+    "all": [],  # / resolved at runtime —
 }
 
-# / valid universe reference names for strategy configs
 VALID_UNIVERSE_REFS = {"sp500", "nasdaq100", "crypto", "default_equity", "default_crypto", "all", "all_stocks", "all_crypto"} | set(SECTORS.keys())
 
 
 def resolve_universe(universe_ref: str, available_symbols: list[str] | None = None) -> list[str]:
-    # / resolve a universe reference to a list of symbols
-    # / available_symbols: all symbols currently in the database (passed by caller)
     ref = universe_ref.lower().strip()
 
     if ref == "all":
@@ -105,7 +83,6 @@ def resolve_universe(universe_ref: str, available_symbols: list[str] | None = No
             return [s for s in available_symbols if is_crypto(s)]
         return CRYPTO_UNIVERSE
     elif ref in ("sp500", "nasdaq100"):
-        # / these require real constituent lists — not yet maintained
         raise NotImplementedError(
             f"universe '{ref}' requires a constituent list that isn't maintained yet. "
             "Use 'all_stocks' or 'all' instead."
@@ -116,7 +93,6 @@ def resolve_universe(universe_ref: str, available_symbols: list[str] | None = No
         cached = NAMED_UNIVERSES[ref]
         if cached:
             return cached
-        # / empty list means resolve from available_symbols
         if available_symbols:
             if ref in ("default_equity",):
                 return [s for s in available_symbols if not is_crypto(s)]
@@ -124,19 +100,16 @@ def resolve_universe(universe_ref: str, available_symbols: list[str] | None = No
                 return [s for s in available_symbols if is_crypto(s)]
         return EQUITY_UNIVERSE if ref == "default_equity" else FULL_UNIVERSE
     else:
-        # / treat as a comma-separated list of specific symbols
         return [s.strip().upper() for s in universe_ref.split(",") if s.strip()]
 
 
 def to_alpaca(symbol: str) -> str:
-    # / "BTC-USD" -> "BTC/USD", equities pass through
     if is_crypto(symbol):
         return symbol.replace("-", "/")
     return symbol
 
 
 def is_crypto(symbol: str) -> bool:
-    # / true for crypto symbols in either format
     upper = symbol.upper()
     if "/" in upper:
         return True

@@ -1,4 +1,3 @@
-# / admin token + bearer extraction shared across routers
 
 from __future__ import annotations
 

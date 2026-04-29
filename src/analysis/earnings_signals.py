@@ -1,6 +1,3 @@
-# / earnings signals: surprise detection, guidance tracking, estimate revisions
-# / uses yfinance earnings data (free)
-# / scores bullish/bearish signals based on earnings patterns
 
 from __future__ import annotations
 
@@ -15,7 +12,7 @@ logger = structlog.get_logger(__name__)
 
 # / signal thresholds
 SURPRISE_THRESHOLD = 0.02  # 2% beat/miss is significant
-CONSECUTIVE_BEATS_BULLISH = 3  # 3+ consecutive beats = strong signal
+CONSECUTIVE_BEATS_BULLISH = 3  # / 3+ consecutive beats =
 REVISION_THRESHOLD = 0.03  # 3% revision is meaningful
 
 
@@ -26,8 +23,8 @@ class EarningsSignal:
     signal: str           # bullish, bearish, neutral
     strength: float       # 0-100
     surprise_pct: float | None       # latest quarter surprise %
-    consecutive_beats: int           # streak of beats (negative = misses)
-    avg_surprise_4q: float | None    # average surprise over 4 quarters
+    consecutive_beats: int  # / streak of beats (negative
+    avg_surprise_4q: float | None  # / average surprise over 4
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -48,17 +45,14 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
             # / try earnings_history as fallback
             earnings = getattr(ticker, "earnings_history", None)
 
-        # / get earnings dates for forward-looking
         earnings_dates = getattr(ticker, "earnings_dates", None)
 
         result: dict[str, Any] = {"symbol": symbol, "quarters": []}
 
-        # / parse quarterly earnings if available
         if earnings is not None and hasattr(earnings, "iterrows"):
             for idx, row in earnings.iterrows():
                 q: dict[str, Any] = {"period": str(idx)}
 
-                # / different yfinance versions use different column names
                 for actual_col in ("Actual", "actual", "Reported EPS", "reportedEPS"):
                     if actual_col in row.index:
                         q["actual"] = float(row[actual_col]) if row[actual_col] is not None else None
@@ -69,7 +63,6 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
                         q["estimate"] = float(row[est_col]) if row[est_col] is not None else None
                         break
 
-                # / compute surprise — skip near-zero estimates to avoid extreme percentages
                 if q.get("actual") is not None and q.get("estimate") is not None and abs(q["estimate"]) > 0.01:
                     surprise = (q["actual"] - q["estimate"]) / abs(q["estimate"])
                     q["surprise_pct"] = max(-5.0, min(5.0, surprise))
@@ -78,17 +71,15 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
 
                 result["quarters"].append(q)
 
-        # / sort quarters most-recent-first — yfinance order is not guaranteed
         result["quarters"].sort(key=lambda q: q.get("period", ""), reverse=True)
 
-        # / parse earnings dates for next report
         if earnings_dates is not None and hasattr(earnings_dates, "index") and len(earnings_dates) > 0:
             try:
                 next_date = earnings_dates.index[0]
                 if hasattr(next_date, "date"):
                     next_date = next_date.date()
                 result["next_earnings_date"] = str(next_date)
-            except Exception:
+            except (IndexError, AttributeError, ValueError):
                 pass
 
         return result
@@ -99,7 +90,6 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
 
 
 async def _fetch_earnings_finnhub(symbol: str) -> dict[str, Any] | None:
-    # / finnhub earnings: cleaner data than yfinance, free tier
     import os
     key = os.environ.get("FINNHUB_API_KEY")
     if not key:
@@ -140,7 +130,6 @@ async def _fetch_earnings_finnhub(symbol: str) -> dict[str, Any] | None:
 
 
 async def fetch_earnings(symbol: str) -> dict[str, Any] | None:
-    # / try finnhub first, fall back to yfinance
     result = await _fetch_earnings_finnhub(symbol)
     if result and result.get("quarters"):
         logger.info("earnings_fetched_finnhub", symbol=symbol, quarters=len(result["quarters"]))
@@ -154,7 +143,6 @@ async def fetch_earnings(symbol: str) -> dict[str, Any] | None:
 
 
 def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
-    # / analyze earnings history and produce a signal
     symbol = earnings_data.get("symbol", "UNKNOWN")
     quarters = earnings_data.get("quarters", [])
 
@@ -170,7 +158,6 @@ def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
             details={"reason": "no_earnings_data"},
         )
 
-    # / get surprises (most recent first)
     surprises = [q["surprise_pct"] for q in quarters if q.get("surprise_pct") is not None]
 
     if not surprises:
@@ -187,7 +174,6 @@ def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
 
     latest_surprise = surprises[0]
 
-    # / count consecutive beats/misses from most recent
     consecutive = 0
     for s in surprises:
         if s > SURPRISE_THRESHOLD:
@@ -203,7 +189,6 @@ def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
         else:
             break
 
-    # / average surprise over last 4 quarters
     recent_4 = surprises[:4]
     avg_surprise = sum(recent_4) / len(recent_4)
 
@@ -211,19 +196,16 @@ def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
     strength = 0.0
     signal = "neutral"
 
-    # / latest surprise contribution (0-40 points)
     if abs(latest_surprise) > SURPRISE_THRESHOLD:
         surprise_points = min(40.0, abs(latest_surprise) / 0.20 * 40)
         strength += surprise_points
         signal = "bullish" if latest_surprise > 0 else "bearish"
 
-    # / consecutive beats/misses contribution (0-30 points)
     if abs(consecutive) >= CONSECUTIVE_BEATS_BULLISH:
         strength += 30.0
     elif abs(consecutive) >= 2:
         strength += 15.0
 
-    # / average surprise contribution (0-30 points)
     if abs(avg_surprise) > SURPRISE_THRESHOLD:
         avg_points = min(30.0, abs(avg_surprise) / 0.15 * 30)
         strength += avg_points
@@ -254,7 +236,6 @@ def compute_earnings_signal(earnings_data: dict[str, Any]) -> EarningsSignal:
 
 
 async def analyze_earnings(symbol: str) -> EarningsSignal | None:
-    # / full pipeline: fetch + compute signal
     data = await fetch_earnings(symbol)
     if not data:
         return None

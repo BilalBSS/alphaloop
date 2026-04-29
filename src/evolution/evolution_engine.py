@@ -1,5 +1,3 @@
-# / karpathy autoresearch loop for strategy evolution
-# / read -> rank -> kill -> mutate -> backtest -> score -> promote -> document
 
 from __future__ import annotations
 
@@ -8,6 +6,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import numpy as np
 import structlog
 
@@ -41,17 +40,14 @@ from src.strategies.strategy_pool import (
 
 logger = structlog.get_logger(__name__)
 
-# / default 80% guided / 20% unguided, env override WIKI_GUIDED_RATIO
 DEFAULT_WIKI_GUIDED_RATIO = 0.80
 
 
 def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
                              reason: str | None = None) -> None:
-    # / notify ws clients when a strategy changes status
-    # / (killed, paper_trading, live). late-bind so headless tests pass.
     try:
         from src.dashboard.app import _ws_clients, broadcast
-    except Exception:
+    except ImportError:
         return
     if not _ws_clients:
         return
@@ -76,7 +72,6 @@ class EvolutionEngine:
         self._tier3_graduate_trades = evo.get("tier3_graduate_trades", 100)
         self._tier3_sharpe_delta = evo.get("tier3_sharpe_delta", 0.2)
         self._tier2_param_freedom = evo.get("tier2_param_freedom", 0.20)
-        # / promotion gates from risk_limits.json (were hardcoded 14/0.8 with no win_rate)
         self._paper_trade_min_days = int(rl.get("paper_trade_min_days", 14))
         self._promotion_min_sharpe = float(rl.get("promotion_min_sharpe", 0.8))
         self._promotion_min_win_rate = float(rl.get("promotion_min_win_rate", 0.45))
@@ -98,10 +93,6 @@ class EvolutionEngine:
         regime: str | None = None,
     ) -> dict[str, Any]:
         # / main evolution loop
-        # / pool = asyncpg connection pool for db operations
-        # / strategy_pool = in-memory strategy pool
-        # / market_data = historical data for backtesting mutations
-        # / regime = optional current regime hint for wiki context assembly
 
         self._current_regime = regime
         self._generation: int = 0
@@ -114,18 +105,15 @@ class EvolutionEngine:
             "errors": [],
         }
 
-        # / bail early if pool is empty
         if strategy_pool.size == 0:
             logger.info("evolution_empty_pool")
             return summary
 
-        # / 1. READ: fetch strategy scores from db
         db_scores, generation = await self._read_scores(pool)
         self._generation = generation
         summary["generation"] = generation
         logger.info("evolution_start", generation=generation, pool_size=strategy_pool.size)
 
-        # / 2. UPDATE pool scores from db
         self._update_pool(db_scores, strategy_pool)
 
         # / 3. KILL: bottom quartile
@@ -139,13 +127,10 @@ class EvolutionEngine:
         mutated_configs = await self._mutate_killed(pool, killed_configs, strategy_pool, summary)
         backtest_results = await self._backtest_mutated(mutated_configs, market_data, summary)
 
-        # / 7-8. SCORE + ADD above-median to pool
         await self._score_and_add(pool, generation, backtest_results, strategy_pool, summary)
 
-        # / 9. PROMOTE: paper_trading -> live
         await self._promote_paper(pool, generation, strategy_pool, summary)
 
-        # / 10. SPAWN TIER-2: per-symbol tweaks from sector strategies
         try:
             spawned = await self._spawn_tier2(pool, strategy_pool, generation)
             summary["spawned_tier2"] = spawned
@@ -153,7 +138,6 @@ class EvolutionEngine:
             logger.error("spawn_tier2_failed", error=str(exc))
             summary["errors"].append(f"spawn_tier2 failed: {exc}")
 
-        # / 11. GRADUATE TIER-3: per-symbol full freedom
         try:
             graduated = await self._graduate_tier3(pool, strategy_pool, generation)
             summary["graduated_tier3"] = graduated
@@ -161,11 +145,8 @@ class EvolutionEngine:
             logger.error("graduate_tier3_failed", error=str(exc))
             summary["errors"].append(f"graduate_tier3 failed: {exc}")
 
-        # / 12. DOCUMENT: generate report and update docs
         await self._document(pool, generation, strategy_pool, summary)
 
-        # / 13. LOG CYCLE: ensure every evolution run writes at least one log row
-        # / dashboard queries MAX(created_at) from evolution_log to show "last evolution"
         try:
             await store_evolution_log(
                 pool, generation, "cycle_complete", "system", None,
@@ -185,7 +166,6 @@ class EvolutionEngine:
         return summary
 
     async def _read_scores(self, pool: Any) -> tuple[list, int]:
-        # / 1. READ: fetch strategy scores from db
         try:
             db_scores = await fetch_strategy_scores(pool)
         except Exception as exc:
@@ -195,20 +175,18 @@ class EvolutionEngine:
         # / determine generation counter
         generation = 1
         if db_scores:
-            # / evolution_log generation tracking via db scores
             try:
                 rows = await pool.fetch(
                     "SELECT COALESCE(MAX(generation), 0) as max_gen FROM evolution_log"
                 )
                 if rows:
                     generation = int(rows[0]["max_gen"]) + 1
-            except Exception:
+            except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
                 generation = 1
 
         return db_scores, generation
 
     def _update_pool(self, db_scores: list, strategy_pool: StrategyPool) -> None:
-        # / update pool scores from db
         for score_row in db_scores:
             sid = score_row.get("strategy_id", "")
             entry = strategy_pool.get(sid)
@@ -226,8 +204,6 @@ class EvolutionEngine:
     async def _kill_bottom_quartile(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> list[dict]:
-        # / 2. RANK + 3. KILL: bottom quartile + dormancy fallback
-        # / skip quartile kill if strategies haven't accumulated enough trade data
         scored_count = sum(
             1 for e in strategy_pool.ranked()
             if e.score and e.score.total_trades >= 3
@@ -242,11 +218,6 @@ class EvolutionEngine:
         else:
             bottom = strategy_pool.bottom_quartile()
 
-        # / bug e2 clean slate: dormancy kill is GATED until the system accumulates at least
-        # / 10 closed trades across any strategy. prior historical "dormancy" is polluted by
-        # / broken intraday + broken consensus gates that were fixed in phase e — killing
-        # / strategies off that data would erase work that never got a fair run. once we have
-        # / real trade data from the fixed pipeline, the gate flips and dormancy kicks in.
         bottom_ids = {e.strategy.strategy_id for e in bottom}
         dormant: list = []
         total_closed_trades = sum(
@@ -287,19 +258,17 @@ class EvolutionEngine:
 
             prev_status = entry.status
             strategy_pool.update_status(sid, "killed")
-            # / persist kill to disk so restart doesn't resurrect the strategy
             config.setdefault("metadata", {})["status"] = "killed"
             try:
                 save_config(config)
             except Exception as exc:
-                # / save_config silently failed before; now loudly notify so stale configs get surfaced
                 logger.error("kill_save_config_failed", strategy_id=sid, error=str(exc))
                 try:
                     from src.notifications.notifier import notify_system_error
                     notify_system_error(
                         f"kill_save_config_failed strategy={sid}: {str(exc)[:100]}", "evolution",
                     )
-                except Exception:
+                except (ImportError, RuntimeError):
                     pass
             _broadcast_status_change(sid, prev_status, "killed", reason=reason)
             killed_configs.append({"id": sid, "config": config, "reason": reason})
@@ -313,7 +282,6 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.error("evolution_log_kill_failed", strategy_id=sid, error=str(exc))
 
-            # / flag the evolution_mutations row (if any) as not survived
             try:
                 await update_evolution_mutation_by_mutant(
                     pool, mutant_strategy_id=sid, survived=False,
@@ -327,7 +295,6 @@ class EvolutionEngine:
         self, pool: Any, generation: int, strategy_pool: StrategyPool,
         killed_configs: list[dict], summary: dict,
     ) -> None:
-        # / tier-2 kill condition: tweaked strategies that don't beat sector base
         for entry in strategy_pool.list_by_status("live"):
             config = entry.strategy.config
             if config.get("tier") != "tweaked":
@@ -341,7 +308,6 @@ class EvolutionEngine:
                 prev_status = entry.status
                 strategy_pool.update_status(sid, "killed")
                 _broadcast_status_change(sid, prev_status, "killed", reason=reason)
-                # / persist kill to disk (same pattern as _kill_bottom_quartile)
                 config.setdefault("metadata", {})["status"] = "killed"
                 try:
                     save_config(config)
@@ -352,7 +318,7 @@ class EvolutionEngine:
                         notify_system_error(
                             f"tier2_kill_save_failed strategy={sid}: {str(exc)[:100]}", "evolution",
                         )
-                    except Exception:
+                    except (ImportError, RuntimeError):
                         pass
                 killed_configs.append({"id": sid, "config": config, "reason": reason})
                 summary["killed"].append({"id": sid, "reason": reason})
@@ -372,7 +338,6 @@ class EvolutionEngine:
         self, pool: Any, killed_configs: list[dict], strategy_pool: StrategyPool,
         summary: dict,
     ) -> list[dict]:
-        # / 4. MUTATE: propose mutations for each killed strategy
         top_performers = strategy_pool.top_performers(n=1)
         top_config = top_performers[0].strategy.config if top_performers else {}
 
@@ -383,10 +348,9 @@ class EvolutionEngine:
             sid = killed["id"]
             try:
                 trades = await fetch_recent_trades(pool, strategy_id=sid, limit=10)
-            except Exception:
+            except (asyncpg.PostgresError, KeyError):
                 trades = []
 
-            # / 80/20 wiki-guided split (env override via WIKI_GUIDED_RATIO)
             wiki_guided = bool(self._rng.random() < self._wiki_guided_ratio)
             wiki_ctx: str | None = None
             if wiki_guided:
@@ -422,7 +386,6 @@ class EvolutionEngine:
                     strategy_id=sid, error=str(exc)[:120],
                 )
 
-            # / capture parent sharpe for later delta computation
             parent_entry = strategy_pool.get(sid)
             parent_sharpe: float | None = None
             if parent_entry and parent_entry.score:
@@ -453,7 +416,6 @@ class EvolutionEngine:
                     summary["errors"].append(f"mutation failed: {result}")
                     continue
                 configs = result if isinstance(result, list) else [result]
-                # / first child binds to the pre-inserted row; clone tracking row for extras
                 for idx, cfg in enumerate(configs):
                     if not isinstance(cfg, dict):
                         continue
@@ -482,7 +444,6 @@ class EvolutionEngine:
         self, mutated_configs: list[dict], market_data: dict | None,
         summary: dict,
     ) -> list[tuple[dict, BacktestResult]]:
-        # / 5. BACKTEST: run backtests in parallel
         backtest_results: list[tuple[dict, BacktestResult]] = []
         if mutated_configs and market_data:
             backtest_tasks = []
@@ -496,9 +457,6 @@ class EvolutionEngine:
                     logger.error("backtest_failed", strategy_id=config.get("id"), error=str(bt_result))
                     summary["errors"].append(f"backtest failed for {config.get('id')}: {bt_result}")
                 else:
-                    # / walk-forward out-of-sample validation (reject overfit mutations)
-                    # / only check overfitting when IS sharpe is positive — negative IS
-                    # / strategies pass through to the median scoring filter instead
                     try:
                         is_sharpe = bt_result.sharpe_ratio
                         if is_sharpe > 0:
@@ -520,8 +478,6 @@ class EvolutionEngine:
         backtest_results: list[tuple[dict, BacktestResult]],
         strategy_pool: StrategyPool, summary: dict,
     ) -> None:
-        # / 6. SCORE + 7. ADD above-median to pool
-        # / compute median composite score of current pool
         ranked = strategy_pool.ranked()
         if ranked:
             composites = [
@@ -546,7 +502,6 @@ class EvolutionEngine:
                 "composite": composite,
             }
 
-            # / patch the evolution_mutations row with mutant sharpe + delta
             evo_row_id = config.get("_evo_mutation_row_id")
             parent_sharpe = config.get("_evo_parent_sharpe")
             mutant_sharpe = float(bt_result.sharpe_ratio)
@@ -568,7 +523,6 @@ class EvolutionEngine:
                         error=str(exc)[:120],
                     )
             else:
-                # / fallback: match by mutant id (second-child case)
                 try:
                     await update_evolution_mutation_by_mutant(
                         pool,
@@ -583,7 +537,6 @@ class EvolutionEngine:
                         error=str(exc)[:120],
                     )
 
-            # / record a mutation_result lesson on the parent strategy
             parent_sid = config.get("_evo_parent_id") or config.get("parent_id")
             if parent_sid:
                 try:
@@ -611,12 +564,10 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.info("lesson_record_failed", error=str(exc)[:120])
 
-            # / strip the private _evo_* bookkeeping from the persisted config
             for _k in ("_evo_mutation_row_id", "_evo_parent_id", "_evo_parent_sharpe", "_evo_wiki_guided"):
                 config.pop(_k, None)
 
             if composite > median_score:
-                # / add to pool as paper_trading
                 config["metadata"]["status"] = "paper_trading"
                 strategy = ConfigDrivenStrategy(config)
                 strategy_pool.add(strategy, status="paper_trading")
@@ -633,7 +584,6 @@ class EvolutionEngine:
                 )
                 strategy_pool.update_score(config["id"], score)
 
-                # / persist score to db for dashboard quant metrics
                 try:
                     from datetime import date as dt_date
                     p_start = bt_result.period_start.date() if bt_result.period_start else dt_date.today()
@@ -677,10 +627,8 @@ class EvolutionEngine:
     async def _promote_paper(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> None:
-        # / 8. PROMOTE: paper_trading strategies must clear ALL risk_limits gates
         paper_strategies = strategy_pool.list_by_status("paper_trading")
         for entry in paper_strategies:
-            # / compute paper_days dynamically from status_changed_at
             paper_days = (datetime.now(timezone.utc) - entry.status_changed_at).days
             if not entry.score:
                 continue
@@ -711,7 +659,6 @@ class EvolutionEngine:
                 except Exception as exc:
                     logger.error("evolution_log_promote_failed", error=str(exc))
 
-                # / flag the mutation row as survived
                 try:
                     await update_evolution_mutation_by_mutant(
                         pool, mutant_strategy_id=sid, survived=True,
@@ -722,7 +669,6 @@ class EvolutionEngine:
     async def _document(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> None:
-        # / 11. DOCUMENT: generate report and update docs
         pool_summary = strategy_pool.summary()
         try:
             await generate_report(
@@ -741,12 +687,9 @@ class EvolutionEngine:
     async def _spawn_tier2(
         self, pool: Any, strategy_pool: StrategyPool, generation: int,
     ) -> list[dict]:
-        # / for live sector/general strategies, check per-symbol trade counts
-        # / single grouped query replaces N*M acquires
         from src.data.symbols import FULL_UNIVERSE, get_sector
         spawned = []
 
-        # / collect candidate (strategy, symbols) pairs
         candidates: list[tuple[Any, dict, str | None, list[str]]] = []
         all_strat_ids: set[str] = set()
         all_symbols: set[str] = set()
@@ -763,7 +706,6 @@ class EvolutionEngine:
             all_strat_ids.add(config["id"])
             all_symbols.update(symbols_to_check)
 
-        # / one grouped query for all (strategy_id, symbol) trade counts
         counts: dict[tuple[str, str], int] = {}
         if all_strat_ids and all_symbols:
             try:
@@ -784,7 +726,6 @@ class EvolutionEngine:
                 trade_count = counts.get((config["id"], symbol), 0)
                 if trade_count < self._tier2_spawn_trades:
                     continue
-                # / infer sector from symbol if strategy doesn't have one
                 sym_sector = sector or get_sector(symbol)
                 if not sym_sector:
                     continue
@@ -809,7 +750,6 @@ class EvolutionEngine:
     async def _graduate_tier3(
         self, pool: Any, strategy_pool: StrategyPool, generation: int,
     ) -> list[dict]:
-        # / tier-2 strategies with enough trades + beating sector base -> tier 3
         graduated = []
         for entry in strategy_pool.list_by_status("live"):
             config = entry.strategy.config
@@ -821,7 +761,7 @@ class EvolutionEngine:
 
             try:
                 total_trades = await count_all_symbol_trades(pool, symbol)
-            except Exception:
+            except (asyncpg.PostgresError, KeyError):
                 continue
             if total_trades < self._tier3_graduate_trades:
                 continue
@@ -845,7 +785,6 @@ class EvolutionEngine:
 
     @staticmethod
     def _has_tier2(strategy_pool: StrategyPool, sector: str, symbol: str) -> bool:
-        # / check if a tier-2 strategy already exists for this symbol in this sector
         for entry in strategy_pool.all_entries():
             c = entry.strategy.config
             if (c.get("tier") in ("tweaked", "graduated")
@@ -857,7 +796,6 @@ class EvolutionEngine:
 
     @staticmethod
     def _clone_as_tier2(sector_config: dict, symbol: str, sector: str | None = None) -> dict:
-        # / create a tier-2 clone from a sector/general strategy for a specific symbol
         import copy
         import uuid
         new = copy.deepcopy(sector_config)
@@ -878,7 +816,6 @@ class EvolutionEngine:
 
     @staticmethod
     def _get_sector_base_sharpe(strategy_pool: StrategyPool, sector: str | None) -> float:
-        # / get the best sharpe of tier-1 (sector) strategies in this sector
         if not sector:
             return 0.0
         best = 0.0

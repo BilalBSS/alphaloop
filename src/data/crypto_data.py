@@ -1,5 +1,3 @@
-# / crypto market data: coingecko (price/mcap/volume) + defillama (tvl/dex volume)
-# / free apis, no key needed for defillama. coingecko free tier: 10-30 req/min.
 
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ DEFILLAMA_BASE = "https://api.llama.fi"
 configure_rate_limit("coingecko", max_concurrent=2, delay=2.5)
 configure_rate_limit("defillama", max_concurrent=5, delay=0.5)
 
-# / coingecko id map for common crypto symbols
 _CG_IDS = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
     "ADA": "cardano", "DOT": "polkadot", "AVAX": "avalanche-2",
@@ -34,7 +31,6 @@ def _cg_id(symbol: str) -> str | None:
 
 @with_retry(source="coingecko", max_retries=2, base_delay=3.0)
 async def fetch_coin_data(symbol: str) -> dict[str, Any] | None:
-    # / fetch price, market_cap, volume, price_change from coingecko
     cg_id = _cg_id(symbol)
     if not cg_id:
         return None
@@ -65,7 +61,6 @@ async def fetch_coin_data(symbol: str) -> dict[str, Any] | None:
 async def fetch_coin_market_chart(
     symbol: str, days: int = 30,
 ) -> dict[str, Any] | None:
-    # / fetch historical price + volume + market_cap series
     cg_id = _cg_id(symbol)
     if not cg_id:
         return None
@@ -87,7 +82,6 @@ async def fetch_coin_market_chart(
 async def fetch_coin_ohlc(
     symbol: str, days: int = 30,
 ) -> list[dict[str, Any]] | None:
-    # / fetch ohlcv candles from coingecko (4h granularity for 1-30 days)
     cg_id = _cg_id(symbol)
     if not cg_id:
         return None
@@ -102,7 +96,6 @@ async def fetch_coin_ohlc(
 
     candles = []
     for row in data:
-        # / coingecko returns [timestamp_ms, open, high, low, close]
         if not isinstance(row, list) or len(row) < 5:
             continue
         candles.append({
@@ -119,7 +112,6 @@ async def fetch_coin_ohlc(
 
 @with_retry(source="defillama", max_retries=2, base_delay=1.0)
 async def fetch_defi_tvl(protocol: str | None = None) -> dict[str, Any]:
-    # / fetch total value locked — all protocols or specific one
     if protocol:
         url = f"{DEFILLAMA_BASE}/protocol/{protocol}"
     else:
@@ -141,13 +133,11 @@ async def fetch_dex_volume(chain: str | None = None) -> dict[str, Any]:
 
 @with_retry(source="defillama", max_retries=2, base_delay=1.0)
 async def fetch_stablecoin_supply() -> dict[str, Any]:
-    # / fetch stablecoin market cap data
     url = f"{DEFILLAMA_BASE}/stablecoins"
     resp = await api_get(url, source="defillama")
     return resp.json()
 
 
-# / loris tools: cross-exchange funding rates + OI rankings (free, no key)
 LORIS_BASE = "https://api.loris.tools"
 
 configure_rate_limit("loris", max_concurrent=1, delay=60.0)
@@ -155,15 +145,12 @@ configure_rate_limit("loris", max_concurrent=1, delay=60.0)
 
 @with_retry(source="loris", max_retries=1, base_delay=5.0)
 async def fetch_funding_rates() -> dict[str, Any]:
-    # / fetch funding rates across all exchanges, rates *10000
-    # / attribution: funding rate data provided by loris.tools
     resp = await api_get(f"{LORIS_BASE}/funding", source="loris")
     data = resp.json()
     return data
 
 
 def get_funding_rate(funding_data: dict[str, Any], symbol: str) -> dict[str, Any] | None:
-    # / extract funding rate for a symbol, average across exchanges
     sym = symbol.upper().replace("-USD", "")
     rates = funding_data.get("funding_rates", {})
     values = []
@@ -172,7 +159,7 @@ def get_funding_rate(funding_data: dict[str, Any], symbol: str) -> dict[str, Any
             continue
         val = exchange_rates.get(sym)
         if val is not None and isinstance(val, (int, float)):
-            values.append(val / 10000.0)  # / convert from *10000 to decimal
+            values.append(val / 10000.0)  # / convert from *10000 to
     if not values:
         return None
     avg_rate = sum(values) / len(values)

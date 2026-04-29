@@ -1,6 +1,3 @@
-# / analyst agent — runs fundamental analysis pipeline per symbol
-# / writes composite scores to analysis_scores table
-# / graceful: one symbol failure doesn't stop the batch
 
 from __future__ import annotations
 
@@ -11,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import asyncpg
 import structlog
 
 from src.agents.data_tools import log_event, store_analysis_score
@@ -38,7 +36,6 @@ logger = structlog.get_logger(__name__)
 
 @dataclass(frozen=True)
 class DetailContext:
-    # / inputs to _build_full_details; replaces 9-positional-arg signature
     ratio_score: Any
     dcf_result: Any
     earnings_signal: Any
@@ -51,13 +48,10 @@ class DetailContext:
 
 
 async def _noop():
-    # / placeholder for parallel gather slots that should be skipped (e.g. insider for etfs)
     return None
 
 
 async def _compute_kronos_score(pool, symbol: str) -> tuple[float | None, dict | None]:
-    # / returns (score_0_100, details_dict) — returns (None, None) when disabled or short data
-    # / weight 0.15 in the composite when present (see _apply_kronos_to_composite below)
     try:
         import pandas as pd
         async with pool.acquire() as conn:
@@ -94,7 +88,6 @@ async def _compute_kronos_score(pool, symbol: str) -> tuple[float | None, dict |
 
 
 def _kronos_weight() -> float:
-    # / analyst blend weight for Kronos; 0 disables without requiring env tweak
     raw = os.environ.get("KRONOS_COMPOSITE_WEIGHT", "0.15")
     try:
         w = float(raw)
@@ -104,15 +97,11 @@ def _kronos_weight() -> float:
 
 
 def _compute_technical_score(indicator_data: dict | None) -> float | None:
-    # / derive 0-100 technical score from indicator_data so analysis_scores.technical_score
-    # / stops being null. keys match what _fetch_equity_enrichment stores: rsi14, macd_histogram, adx.
-    # / rsi and macd carry direction; adx is trend strength only and acts as confidence multiplier.
     if not indicator_data:
         return None
 
     direction_parts: list[float] = []
 
-    # / rsi14: 50 = neutral, <30 oversold (bullish), >70 overbought (bearish)
     rsi = indicator_data.get("rsi14") or indicator_data.get("rsi")
     if rsi is not None:
         try:
@@ -121,7 +110,6 @@ def _compute_technical_score(indicator_data: dict | None) -> float | None:
         except (TypeError, ValueError):
             pass
 
-    # / macd histogram: positive = bullish, negative = bearish, squashed around 50 midpoint
     macd_hist = indicator_data.get("macd_histogram") or indicator_data.get("macd_hist")
     if macd_hist is not None:
         try:
@@ -135,13 +123,10 @@ def _compute_technical_score(indicator_data: dict | None) -> float | None:
 
     base = sum(direction_parts) / len(direction_parts)
 
-    # / adx as confidence: strong trends (adx > 25) pull the score away from 50 toward the direction
-    # / weak trends (adx < 25) pull the score TOWARD 50. max amplification 1.3x, max damping 0.7x.
     adx = indicator_data.get("adx")
     if adx is not None:
         try:
             a = float(adx)
-            # / linear: adx=10 → 0.7x, adx=25 → 1.0x, adx=50 → ~1.3x
             mult = 0.7 + min(0.6, max(0.0, a / 50.0) * 0.6)
             score = 50.0 + (base - 50.0) * mult
             base = max(0.0, min(100.0, score))
@@ -154,10 +139,6 @@ def _compute_technical_score(indicator_data: dict | None) -> float | None:
 async def order_symbols_by_staleness(
     pool, symbols: list[str], min_refresh_interval_s: float = 0.0,
 ) -> list[str]:
-    # / order symbols oldest-first by latest analysis_scores.created_at so analyst
-    # / always refreshes the most-stale first. never-scored symbols jump to front.
-    # / symbols scored within min_refresh_interval_s are dropped (anti-thrash).
-    # / pure read, no writes. on db error returns input order unchanged.
     if not symbols:
         return []
     try:
@@ -176,8 +157,6 @@ async def order_symbols_by_staleness(
     for r in rows:
         ts = r["last_scored"]
         if ts is not None:
-            # / asyncpg returns tz-naive for TIMESTAMP, tz-aware for TIMESTAMPTZ.
-            # / analysis_scores.created_at is TIMESTAMPTZ → always aware, but be defensive.
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             last_scored[r["symbol"]] = ts
@@ -185,9 +164,7 @@ async def order_symbols_by_staleness(
     now = datetime.now(tz=timezone.utc)
     min_interval = timedelta(seconds=max(0.0, min_refresh_interval_s))
 
-    # / never-scored symbols first (in input order so callers can bias universe priority)
     never_scored = [s for s in symbols if s not in last_scored]
-    # / scored symbols oldest-first, skipping too-recent ones when min_interval > 0
     scored = [(s, last_scored[s]) for s in symbols if s in last_scored]
     scored.sort(key=lambda x: x[1])
     eligible_scored = [
@@ -198,9 +175,6 @@ async def order_symbols_by_staleness(
 
 
 async def get_coverage_pct(pool, symbols: list[str], window_s: float = 3600.0) -> float:
-    # / fraction of `symbols` with an analysis_scores row in the last window_s seconds.
-    # / returned as 0..1. used by /api/phase5-metrics to surface analyst freshness.
-    # / 0.0 on error so the metric visibly flags the problem instead of pretending ok.
     if not symbols:
         return 0.0
     try:
@@ -220,7 +194,6 @@ async def get_coverage_pct(pool, symbols: list[str], window_s: float = 3600.0) -
 
 
 class AnalystAgent:
-    # / stateless — all persistent state lives in the database
 
     def __init__(self):
         self._funding_cache: dict | None = None
@@ -236,7 +209,6 @@ class AnalystAgent:
         min_refresh_interval_s: float = 0.0,
         inter_symbol_sleep_s: float = 0.5,
     ) -> dict[str, float | None]:
-        # / batched cycle, oldest-scored first, time-budgeted
         self._run_deepseek = run_deepseek
         self._funding_cache = None  # / reset per cycle
         self._macro_cache = None    # / reset per cycle
@@ -246,7 +218,6 @@ class AnalystAgent:
         budget_hit = False
         cycle_start = time.monotonic()
 
-        # / pick the subset to process: oldest first, drop too-recent
         ordered = await order_symbols_by_staleness(
             pool, symbols, min_refresh_interval_s=min_refresh_interval_s,
         )
@@ -259,15 +230,11 @@ class AnalystAgent:
             )
             return results
 
-        # / social sentiment: only for the batch we're going to process this cycle,
-        # / keeps api call volume flat when cadence shortens.
         try:
             await run_social_sentiment(pool, ordered)
         except Exception as exc:
             logger.warning("social_sentiment_batch_failed", error=str(exc))
 
-        # / budget anchored after per-cycle prelude (social sentiment, staleness
-        # / query) so a slow prelude doesn't starve the per-symbol work.
         work_start = time.monotonic()
         deadline = (
             work_start + wall_clock_budget_s if wall_clock_budget_s else None
@@ -309,7 +276,6 @@ class AnalystAgent:
                     f"analysis failed: {str(exc)[:200]}", symbol=symbol,
                 )
                 results[symbol] = None
-            # / throttle between symbols to avoid groq 429 rate limits
             if i < len(ordered) - 1:
                 await asyncio.sleep(inter_symbol_sleep_s)
 
@@ -340,13 +306,11 @@ class AnalystAgent:
         return results
 
     async def _analyze_symbol(self, pool, symbol: str) -> float | None:
-        # / route to crypto or equity analysis path
         if is_crypto(symbol):
             return await self._analyze_crypto_symbol(pool, symbol)
         return await self._analyze_equity_symbol(pool, symbol)
 
     async def _fetch_crypto_components(self, pool, symbol: str) -> tuple:
-        # / returns (sentiment_score, nvt, coin_data, funding_rate, oi_rank)
         sentiment_score: float | None = None
         try:
             sentiment_score = await compute_sentiment_score(symbol)
@@ -355,7 +319,6 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("analyst_sentiment_failed", symbol=symbol, error=str(exc))
 
-        # / fetch coingecko data for NVT
         nvt: float | None = None
         coin_data: dict | None = None
         try:
@@ -368,7 +331,6 @@ class AnalystAgent:
         except Exception as exc:
             logger.warning("analyst_crypto_coingecko_failed", symbol=symbol, error=str(exc))
 
-        # / fetch cross-exchange funding rate via loris tools (cached per cycle)
         funding_rate: float | None = None
         oi_rank: int | None = None
         try:
@@ -380,13 +342,12 @@ class AnalystAgent:
                     funding_rate = fr["funding_rate"]
                     oi_rank = fr.get("oi_rank")
         except Exception as exc:
-            self._funding_cache = {}  # / mark as attempted, don't retry per-symbol
+            self._funding_cache = {}  # / mark as attempted, don't
             logger.warning("analyst_crypto_funding_failed", symbol=symbol, error=str(exc))
 
         return (sentiment_score, nvt, coin_data, funding_rate, oi_rank)
 
     async def _analyze_crypto_symbol(self, pool, symbol: str) -> float | None:
-        # / crypto: NVT from coingecko + sentiment + LLM analysis
         sentiment_score, nvt, coin_data, funding_rate, oi_rank = await self._fetch_crypto_components(pool, symbol)
 
         regime = await fetch_latest_regime(pool, "crypto")
@@ -407,8 +368,6 @@ class AnalystAgent:
                 source="fear_greed", error=str(exc)[:120],
             )
 
-        # / llm analysis: same dual-llm path as equities
-        # / 30-min cycle: groq only, hourly cycle: groq + deepseek
         ai_signal: str | None = None
         ai_summary_text: str | None = None
         crypto_data = {
@@ -424,13 +383,11 @@ class AnalystAgent:
             "regime": regime,
         }
 
-        # / fetch strategy positions for llm context
         strat_positions = await get_strategy_positions(pool, symbol=symbol)
 
         deepseek_text: str | None = None
         ai_confidence: float = 0.0
         if getattr(self, "_run_deepseek", True):
-            # / hourly: dual-llm (groq + deepseek), same as equities
             try:
                 dual = await generate_dual_analysis(
                     symbol, crypto_data=crypto_data,
@@ -456,7 +413,6 @@ class AnalystAgent:
             except Exception as exc:
                 logger.warning("analyst_crypto_llm_failed", symbol=symbol, error=str(exc))
 
-        # / crypto composite weights: sentiment .17, nvt .17, funding .16, momentum .17, ai .33
         components: list[tuple[float, float]] = []
         if sentiment_score is not None and sentiment_score != 0.0:
             sent_100 = max(0.0, min(100.0, (sentiment_score + 1.0) * 50.0))
@@ -467,7 +423,6 @@ class AnalystAgent:
         if funding_rate is not None:
             fr_score = max(0.0, min(100.0, (0.01 - funding_rate) / 0.02 * 100.0))
             components.append((fr_score, 0.16))
-        # / price momentum: 24h + 7d blend mapped to 0-100
         if coin_data:
             pct_24h = coin_data.get("price_change_24h_pct")
             pct_7d = coin_data.get("price_change_7d_pct")
@@ -493,14 +448,12 @@ class AnalystAgent:
             "news_sentiment_score": sentiment_score,
             "regime": regime,
         }
-        # / fear_greed_index on 0-100 scale for dashboard display
         if fear_greed is not None:
             details["fear_greed_index"] = round(fear_greed * 50.0 + 50.0, 1)
         if coin_data:
             details["price_change_24h"] = coin_data.get("price_change_24h_pct")
             details["price_change_7d"] = coin_data.get("price_change_7d_pct")
             details["market_cap"] = coin_data.get("market_cap")
-        # / use same field names as equity path so dashboard AiAnalysisPanel works
         if ai_summary_text:
             details["llm_analysis_groq"] = ai_summary_text
             details["llm_signal_groq"] = ai_signal
@@ -514,7 +467,6 @@ class AnalystAgent:
             details=details,
         )
 
-        # / notify discord on strong crypto signals
         if ai_signal in ("bullish", "bearish") and composite is not None:
             notify_details = {
                 "nvt_ratio": nvt,
@@ -529,8 +481,6 @@ class AnalystAgent:
         return composite
 
     async def _fetch_equity_components(self, pool, symbol: str) -> tuple:
-        # / returns (ratio_score, dcf_result, earnings_signal, insider_signal)
-        # / fetched in parallel — all four are independent (no shared inputs).
         from src.data.symbols import get_sector
         is_etf = get_sector(symbol) == "etfs"
 
@@ -541,7 +491,6 @@ class AnalystAgent:
                 logger.warning(f"analyst_{label}_failed", symbol=symbol, error=str(exc))
                 return None
 
-        # / skip insider analysis for etfs — no form 4 filings
         coros = [
             _safe(analyze_ratios(pool, symbol), "ratio"),
             _safe(analyze_dcf(pool, symbol), "dcf"),
@@ -552,10 +501,8 @@ class AnalystAgent:
         return (ratio_score, dcf_result, earnings_signal, insider_signal)
 
     async def _fetch_equity_enrichment(self, pool, symbol: str) -> tuple:
-        # / returns (regime, symbol_trend, indicator_data, sentiment_data)
         regime = await fetch_latest_regime(pool, "equity")
 
-        # / compute per-symbol trend for consensus gate
         symbol_trend = "unknown"
         try:
             async with pool.acquire() as conn:
@@ -576,9 +523,6 @@ class AnalystAgent:
                 source="symbol_trend_sma50", error=str(exc)[:120],
             )
 
-        # / fetch indicators + sentiment from db for llm prompt enrichment
-        # / lazy compute from market_data if computed_indicators has no row — prevents
-        # / technical_score starvation when strategy_agent hasn't written for this symbol yet
         indicator_data: dict | None = None
         sentiment_data: dict | None = None
         try:
@@ -663,8 +607,6 @@ class AnalystAgent:
         alt: dict = {}
         is_etf = get_sector(symbol) == "etfs"
 
-        # / macro_score uses self._macro_cache (per-cycle). hold sequentially so a
-        # / single shared cache doesn't get clobbered by concurrent fetches.
         try:
             if self._macro_cache is None:
                 self._macro_cache = await fetch_macro_indicators(pool)
@@ -673,8 +615,6 @@ class AnalystAgent:
             self._macro_cache = {}
             logger.warning("alt_macro_failed", error=str(exc))
 
-        # / build independent-fetch coro list. each wrapped in _safe_alt to
-        # / guarantee gather doesn't propagate one failure into the others.
         async def _safe_alt(coro, label):
             try:
                 return await coro
@@ -683,8 +623,6 @@ class AnalystAgent:
                 return None
 
         async def _ratings_with_target():
-            # / analyst_ratings → if target_mean present, also fetch latest close
-            # / for target_upside. price fetch is sequential AFTER ratings come back.
             ratings = await fetch_analyst_ratings(symbol)
             if not ratings:
                 return None, None
@@ -709,7 +647,6 @@ class AnalystAgent:
             return consensus, upside
 
         async def _intermarket():
-            # / fetch SPY + 4 etfs in ONE query (was N+1: 4 separate pool.acquire calls).
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT symbol, date, close FROM market_data
@@ -717,7 +654,6 @@ class AnalystAgent:
                     ORDER BY symbol, date DESC""",
                     ["SPY", "TLT", "UUP", "HYG", "GLD"],
                 )
-            # / bucket by symbol, take the most recent 30 rows per symbol
             import pandas as pd
             buckets: dict[str, list] = {}
             for r in rows:
@@ -737,7 +673,6 @@ class AnalystAgent:
             return round(im.composite, 4)
 
         async def _sector_rs():
-            # / sector relative strength: spy + symbol over 70 days, fetched in one query
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT symbol, date, close FROM market_data
@@ -765,9 +700,6 @@ class AnalystAgent:
             rs = sym_ret - spy_ret if spy_ret != 0 else 0.0
             return round(rs, 4)
 
-        # / parallel-safe fetches: short_interest, dark_pool, days_to_earnings,
-        # / intermarket, sector_rs always run. congressional, ratings, earnings_rev,
-        # / options gated on is_etf. None entries skipped without affecting tuple shape.
         coros = [
             _safe_alt(fetch_short_interest(symbol), "short_interest"),
             _safe_alt(fetch_dark_pool_data(symbol, pool=pool), "dark_pool"),
@@ -784,7 +716,6 @@ class AnalystAgent:
             cong_trades, ratings_pair, est_data, opt_data,
         ) = await asyncio.gather(*coros)
 
-        # / map results into alt dict, preserving original keys + skip-on-None semantics
         if si_data:
             alt["short_pct_float"] = (
                 si_data.get("short_percent_float")
@@ -816,7 +747,6 @@ class AnalystAgent:
         return alt
 
     async def _analyze_equity_symbol(self, pool, symbol: str) -> float | None:
-        # / orchestrate all analysis components, compute composite, store to db
         ratio_score, dcf_result, earnings_signal, insider_signal = await self._fetch_equity_components(pool, symbol)
         await self._fetch_and_store_news_sentiment(pool, symbol)
         regime, symbol_trend, indicator_data, sentiment_data = await self._fetch_equity_enrichment(pool, symbol)
@@ -888,7 +818,7 @@ class AnalystAgent:
                 )
                 if vix_row and vix_row["raw_score"] is not None:
                     return round(30.0 - float(vix_row["raw_score"]) * 20.0, 1)
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
             logger.debug("vix_fetch_for_details_failed", exc_info=True)
         return None
 
@@ -901,7 +831,6 @@ class AnalystAgent:
             logger.warning("analyst_dcf_store_failed", symbol=symbol, error=str(exc))
 
     async def _enrich_position_metrics(self, pool, strat_positions: list, symbol: str) -> None:
-        # / annotate each position with its strategy's latest quant metrics for llm context
         if not strat_positions:
             return
         try:
@@ -929,7 +858,6 @@ class AnalystAgent:
         self, symbol: str, ratio_score, dcf_result, earnings_signal, insider_signal,
         regime, symbol_trend: str, indicator_data, sentiment_data, strat_positions,
     ):
-        # / dual-llm or groq-only on cheap cycles, fallback summary on llm failure
         regime_with_trend = regime
         if symbol_trend != "unknown":
             regime_with_trend = f"{regime} | This stock's trend: {symbol_trend} (close vs SMA50)"
@@ -960,7 +888,6 @@ class AnalystAgent:
             )
 
     def _build_full_details(self, ctx: DetailContext) -> dict:
-        # / compose the analysis_scores.details jsonb payload
         details = self._build_details(
             ctx.ratio_score, ctx.dcf_result, ctx.earnings_signal,
             ctx.insider_signal, ctx.dual.groq,
@@ -1002,7 +929,6 @@ class AnalystAgent:
     def _compute_composite(
         self, fundamental_score, technical_score, kronos_score,
     ) -> float | None:
-        # / 70/30 fundamental/technical blend, then pull toward kronos at _kronos_weight()
         if fundamental_score is not None and technical_score is not None:
             base = 0.7 * fundamental_score + 0.3 * technical_score
         elif technical_score is not None:
@@ -1043,25 +969,20 @@ class AnalystAgent:
         earnings: EarningsSignal | None,
         insider: InsiderSignal | None,
     ) -> float | None:
-        # / weighted average of available analysis components
-        # / weights: ratio 0.35, dcf 0.25, earnings 0.20, insider 0.20
         components: list[tuple[float, float]] = []  # (score, weight)
 
         if ratio and ratio.composite_score is not None:
             components.append((ratio.composite_score, 0.35))
 
         if dcf and dcf.upside_pct is not None:
-            # / normalize upside to 0-100 scale: -50% -> 0, +50% -> 100
             dcf_score = max(0.0, min(100.0, (dcf.upside_pct + 0.5) / 1.0 * 100))
             components.append((dcf_score, 0.25))
 
         if earnings and earnings.strength is not None:
-            # / invert score for bearish signals: strong bearish = low score
             e_score = earnings.strength if earnings.signal == "bullish" else (100.0 - earnings.strength)
             components.append((e_score, 0.20))
 
         if insider and insider.strength is not None:
-            # / invert score for bearish signals: strong selling = low score
             i_score = insider.strength if insider.signal == "bullish" else (100.0 - insider.strength)
             components.append((i_score, 0.20))
 
@@ -1080,7 +1001,6 @@ class AnalystAgent:
         insider: InsiderSignal | None,
         summary: Any,
     ) -> dict:
-        # / build jsonb details for strategy agent to reconstruct AnalysisData
         d: dict[str, Any] = {}
         if ratio:
             rd = ratio.details
@@ -1119,6 +1039,4 @@ class AnalystAgent:
         if summary:
             d["summary"] = summary.summary if hasattr(summary, "summary") else str(summary)
             d["summary_signal"] = summary.signal if hasattr(summary, "signal") else None
-        # / sentiment_score is stored directly to news_sentiment table,
-        # / but also include in details for strategy agent consumption
         return d

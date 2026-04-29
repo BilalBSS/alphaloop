@@ -1,5 +1,4 @@
 # / daily synthesis storage
-# / lives in data/ because analysis/ai_summary.py imports these helpers
 
 from __future__ import annotations
 

@@ -1,8 +1,7 @@
-# / data validation — catches wrong data, not just missing data
-# / run after ingestion, before storage
 
 from __future__ import annotations
 
+import decimal
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -20,7 +19,6 @@ class ValidationResult:
     reason: str = ""
 
 
-# / bounds: (min, max) inclusive. none = no bound.
 PRICE_BOUNDS = (Decimal("0.0001"), Decimal("999999"))
 VOLUME_BOUNDS = (0, 1_000_000_000_000)
 PE_BOUNDS = (Decimal("-1000"), Decimal("10000"))
@@ -38,13 +36,12 @@ def _check_bound(
     min_val: Any | None = None,
     max_val: Any | None = None,
 ) -> ValidationResult:
-    # / check if value is within bounds
     if value is None:
         return ValidationResult(valid=True, field=field, value=value)
 
     try:
         numeric = Decimal(str(value))
-    except Exception:
+    except (ValueError, TypeError, decimal.InvalidOperation):
         return ValidationResult(
             valid=False, field=field, value=value,
             reason=f"not numeric: {value!r}",
@@ -83,7 +80,6 @@ def validate_market_data(row: dict) -> list[ValidationResult]:
                 value=f"high={high}, low={low}",
                 reason="high < low",
             ))
-        # / open and close must be within high-low range
         for fname, fval in [("open", open_val), ("close", close)]:
             if fval is not None:
                 v = Decimal(str(fval))
@@ -118,7 +114,6 @@ def validate_sentiment(row: dict) -> list[ValidationResult]:
     ]
 
 
-# / alias for market_data.py import compatibility
 validate_ohlcv = validate_market_data
 
 

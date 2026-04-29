@@ -1,4 +1,3 @@
-# / owns alpaca + coinbase tick streams, broadcast fan-out, aggregator cycle
 
 from __future__ import annotations
 
@@ -19,13 +18,11 @@ from src.data.symbols import is_crypto
 
 logger = structlog.get_logger(__name__)
 
-# / per-symbol broadcast rate limit (mirrors orchestrator's PRICE_TICK_BROADCAST_MIN_INTERVAL)
 _BROADCAST_MIN_INTERVAL_S = 1.0
 _STREAM_FRESH_TICK_S = 90.0
 
 
 class StreamManager:
-    # / lifecycle for alpaca/coinbase websockets + tick aggregator + ws fan-out
 
     def __init__(self, broadcast_semaphore_size: int = 50) -> None:
         self.tick_buffer: TickBuffer | None = None
@@ -39,7 +36,6 @@ class StreamManager:
         self._consecutive_failures: int = 0
 
     async def start(self, symbols: list[str]) -> None:
-        # / split universe → equity (alpaca) + crypto (coinbase); start both
         equity_all = [s for s in symbols if not is_crypto(s)]
         crypto_syms = [s for s in symbols if is_crypto(s)]
         try:
@@ -78,7 +74,6 @@ class StreamManager:
                 logger.warning("coinbase_stream_start_failed", error=str(exc)[:200])
 
     async def stop(self) -> None:
-        # / quench both streams; safe to call when not started
         for stream in (self.alpaca_stream, self.coinbase_stream):
             if stream is not None:
                 try:
@@ -87,7 +82,6 @@ class StreamManager:
                     logger.debug("stream_stop_failed", error=str(exc)[:120])
 
     def _on_tick_broadcast(self, tick) -> None:
-        # / rate-limited per-symbol fan-out to dashboard ws clients
         now = time.monotonic()
         last = self._last_tick_broadcast.get(tick.symbol, 0.0)
         if (now - last) < _BROADCAST_MIN_INTERVAL_S:
@@ -113,8 +107,7 @@ class StreamManager:
                 "vendor": tick.vendor,
             }
             fire_and_forget(self._bounded_broadcast("price_tick", payload))
-        except Exception:
-            # / dashboard not mounted in this process
+        except (ImportError, AttributeError, RuntimeError):
             pass
 
     async def _bounded_broadcast(self, event_type: str, payload: dict) -> None:
@@ -141,7 +134,6 @@ class StreamManager:
         return self._stream_healthy(self.coinbase_stream)
 
     async def aggregate_once(self, pool) -> None:
-        # / one aggregator cycle: drain buffer → upsert latest_prices
         if self.tick_buffer is None:
             return
         try:

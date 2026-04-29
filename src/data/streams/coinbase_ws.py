@@ -1,5 +1,4 @@
 # / coinbase advanced-trade ticker stream
-# / no auth, product_ids match internal symbols
 
 from __future__ import annotations
 
@@ -38,13 +37,11 @@ def _parse_ts(s: str | None) -> int:
             s = f"{head}.{frac}{tz_suffix}"
         s = s.replace("Z", "+00:00")
         return int(datetime.fromisoformat(s).timestamp() * 1000)
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
 
 class CoinbaseStream(StreamBase):
-    # / public ticker channel — no auth, crypto-only universe.
-    # / coinbase rate-throttles so we batch products into a single subscribe.
 
     @property
     def name(self) -> str:
@@ -60,7 +57,6 @@ class CoinbaseStream(StreamBase):
                     symbols=len(self.symbols))
         async with websockets.connect(COINBASE_WS_URL, ping_interval=20,
                                       ping_timeout=20, max_size=2**20) as ws:
-            # / subscribe to ticker on all products in one message
             await ws.send(json.dumps({
                 "type": "subscribe",
                 "product_ids": self.symbols,
@@ -86,10 +82,8 @@ class CoinbaseStream(StreamBase):
                 await self._handle_message(msg)
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:
-        # / only process ticker channel messages
         channel = msg.get("channel")
         if channel != "ticker":
-            # / subscriptions/heartbeats/errors — ignore silently after setup
             if channel == "error" or msg.get("type") == "error":
                 logger.warning("coinbase_ws_error_frame", msg=str(msg)[:200])
             return

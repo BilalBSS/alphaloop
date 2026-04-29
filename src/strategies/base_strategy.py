@@ -1,6 +1,3 @@
-# / abstract strategy interface — all strategies implement this
-# / strategies wrap json configs, use indicators + analysis to decide entry/exit
-# / two layers: fundamental filters (always on) + technical signals (varies)
 
 from __future__ import annotations
 
@@ -23,10 +20,6 @@ class EntrySignal:
     should_enter: bool
     strength: float = 0.0  # 0.0 to 1.0
     reasons: list[str] = field(default_factory=list)
-    # / near-miss instrumentation: how many of the AND/OR clauses actually
-    # / passed vs total. populated by _check_entry_technicals so the strategy
-    # / agent can emit an observation_log row when a strategy is N-1 of N —
-    # / surfaces "close to firing" on the dashboard without polluting trade_log.
     passed_count: int = 0
     total_count: int = 0
     failed_reasons: list[str] = field(default_factory=list)
@@ -47,7 +40,6 @@ class PositionSizeResult:
 
 @dataclass
 class AnalysisData:
-    # / fundamental data from analysis engine
     pe_ratio: float | None = None
     pe_forward: float | None = None
     ps_ratio: float | None = None
@@ -94,10 +86,6 @@ class StrategyInterface(ABC):
         analysis: AnalysisData | None = None,
         intraday_df: pd.DataFrame | None = None,
     ) -> EntrySignal:
-        # / evaluate entry conditions against current market state
-        # / market_data: daily ohlcv dataframe with columns [open, high, low, close, volume]
-        # / analysis: fundamental data (required for fundamental-gated strategies)
-        # / intraday_df: optional 2h ohlcv for multi-timeframe signal evaluation
         ...
 
     @abstractmethod
@@ -109,10 +97,6 @@ class StrategyInterface(ABC):
         entry_date: pd.Timestamp,
         current_bar_idx: int,
     ) -> ExitSignal:
-        # / evaluate exit conditions for an open position
-        # / entry_price: the price at which we entered
-        # / entry_date: when we entered (for time-based exits)
-        # / current_bar_idx: index into market_data for current bar
         ...
 
     @abstractmethod
@@ -122,8 +106,6 @@ class StrategyInterface(ABC):
         price: float,
         strength: float,
     ) -> PositionSizeResult:
-        # / determine position size given account equity and signal strength
-        # / returns qty of shares to buy
         ...
 
     @property
@@ -143,15 +125,12 @@ class StrategyInterface(ABC):
 
 
 class ConfigDrivenStrategy(StrategyInterface):
-    # / concrete strategy that evaluates entry/exit from a json config
     # / loader-created strategy
-    # / the evolution engine mutates the config, not this code
 
     def __init__(self, config: dict[str, Any]):
         self._config = config
         self._id = config["id"]
         self._name = config["name"]
-        # / normalize universe: accept list (legacy) or string ref
         raw_universe = config.get("universe", "all")
         if isinstance(raw_universe, list):
             self._universe_ref = ",".join(raw_universe) if raw_universe else "all"
@@ -178,23 +157,18 @@ class ConfigDrivenStrategy(StrategyInterface):
 
     @property
     def universe_ref(self) -> str:
-        # / the raw universe reference from config ("all", "all_stocks", or comma-separated)
         return self._universe_ref
 
     def resolve_universe(self, available_symbols: list[str] | None = None) -> list[str]:
-        # / precedence: symbol > sector > universe ref
-        # / tier-2/3 strategies target a single symbol
         symbol = self._config.get("symbol")
         if symbol:
             return [symbol]
-        # / sector strategies target all symbols in the sector
         sector = self._config.get("sector")
         if sector:
             from src.data.symbols import get_sector_symbols
             syms = get_sector_symbols(sector)
             if syms:
                 return syms
-        # / fallback to universe ref (existing behavior)
         from src.data.symbols import resolve_universe
         return resolve_universe(self._universe_ref, available_symbols)
 
@@ -203,7 +177,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         return self._requires_fundamentals
 
     def _get_active_filters(self, analysis) -> dict:
-        # / merge bear market overrides when regime is bear
         filters = dict(self._fundamental_filters)
         if (
             analysis is not None
@@ -217,7 +190,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         return filters
 
     def get_effective_bypass_consensus(self, regime: str | None = None) -> bool:
-        # / check if consensus should be bypassed, with bear override
         base = self._config.get("bypass_consensus", False)
         if regime == "bear" and self._bear_market_overrides:
             override = self._bear_market_overrides.get("bypass_consensus")
@@ -235,7 +207,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         if len(market_data) < 2:
             return EntrySignal(should_enter=False, reasons=["insufficient data"])
 
-        # / check fundamental filters first (if required)
         if self._requires_fundamentals:
             if analysis is None:
                 return EntrySignal(should_enter=False, reasons=["no fundamental data"])
@@ -244,10 +215,6 @@ class ConfigDrivenStrategy(StrategyInterface):
             if not passed:
                 return EntrySignal(should_enter=False, reasons=fundamental_reasons)
 
-        # / check technical entry conditions. _check_entry_technicals now also
-        # / returns a per-clause breakdown so near-miss tracking can fire when
-        # / N-1 of N passed. analysis_data is threaded through so indicators
-        # / that need fundamental/macro context (regime, sector RS, earnings,
         # / insider, etc.) have access.
         passed, strength, tech_reasons, passed_n, total_n, failed = (
             self._check_entry_technicals(market_data, intraday_df, analysis)
@@ -324,17 +291,14 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         if method == "kelly_fraction":
             kelly_f = self._position_sizing.get("kelly_fraction", 0.25)
-            # / kelly fraction scaled by signal strength, capped at max_pct
             pct = min(kelly_f * strength, max_pct)
         elif method == "fixed_pct":
             pct = max_pct
         elif method == "strength_scaled":
-            # / scale position by signal strength
             pct = max_pct * strength
         else:
             pct = max_pct
 
-        # / ensure minimum position of 1 share worth
         if price <= 0:
             return PositionSizeResult(qty=0, pct_of_portfolio=0, method=method)
 
@@ -345,13 +309,8 @@ class ConfigDrivenStrategy(StrategyInterface):
         return PositionSizeResult(qty=qty, pct_of_portfolio=actual_pct, method=method)
 
     def _check_fundamentals(self, analysis: AnalysisData, filters=None) -> tuple[bool, list[str]]:
-        # / evaluate fundamental filters from config against analysis data
-        # / dispatches each config key to its registered handler via FILTER_HANDLERS
-        # / strict_data=true (default): reject if data unavailable (handled per-filter)
-        # / strict_data=false: skip filter when data is missing
         filters = filters or self._fundamental_filters
 
-        # / strict_data isn't a filter itself — skip it so the for-loop doesn't try to dispatch it
         for key, threshold in filters.items():
             if key == "strict_data":
                 continue
@@ -359,7 +318,6 @@ class ConfigDrivenStrategy(StrategyInterface):
                 continue
             handler = FILTER_HANDLERS.get(key)
             if handler is None:
-                # / unknown filter key — skip gracefully (config validation catches truly invalid keys)
                 continue
             passed, reason = handler(analysis, threshold, filters)
             if not passed:
@@ -371,9 +329,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         self, market_data: pd.DataFrame, intraday_df: pd.DataFrame | None = None,
         analysis_data: AnalysisData | None = None,
     ) -> tuple[bool, float, list[str], int, int, list[str]]:
-        # / evaluate technical entry conditions from config.
-        # / returns (overall_passed, strength, reasons, passed_count, total_count, failed_reasons).
-        # / passed_count/total_count drive the observation_log near-miss tracker.
         signals = self._entry_conditions.get("signals", [])
         operator = self._entry_conditions.get("operator", "AND")
 
@@ -382,7 +337,6 @@ class ConfigDrivenStrategy(StrategyInterface):
 
         results: list[tuple[bool, float, str]] = []
         for sig in signals:
-            # / route to intraday df if signal specifies non-daily timeframe
             tf = sig.get("timeframe")
             if tf and tf.lower() not in ("1d", "daily", "1day"):
                 if intraday_df is not None and len(intraday_df) >= 14:
@@ -418,7 +372,6 @@ class ConfigDrivenStrategy(StrategyInterface):
         self, sig: dict[str, Any], market_data: pd.DataFrame,
         analysis_data: AnalysisData | None = None,
     ) -> tuple[bool, float, str]:
-        # / dispatch a single signal via the handler registries
         indicator = sig.get("indicator", "")
         try:
             analysis_handler = ANALYSIS_HANDLERS.get(indicator)
@@ -458,8 +411,6 @@ class ConfigDrivenStrategy(StrategyInterface):
             close = market_data["close"]
             atr_val = atr_fn(high, low, close, period=period)
 
-            # / trailing stop: highest close since entry minus atr * multiplier
-            # / scope to data from entry date onward (not pre-entry peaks)
             data_slice = market_data.iloc[:current_bar_idx + 1]
             if entry_date is not None:
                 data_slice = data_slice[data_slice.index >= entry_date]

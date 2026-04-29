@@ -1,7 +1,3 @@
-# / edgartools form 4 insider trades + sec filings
-# / sync library wrapped in asyncio.to_thread
-# / global semaphore enforces 10 req/s across all concurrent calls
-# / graceful: logs parse failures to data_quality, continues with next symbol
 
 from __future__ import annotations
 
@@ -16,7 +12,6 @@ import structlog
 
 
 def _to_decimal_safe(v: Any) -> Decimal:
-    # / coerce to Decimal, mapping None/NaN/inf/unparseable to 0
     if v is None:
         return Decimal(0)
     try:
@@ -31,9 +26,8 @@ def _to_decimal_safe(v: Any) -> Decimal:
 
 logger = structlog.get_logger(__name__)
 
-# / sec edgar: 10 req/sec max — global semaphore prevents concurrent overflow
 _edgar_semaphore = asyncio.Semaphore(1)  # serialize all edgar requests
-_edgar_delay = 0.15  # 150ms between requests (safe margin under 10/sec)
+_edgar_delay = 0.15  # / 150ms between requests (safe
 
 
 def _get_user_agent() -> str:
@@ -44,7 +38,6 @@ def _fetch_insider_trades_sync(
     symbol: str,
     days: int = 90,
 ) -> list[dict[str, Any]]:
-    # / sync edgartools fetch — run via asyncio.to_thread
     try:
         from edgar import Company
     except ImportError:
@@ -64,7 +57,7 @@ def _fetch_insider_trades_sync(
         trades: list[dict[str, Any]] = []
 
         # / iterate recent filings
-        for filing in filings[:20]:  # cap at 20 most recent
+        for filing in filings[:20]:  # / cap at 20 most
             try:
                 filing_date = filing.filing_date
                 if hasattr(filing_date, "date"):
@@ -73,7 +66,6 @@ def _fetch_insider_trades_sync(
                 if filing_date < cutoff:
                     break
 
-                # / parse the form 4 xml
                 form4 = filing.obj()
                 if form4 is None:
                     continue
@@ -83,8 +75,6 @@ def _fetch_insider_trades_sync(
                 owner_title = _safe_get(form4, "position", "")
 
                 for txn in _get_transactions(form4):
-                    # / option_exercise rows often have NaN price from edgartools
-                    # / Decimal('NaN') serializes as the literal string "NaN" in jsonb — coerce to 0
                     shares = _to_decimal_safe(txn.get("shares", 0))
                     price = _to_decimal_safe(txn.get("price", 0))
                     trades.append({
@@ -115,7 +105,6 @@ def _fetch_insider_trades_sync(
 
 
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
-    # / safely get attribute from edgartools object
     try:
         val = getattr(obj, attr, default)
         return val if val is not None else default
@@ -131,7 +120,6 @@ def _to_float(val: Any) -> float:
 
 
 def _code_to_type(code: str) -> str:
-    # / sec form 4 transaction codes
     _MAP = {
         "P": "buy",
         "S": "sell",
@@ -150,10 +138,8 @@ def _code_to_type(code: str) -> str:
 
 
 def _get_transactions(form4: Any) -> list[dict[str, Any]]:
-    # / extract buy/sell transactions from edgartools v5 form4 object
     txns: list[dict[str, Any]] = []
 
-    # / v5: market_trades is a dataframe of open market buys/sells
     try:
         trades_df = getattr(form4, "market_trades", None)
         if trades_df is not None and not trades_df.empty:
@@ -163,10 +149,9 @@ def _get_transactions(form4: Any) -> list[dict[str, Any]]:
                     "shares": _to_float(row.get("Shares", 0)),
                     "price": _to_float(row.get("Price", 0)),
                 })
-    except Exception:
+    except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
-    # / v5: non-derivative table for option exercises, gifts, etc
     try:
         ndt = getattr(form4, "non_derivative_table", None)
         if ndt is not None and getattr(ndt, "has_transactions", False):
@@ -178,7 +163,7 @@ def _get_transactions(form4: Any) -> list[dict[str, Any]]:
                     "shares": _to_float(row.get("Shares", 0)),
                     "price": _to_float(row.get("Price", 0)),
                 })
-    except Exception:
+    except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
     return txns
@@ -188,7 +173,6 @@ async def fetch_insider_trades(
     symbol: str,
     days: int = 90,
 ) -> list[dict[str, Any]]:
-    # / async wrapper with global rate limiting
     async with _edgar_semaphore:
         await asyncio.sleep(_edgar_delay)
         try:
@@ -204,7 +188,6 @@ async def fetch_all_insider_trades(
     symbols: list[str],
     days: int = 90,
 ) -> list[dict[str, Any]]:
-    # / fetch insider trades for all symbols sequentially (rate limited)
     all_trades: list[dict[str, Any]] = []
     for symbol in symbols:
         trades = await fetch_insider_trades(symbol, days)
@@ -213,7 +196,6 @@ async def fetch_all_insider_trades(
 
 
 async def store_insider_trades(pool, trades: list[dict[str, Any]]) -> int:
-    # / insert insider trades, handle duplicates
     if not trades:
         return 0
 

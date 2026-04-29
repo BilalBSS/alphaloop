@@ -1,5 +1,4 @@
 # / backtesting engine
-# / no lookahead: signal at close, fill at next open
 
 from __future__ import annotations
 
@@ -105,7 +104,6 @@ async def run_backtest(
     max_open_positions: int = 10,
     intraday_data: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
-    # / signals at close, fills at next open
     broker = PaperBroker(initial_cash=initial_cash)
     universe = list(market_data.keys())
 
@@ -117,7 +115,6 @@ async def run_backtest(
             final_equity=initial_cash,
         )
 
-    # / find the common date range across all symbols
     all_dates: set[Any] = set()
     for df in market_data.values():
         all_dates.update(df.index.tolist())
@@ -137,23 +134,18 @@ async def run_backtest(
     daily_returns: list[float] = []
     prev_equity = initial_cash
 
-    # / minimum bars before we start trading (enough for indicators)
     warmup_bars = 50
 
     for date_idx, current_date in enumerate(sorted_dates):
-        # / 1. update broker prices to current bar
         for symbol, df in market_data.items():
             if current_date in df.index:
                 bar = df.loc[current_date]
-                # / use open price for fills (realistic: signal at close, fill at next open)
                 broker.set_price(symbol, float(bar["open"]) if date_idx > 0 else float(bar["close"]))
 
-        # / 2-3. check and execute exits
         await _process_exits(
             strategy, market_data, current_date, open_positions, broker, closed_trades,
         )
 
-        # / skip entry evaluation during warmup
         if date_idx < warmup_bars:
             # / still track equity
             balance = await broker.get_account_balance()
@@ -163,14 +155,12 @@ async def run_backtest(
             prev_equity = balance.equity
             continue
 
-        # / 4-5. check and execute entries
         await _process_entries(
             strategy, market_data, analysis_data, current_date, date_idx,
             warmup_bars, max_open_positions, universe, open_positions, broker,
             intraday_data,
         )
 
-        # / update prices to close for equity tracking
         for symbol, df in market_data.items():
             if current_date in df.index:
                 broker.set_price(symbol, float(df.loc[current_date, "close"]))
@@ -181,7 +171,6 @@ async def run_backtest(
             daily_returns.append((balance.equity - prev_equity) / prev_equity)
         prev_equity = balance.equity
 
-    # / close any remaining open positions at last bar close
     await _close_remaining(open_positions, broker, market_data, sorted_dates[-1], closed_trades)
 
     # / compute final metrics
@@ -208,7 +197,6 @@ async def _process_exits(
     broker: PaperBroker,
     closed_trades: list[Trade],
 ) -> None:
-    # / 2. check exits for open positions
     exits_to_process: list[tuple[str, str]] = []  # (symbol, reason)
     for symbol, pos in list(open_positions.items()):
         if symbol not in market_data or current_date not in market_data[symbol].index:
@@ -216,28 +204,25 @@ async def _process_exits(
         df = market_data[symbol]
         bar_idx = df.index.get_loc(current_date)
 
-        # / only check exit if we have enough data
         if bar_idx < 1:
             continue
 
-        # / evaluate exit using data up to previous bar (decision made at close of prev bar)
         exit_signal = strategy.should_exit(
             symbol=symbol,
-            market_data=df.iloc[:bar_idx],  # / data up to but not including current bar
+            market_data=df.iloc[:bar_idx],  # / data up to but
             entry_price=pos.entry_price,
             entry_date=pos.entry_date,
-            current_bar_idx=bar_idx - 1,  # / evaluate at previous bar close
+            current_bar_idx=bar_idx - 1,  # / evaluate at previous bar
         )
         if exit_signal.should_exit:
             exits_to_process.append((symbol, exit_signal.reason))
 
-    # / 3. execute exits at current bar open
     for symbol, reason in exits_to_process:
-        pos = open_positions.get(symbol)
-        if pos is None:
+        exit_pos = open_positions.get(symbol)
+        if exit_pos is None:
             continue
+        pos = exit_pos
 
-        # / set price to current open for fill
         if current_date in market_data[symbol].index:
             fill_price = float(market_data[symbol].loc[current_date, "open"])
             broker.set_price(symbol, fill_price)
@@ -270,7 +255,6 @@ async def _process_entries(
     broker: PaperBroker,
     intraday_data: dict[str, pd.DataFrame] | None = None,
 ) -> None:
-    # / 4. check entries (evaluate using data up to previous bar close)
     entries_to_process: list[tuple[str, float, float]] = []  # (symbol, strength, open_price)
     if len(open_positions) < max_open_positions:
         for symbol in universe:
@@ -284,11 +268,9 @@ async def _process_entries(
             if bar_idx < warmup_bars:
                 continue
 
-            # / evaluate entry using data up to previous bar (no lookahead)
             data_for_eval = df.iloc[:bar_idx]  # / everything before current bar
 
             analysis = analysis_data.get(symbol) if analysis_data else None
-            # / slice intraday to before current bar to prevent lookahead
             intraday_df = intraday_data.get(symbol) if intraday_data else None
             if intraday_df is not None:
                 intraday_df = intraday_df[intraday_df.index < current_date]
@@ -298,7 +280,6 @@ async def _process_entries(
                 open_price = float(df.loc[current_date, "open"])
                 entries_to_process.append((symbol, entry_signal.strength, open_price))
 
-    # / 5. execute entries at current bar open (sorted by strength, strongest first)
     entries_to_process.sort(key=lambda x: x[1], reverse=True)
     balance = await broker.get_account_balance()
 
@@ -312,7 +293,7 @@ async def _process_entries(
             continue
 
         order = await broker.place_order(symbol, sizing.qty, "buy")
-        if order.status == "filled":
+        if order.status == "filled" and order.filled_price is not None:
             open_positions[symbol] = OpenPosition(
                 symbol=symbol,
                 qty=sizing.qty,
@@ -320,7 +301,6 @@ async def _process_entries(
                 entry_date=current_date,
                 entry_bar_idx=date_idx,
             )
-            # / refresh balance after each entry
             balance = await broker.get_account_balance()
 
 
@@ -331,7 +311,6 @@ async def _close_remaining(
     last_date: Any,
     closed_trades: list[Trade],
 ) -> None:
-    # / close any remaining open positions at last bar close
     for symbol, pos in list(open_positions.items()):
         if symbol in market_data and last_date in market_data[symbol].index:
             close_price = float(market_data[symbol].loc[last_date, "close"])
@@ -364,7 +343,6 @@ def _compute_metrics(
     total_return = final_equity - initial_equity
     total_return_pct = total_return / initial_equity if initial_equity > 0 else 0
 
-    # / drawdown calculation from equity curve
     max_dd = 0.0
     max_dd_pct = 0.0
     peak = initial_equity
@@ -378,13 +356,11 @@ def _compute_metrics(
         if dd_pct > max_dd_pct:
             max_dd_pct = dd_pct
 
-    # / sharpe ratio (annualized, assuming ~252 trading days)
     returns_arr = np.array(daily_returns) if daily_returns else np.array([0.0])
     avg_return = float(np.mean(returns_arr))
     std_return = float(np.std(returns_arr, ddof=1)) if len(returns_arr) > 1 else 0.0
     sharpe = (avg_return / std_return * math.sqrt(252)) if std_return > 0 else 0.0
 
-    # / sortino ratio (downside deviation only)
     downside = returns_arr[returns_arr < 0]
     downside_std = float(np.std(downside, ddof=1)) if len(downside) > 1 else 0.0
     if downside_std > 0:
@@ -394,7 +370,6 @@ def _compute_metrics(
     else:
         sortino = 0.0
 
-    # / calmar ratio (compound annualized return / max drawdown)
     trading_days = len(daily_returns)
     if trading_days > 0 and max_dd_pct > 0:
         annualized_return = (1 + total_return_pct) ** (252 / trading_days) - 1

@@ -1,5 +1,4 @@
 # / shared ws stream base
-# / reconnect, circuit breaker, watchdog, bounded buffer
 
 from __future__ import annotations
 
@@ -19,15 +18,13 @@ import structlog
 try:
     from zoneinfo import ZoneInfo
     _NY_TZ = ZoneInfo("America/New_York")
-except Exception:
+except (ImportError, KeyError):
     _NY_TZ = None
 
 logger = structlog.get_logger(__name__)
 
 
 def _is_lunch_hour_et(now: datetime | None = None) -> bool:
-    # / 12:00-13:00 ET — low-liquidity names can genuinely go a minute or two
-    # / between prints. the aggressive 30s watchdog false-alarms here.
     if _NY_TZ is None:
         return False
     now = now or datetime.now(_NY_TZ)
@@ -42,16 +39,12 @@ StreamStatus = Literal["connecting", "connected", "reconnecting", "circuit_open"
 class Tick:
     symbol: str
     price: float
-    volume: float | None  # / None when the frame didn't include a volume (quote-only)
+    volume: float | None  # / None when the frame
     timestamp_ms: int
     vendor: str
 
 
 class TickBuffer:
-    # / bounded per-symbol ring of the most-recent ticks. drop-oldest on overflow.
-    # / read-only snapshots are cheap — the deque holds references, not copies.
-    # / dropped_ticks tracks overflow count; _log_suppress_until rate-limits the
-    # / overflow warning so a single hot symbol can't spam the log.
 
     __slots__ = (
         "_by_symbol",
@@ -74,8 +67,6 @@ class TickBuffer:
             if buf is None:
                 buf = deque(maxlen=self._max_per_symbol)
                 self._by_symbol[tick.symbol] = buf
-            # / at maxlen, append silently drops the oldest; count + log it
-            # / so we can correlate pricing-staleness incidents to stream pressure.
             if len(buf) >= self._max_per_symbol:
                 self._dropped[tick.symbol] = self._dropped.get(tick.symbol, 0) + 1
                 now = time.monotonic()
@@ -91,7 +82,6 @@ class TickBuffer:
             buf.append(tick)
 
     def dropped_ticks(self) -> dict[str, int]:
-        # / snapshot for /api/phase5-metrics. no lock — reads atomic in CPython.
         return dict(self._dropped)
 
     async def drain(self, symbol: str) -> list[Tick]:
@@ -119,9 +109,6 @@ class TickBuffer:
 
 @dataclass
 class CircuitBreaker:
-    # / opens after `threshold` disconnects inside `window_s` seconds; reset after
-    # / `reset_s` of stability. caller reads `.is_open` to decide whether to keep
-    # / trying or fall back to REST polling.
     threshold: int = 3
     window_s: float = 300.0
     reset_s: float = 120.0
@@ -138,7 +125,6 @@ class CircuitBreaker:
     def record_healthy(self) -> None:
         now = time.monotonic()
         self._events = [t for t in self._events if (now - t) < self.window_s]
-        # / require continuous healthy window to clear the gate
         if not self._events and now >= self._open_until:
             self._open_until = 0.0
 
@@ -176,12 +162,10 @@ class StreamState:
 
 
 class StreamBase(ABC):
-    # / every vendor stream extends this class. the run loop owns reconnect
-    # / backoff + circuit breaker; subclasses just implement _connect_and_consume.
 
     MAX_BACKOFF_S = 60.0
     WATCHDOG_IDLE_S = 30.0
-    WATCHDOG_IDLE_LUNCH_S = 120.0  # / lunch-hour ET window is genuinely quieter
+    WATCHDOG_IDLE_LUNCH_S = 120.0  # / lunch-hour ET window is
 
     def __init__(
         self,
@@ -205,9 +189,6 @@ class StreamBase(ABC):
 
     @abstractmethod
     async def _connect_and_consume(self) -> None:
-        # / subclass: open websocket, subscribe to self.symbols, loop reading frames,
-        # / call `await self._emit(Tick(...))` on each relevant frame, return cleanly
-        # / on disconnect so the base-class loop can schedule a reconnect.
         ...
 
     async def _emit(self, tick: Tick) -> None:
@@ -251,8 +232,6 @@ class StreamBase(ABC):
             if self.state.circuit_breaker.is_open:
                 self.state.status = "circuit_open"
                 logger.warning("stream_circuit_open_pausing", stream=self.name)
-                # / wait full reset_s before re-attempting — caller (orchestrator)
-                # / is running REST fallback during this window
                 if await self._sleep_or_stop(60.0):
                     return
                 continue
@@ -260,7 +239,6 @@ class StreamBase(ABC):
             try:
                 self.state.status = "connecting" if self.state.reconnect_attempts == 0 else "reconnecting"
                 await self._connect_and_consume()
-                # / clean return = disconnected by peer. record and backoff.
                 self.state.circuit_breaker.record_disconnect()
                 self.state.reconnect_attempts += 1
                 logger.info("stream_disconnected_clean", stream=self.name,
@@ -283,9 +261,6 @@ class StreamBase(ABC):
             backoff = min(backoff * 2, self.MAX_BACKOFF_S)
 
     async def _watchdog(self) -> None:
-        # / force reconnect if no tick received during market hours for a long while.
-        # / threshold relaxes to WATCHDOG_IDLE_LUNCH_S during 12:00-13:00 ET so the
-        # / low-liquidity lunch lull doesn't trip needless reconnects.
         while not self._stop.is_set():
             if await self._sleep_or_stop(5.0):
                 return
@@ -301,10 +276,7 @@ class StreamBase(ABC):
                 logger.warning("stream_watchdog_idle_reconnect",
                                stream=self.name, idle_s=round(idle, 1),
                                threshold_s=threshold)
-                # / setting status triggers the subclass consume loop to detect it
-                # / on its next iteration (subclasses check self._stop + state)
                 self.state.status = "reconnecting"
-                # / cancel the current connect task — the run loop will reconnect
                 if self._run_task and not self._run_task.done():
                     self._run_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):

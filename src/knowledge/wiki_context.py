@@ -1,5 +1,3 @@
-# / assembles wiki context for llm prompts with strict token budget
-# / used by evolution engine (mutation prompts) + analyst agent (analysis prompts)
 
 from __future__ import annotations
 
@@ -10,9 +8,7 @@ from src.knowledge.wiki_writer import WikiWriter
 
 logger = structlog.get_logger(__name__)
 
-# / max tokens injected into any single llm prompt from wiki
 DEFAULT_CONTEXT_BUDGET = 750
-# / rough token estimate: ~4 chars per token
 CHARS_PER_TOKEN = 4
 
 
@@ -21,7 +17,6 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
-    # / preserves full sentences when possible
     max_chars = max_tokens * CHARS_PER_TOKEN
     if len(text) <= max_chars:
         return text
@@ -33,7 +28,6 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
 
 
 class WikiContext:
-    # / fetches relevant wiki snippets and formats them for llm injection
 
     def __init__(self, pool, writer: WikiWriter | None = None, search: WikiSearch | None = None):
         self._pool = pool
@@ -48,8 +42,6 @@ class WikiContext:
         regime: str | None = None,
         budget: int = DEFAULT_CONTEXT_BUDGET,
     ) -> str:
-        # / assembles context for strategy mutation prompts
-        # / sources: strategy playbook, last evolution report, current regime, meta known-issues
         sections: list[tuple[str, str, int]] = []
 
         playbook = await self._fetch_latest(category="strategies", strategy_id=strategy_id)
@@ -77,8 +69,6 @@ class WikiContext:
         regime: str | None = None,
         budget: int = DEFAULT_CONTEXT_BUDGET,
     ) -> str:
-        # / assembles context for analyst-agent prompts
-        # / sources: symbol profile, relevant post-mortems, current regime notes
         sections: list[tuple[str, str, int]] = []
 
         profile = await self._fetch_symbol_profile(symbol)

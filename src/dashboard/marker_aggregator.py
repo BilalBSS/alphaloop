@@ -1,7 +1,3 @@
-# / unified marker aggregator — pulls timeline events for a symbol from disparate tables
-# / returns a dict keyed by marker kind: trades, signals, insiders, earnings, regime, consensus
-# / caller filters by kinds param; shapes designed for lightweight-charts setMarkers() + priceLines
-# / each fetch catches ANY exception so encoder/data errors don't silently zero the response
 
 from __future__ import annotations
 
@@ -17,17 +13,13 @@ from ._serialize import num as _num
 
 logger = structlog.get_logger(__name__)
 
-# / signals below this strength are considered noise and dropped from the chart
 _SIGNAL_STRENGTH_MIN = 0.5
 
-# / insider cluster detection window + minimum cluster size
 _INSIDER_CLUSTER_DAYS = 5
 _INSIDER_CLUSTER_MIN = 3
 
 
 async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / closed + open trades from trade_log filtered to recent window
-    # / trade_log stores one row per fill with side + price, no explicit exit_price
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -55,7 +47,6 @@ async def fetch_trade_markers(pool: asyncpg.Pool, symbol: str, interval: timedel
 
 
 async def fetch_signal_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / recent trade signals above strength threshold
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -86,7 +77,6 @@ async def fetch_signal_markers(pool: asyncpg.Pool, symbol: str, interval: timede
 
 
 async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / recent insider form 4 filings, aggregated into clusters when 3+ fire within 5 days
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -100,7 +90,6 @@ async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: timed
     except Exception as exc:
         logger.warning("marker_insiders_query_failed", symbol=symbol, error=str(exc))
         return []
-    # / normalize rows, drop any with missing date/type
     events: list[dict] = []
     for r in rows:
         fdate = r.get("filing_date")
@@ -114,7 +103,6 @@ async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: timed
             "name": r.get("insider_name"),
             "_date": fdate,
         })
-    # / cluster by transaction type within a rolling 5-day window
     clusters: list[dict] = []
     used = [False] * len(events)
     for i, ev in enumerate(events):
@@ -155,8 +143,6 @@ async def fetch_insider_markers(pool: asyncpg.Pool, symbol: str, interval: timed
 
 
 async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / uses earnings_revisions (not earnings_surprises) — stores sell-side estimate revisions
-    # / type classification: compare current estimate against prior estimate for the same period
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -170,7 +156,6 @@ async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: time
     except Exception as exc:
         logger.warning("marker_earnings_query_failed", symbol=symbol, error=str(exc))
         return []
-    # / compute prior-estimate delta per period so we can label beat/miss/inline vs prior revision
     prior: dict[str, float] = {}
     out: list[dict] = []
     for r in rows:
@@ -196,8 +181,6 @@ async def fetch_earnings_markers(pool: asyncpg.Pool, symbol: str, interval: time
 
 
 def _market_for_symbol(symbol: str) -> str:
-    # / crypto symbols on alpaca carry a -USD suffix (BTC-USD, ETH-USD, HYPE-USD)
-    # / stocks are plain tickers (AAPL, MSFT). route the regime query to the correct market
     if not isinstance(symbol, str):
         return "equity"
     s = symbol.upper()
@@ -207,8 +190,6 @@ def _market_for_symbol(symbol: str) -> str:
 
 
 async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / market-wide regime windows from regime_history; emits [start,end) intervals
-    # / market is inferred from the symbol so crypto charts don't surface equity regimes
     market = _market_for_symbol(symbol)
     try:
         async with pool.acquire() as conn:
@@ -223,7 +204,6 @@ async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: timedelt
     except Exception as exc:
         logger.warning("marker_regime_query_failed", error=str(exc))
         return []
-    # / collapse consecutive same-regime days into single bands
     bands: list[dict] = []
     cur_start: Any = None
     cur_regime: str | None = None
@@ -257,7 +237,6 @@ async def fetch_regime_bands(pool: asyncpg.Pool, symbol: str, interval: timedelt
 
 
 async def fetch_consensus_strip(pool: asyncpg.Pool, symbol: str, interval: timedelta) -> list[dict]:
-    # / per-snapshot dual-llm consensus from analysis_scores.details jsonb
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -289,10 +268,6 @@ async def build_markers(
     kinds: set[str],
     days: int,
 ) -> dict[str, list[dict]]:
-    # / orchestrates the selected kinds against the aggregators, returning a dict keyed by kind
-    # / missing kinds are absent from the result so callers can detect the filter applied
-    # / all independent queries run in parallel via asyncio.gather — 6 sequential rtts become 1
-    # / interval MUST be timedelta, not str — asyncpg rejects strings for INTERVAL params
     interval = timedelta(days=int(days))
     job_order: list[str] = []
     coros: list[Any] = []

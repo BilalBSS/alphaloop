@@ -1,4 +1,3 @@
-# / alpaca trade-log sync + pnl backfill
 
 from __future__ import annotations
 
@@ -9,7 +8,6 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# / monotonic counter of fills skipped due to unparseable filled_at
 _sync_skipped_orders = 0
 
 
@@ -18,7 +16,6 @@ def get_sync_skipped_orders() -> int:
 
 
 async def sync_trades_from_alpaca(pool) -> int:
-    # / pull filled orders, upsert into trade_log, project into strategy_positions
     from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
     base = alpaca_base_url()
     headers = alpaca_headers()
@@ -52,7 +49,6 @@ async def sync_trades_from_alpaca(pool) -> int:
             side = o["side"]
             qty = float(o.get("filled_qty", 0))
             price = float(o.get("filled_avg_price", 0))
-            # / parse timestamptz once per order
             filled_at_raw = o.get("filled_at")
             filled_at: datetime | None = None
             if filled_at_raw:
@@ -70,7 +66,6 @@ async def sync_trades_from_alpaca(pool) -> int:
                     continue
             if qty <= 0 or price <= 0 or filled_at is None:
                 continue
-            # / pnl on sells from prior buy; use timestamptz to avoid order desc race
             pnl: Decimal | None = None
             if side == "sell":
                 prior_buy = await conn.fetchrow(
@@ -81,7 +76,6 @@ async def sync_trades_from_alpaca(pool) -> int:
                 )
                 if prior_buy and prior_buy["price"]:
                     pnl = (Decimal(str(price)) - prior_buy["price"]) * Decimal(str(qty))
-            # / recover strategy attribution from approved_trades.order_id
             approved_row = await conn.fetchrow(
                 "SELECT id, strategy_id FROM approved_trades WHERE order_id = $1",
                 order_id,
@@ -99,7 +93,6 @@ async def sync_trades_from_alpaca(pool) -> int:
                 {"order_type": o.get("type"), "time_in_force": o.get("time_in_force")},
                 filled_at,
             )
-            # / project alpaca fill into strategy_positions; respect existing real attribution
             position_strategy = linked_strategy_id or "untracked"
             skip_insert = False
             if position_strategy == "untracked":
@@ -147,7 +140,6 @@ async def sync_trades_from_alpaca(pool) -> int:
 
 
 async def backfill_trade_pnl(pool) -> int:
-    # / one-shot idempotent: fill null pnl on historical sell rows
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, symbol, qty, price, created_at FROM trade_log

@@ -1,5 +1,3 @@
-# / push event to all connected websocket clients
-# / consumed by orchestrator/executor/risk_agent via the dashboard package
 
 from __future__ import annotations
 
@@ -15,6 +13,6 @@ async def broadcast(event_type: str, data: dict) -> None:
     for ws in STATE.ws_clients:
         try:
             await ws.send_text(message)
-        except Exception:
+        except (ConnectionError, RuntimeError, OSError):
             disconnected.add(ws)
     STATE.ws_clients.difference_update(disconnected)

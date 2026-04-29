@@ -1,6 +1,3 @@
-# / trend indicators: sma, ema, macd, adx, supertrend
-# / all functions take pandas series/dataframe, return series
-# / nan-safe: returns nan for insufficient data rather than erroring
 
 from __future__ import annotations
 
@@ -48,12 +45,9 @@ def adx(
     close: pd.Series,
     period: int = 14,
 ) -> pd.Series:
-    # / average directional index — measures trend strength (0-100)
-    # / adx > 25 = trending, adx < 20 = ranging
     plus_dm = high.diff()
     minus_dm = -low.diff()
 
-    # / +dm is positive only when it's larger than -dm and positive
     plus_dm = pd.Series(
         np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0),
         index=high.index,
@@ -65,7 +59,6 @@ def adx(
 
     tr = true_range(high, low, close)
 
-    # / wilder smoothing (equivalent to ema with alpha=1/period)
     atr_smooth = tr.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
     plus_di = 100 * plus_dm.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean() / atr_smooth
     minus_di = 100 * minus_dm.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean() / atr_smooth
@@ -76,7 +69,6 @@ def adx(
 
 
 def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
-    # / true range = max(high-low, |high-prev_close|, |low-prev_close|)
     prev_close = close.shift(1)
     tr1 = high - low
     tr2 = (high - prev_close).abs()
@@ -87,7 +79,7 @@ def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
 @dataclass
 class SupertrendResult:
     supertrend: pd.Series
-    direction: pd.Series  # 1 = uptrend, -1 = downtrend
+    direction: pd.Series  # / 1 = uptrend, -1
 
 
 def supertrend(
@@ -97,7 +89,6 @@ def supertrend(
     period: int = 10,
     multiplier: float = 3.0,
 ) -> SupertrendResult:
-    # / supertrend: atr-based trailing stop that flips direction
     tr = true_range(high, low, close)
     atr_val = tr.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
 
@@ -112,7 +103,6 @@ def supertrend(
         if np.isnan(atr_val.iloc[i]):
             continue
 
-        # / carry forward bands with trend logic
         prev_lb = lower_band.iloc[i - 1] if not np.isnan(st.iloc[i - 1]) else lower_band.iloc[i]
         prev_ub = upper_band.iloc[i - 1] if not np.isnan(st.iloc[i - 1]) else upper_band.iloc[i]
 
@@ -163,7 +153,6 @@ class DonchianResult:
 
 
 def donchian_channel(high: pd.Series, low: pd.Series, period: int = 20) -> DonchianResult:
-    # / donchian channel: N-period highest high and lowest low
     upper = high.rolling(window=period).max()
     lower = low.rolling(window=period).min()
     middle = (upper + lower) / 2
@@ -174,9 +163,9 @@ def donchian_channel(high: pd.Series, low: pd.Series, period: int = 20) -> Donch
 class IchimokuResult:
     conversion: pd.Series  # tenkan-sen (9-period)
     base: pd.Series        # kijun-sen (26-period)
-    span_a: pd.Series      # senkou span a (displaced +26)
-    span_b: pd.Series      # senkou span b (52-period, displaced +26)
-    lagging: pd.Series     # chikou span (close shifted -26)
+    span_a: pd.Series  # / senkou span a (displaced
+    span_b: pd.Series  # / senkou span b (52-period,
+    lagging: pd.Series  # / chikou span (close shifted
 
 
 def ichimoku(
@@ -188,7 +177,6 @@ def ichimoku(
     span_b_period: int = 52,
     displacement: int = 26,
 ) -> IchimokuResult:
-    # / ichimoku cloud: five lines — tenkan (fast), kijun (slow), spans a/b (cloud), chikou (lagging close)
     conversion = (high.rolling(conversion_period).max() + low.rolling(conversion_period).min()) / 2
     base = (high.rolling(base_period).max() + low.rolling(base_period).min()) / 2
     span_a = ((conversion + base) / 2).shift(displacement)
@@ -200,7 +188,7 @@ def ichimoku(
 @dataclass
 class PSARResult:
     sar: pd.Series
-    direction: pd.Series  # 1 = long trend, -1 = short trend
+    direction: pd.Series  # / 1 = long trend,
 
 
 def psar(
@@ -209,15 +197,12 @@ def psar(
     step: float = 0.02,
     max_step: float = 0.2,
 ) -> PSARResult:
-    # / parabolic sar (wilder). direction flips when price crosses sar.
-    # / direction is float dtype so length<2 / warmup positions stay nan (not 0)
     n = len(high)
     sar = pd.Series(np.nan, index=high.index, dtype=float)
     direction = pd.Series(np.nan, index=high.index, dtype=float)
     if n < 2:
         return PSARResult(sar=sar, direction=direction)
 
-    # / seed direction from first two highs (up if high[1] >= high[0])
     trend_up = high.iloc[1] >= high.iloc[0]
     ep = high.iloc[0] if trend_up else low.iloc[0]
     af = step
@@ -229,7 +214,6 @@ def psar(
         prev_sar = current
         current = prev_sar + af * (ep - prev_sar)
         if trend_up:
-            # / sar cannot exceed prior two lows
             current = min(current, low.iloc[i - 1], low.iloc[max(0, i - 2)])
             if low.iloc[i] < current:
                 # / flip to short
@@ -242,7 +226,6 @@ def psar(
                     ep = high.iloc[i]
                     af = min(af + step, max_step)
         else:
-            # / sar cannot fall below prior two highs
             current = max(current, high.iloc[i - 1], high.iloc[max(0, i - 2)])
             if high.iloc[i] > current:
                 # / flip to long

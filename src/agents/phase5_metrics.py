@@ -1,5 +1,4 @@
 # / flywheel health metrics
-# / sql-only, surfaced via dashboard health tab
 
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ class Phase5Metrics:
 
 
 async def _safe_fetch_one(pool, query: str, *args) -> Any:
-    # / run a query that should return one row, return None if table missing
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(query, *args)
@@ -73,7 +71,6 @@ async def _safe_fetch_val(pool, query: str, *args) -> Any:
 
 async def _evolution_stats(pool) -> tuple[int | None, int]:
     # / (days_since_last_kill, kills_in_last_30d)
-    # / evolution_log uses action='kill'; no killed_count column exists
     days = None
     last_kill_row = await _safe_fetch_one(
         pool,
@@ -112,7 +109,6 @@ async def _brier_stats(pool) -> tuple[int, int]:
 
 async def _llm_split_stats(pool) -> tuple[int, int, float]:
     # / (cerebras_calls_7d, groq_calls_7d, cerebras_pct)
-    # / api_costs uses call_count, not request_count
     cerebras = await _safe_fetch_val(
         pool,
         """SELECT COALESCE(SUM(call_count), 0) FROM api_costs
@@ -143,7 +139,6 @@ async def _wiki_stats(pool) -> tuple[int, int]:
 
 
 async def _regime_diversity(pool, market: str) -> int:
-    # / distinct regimes observed for `market` in last 7 days
     val = await _safe_fetch_val(
         pool,
         """SELECT COUNT(DISTINCT regime) FROM regime_history
@@ -154,8 +149,6 @@ async def _regime_diversity(pool, market: str) -> int:
 
 
 async def _sector_regime_diversity(pool) -> int:
-    # / count DISTINCT (sector_market, regime) pairs in last 7 days for sector rows
-    # / sector markets are strings like 'mega_tech', 'cloud_cyber' — not 'equity' or 'crypto'
     val = await _safe_fetch_val(
         pool,
         """SELECT COUNT(DISTINCT regime) FROM regime_history

@@ -1,0 +1,37 @@
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_return_any = false
+warn_unreachable = true
+no_implicit_optional = true
+strict_equality = true
+exclude = [
+    "src/quant/vendor/",
+    "scripts/",
+    "tests/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "src.quant.brier_score",
+    "src.quant.risk_metrics",
+    "src.quant.particle_filter",
+    "src.quant.monte_carlo",
+    "src.indicators.*",
+    "src.data.validators",
+    "src.data.symbols",
+    "src.data.cost_tracker",
+    "src.data.regime_detector",
+    "src.data.staleness_monitor",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_reexport = true
+warn_return_any = true
+strict_optional = true

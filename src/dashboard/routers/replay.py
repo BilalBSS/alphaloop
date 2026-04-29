@@ -12,8 +12,6 @@ router = APIRouter()
 
 @router.get("/api/replay/{symbol}")
 async def replay_endpoint(symbol: str, cutoff: str = "", days_back: int = 30):
-    # / observation-only: bars + trades + signals + consensus knowable at time t
-    # / pure SELECT queries — do not invoke agents or filters here
     if not symbol or len(symbol) > CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if STATE.pool is None:

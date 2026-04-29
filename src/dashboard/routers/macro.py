@@ -11,7 +11,6 @@ router = APIRouter()
 
 @router.get("/api/macro-context")
 async def get_macro_context():
-    # / latest FRED indicators normalized to [-1, 1]
     if STATE.pool is None:
         return {"indicators": [], "yield_curve_spread": None}
     rows = await db.query(

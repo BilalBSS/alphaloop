@@ -1,6 +1,4 @@
 # / deepseek v3 strategy mutation
-# / takes a killed strategy config and top performer, proposes a new config
-# / falls back to random parameter tweak if llm fails
 
 from __future__ import annotations
 
@@ -16,7 +14,6 @@ from src.data.llm_client import llm_call
 
 logger = structlog.get_logger(__name__)
 
-# / parameters eligible for random tweaking
 _TWEAK_PARAMS = [
     ("entry_conditions.signals[].period", -5, 5, int),
     ("entry_conditions.signals[].threshold", -5, 5, float),
@@ -35,9 +32,6 @@ async def mutate_strategy(
     rng: np.random.Generator | None = None,
     wiki_context: str | None = None,
 ) -> list[dict]:
-    # / propose mutated strategy configs using deepseek v3 + deepseek reasoner critique
-    # / returns list[dict]: usually 1, sometimes 2 on disagreement
-    # / falls back to random tweak if llm unavailable or fails
     rng = rng or np.random.default_rng()
 
     api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
@@ -61,7 +55,6 @@ async def mutate_strategy(
         logger.info("reasoner_disagreed", strategy_id=mutator_config.get("id"))
         return [mutator_config, critique["alternative"]]
     else:
-        # / reject without alternative, or error/timeout
         return [mutator_config]
 
 
@@ -73,7 +66,6 @@ async def _llm_propose(
     rng: np.random.Generator,
     wiki_context: str | None = None,
 ) -> dict:
-    # / deepseek v3 mutation with 3-retry loop
     prompt = _build_mutation_prompt(
         killed_config, top_config, recent_trades, wiki_context=wiki_context,
     )
@@ -119,8 +111,6 @@ async def _reasoner_critique(
     top_config: dict,
     recent_trades: list[dict],
 ) -> dict:
-    # / deepseek reasoner reviews the proposed mutation
-    # / returns {decision: "approve"|"reject", reason: str, alternative: dict|None}
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
     if not deepseek_key:
         logger.info("no_deepseek_key_skipping_critique")
@@ -190,7 +180,6 @@ Output ONLY valid JSON:
 
 
 async def _call_deepseek_v3(prompt: str) -> str:
-    # / call deepseek v3 via shared llm client
     data = await llm_call(
         "deepseek",
         messages=[{"role": "user", "content": prompt}],
@@ -207,7 +196,6 @@ def _build_mutation_prompt(
     recent_trades: list[dict],
     wiki_context: str | None = None,
 ) -> str:
-    # / construct the llm mutation prompt
     trades_summary = ""
     for t in recent_trades[:5]:
         trades_summary += f"  - {t.get('symbol', '?')} {t.get('side', '?')}: pnl={t.get('pnl', '?')}\n"
@@ -247,10 +235,8 @@ Output the complete JSON config now:"""
 
 
 def _parse_json_response(text: str) -> dict:
-    # / extract json from llm response, handles markdown fences
     text = text.strip()
 
-    # / try to extract from code fence
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         text = match.group(1).strip()
@@ -259,7 +245,6 @@ def _parse_json_response(text: str) -> dict:
 
 
 def _random_tweak(config: dict, rng: np.random.Generator) -> dict:
-    # / deterministic fallback: randomly adjust one parameter
     import copy
     new_config = copy.deepcopy(config)
 
@@ -273,23 +258,19 @@ def _random_tweak(config: dict, rng: np.random.Generator) -> dict:
     new_config["metadata"]["status"] = "backtest_pending"
     new_config["metadata"]["generation"] = config.get("metadata", {}).get("generation", 0) + 1
 
-    # / pick a random signal to tweak
     signals = new_config.get("entry_conditions", {}).get("signals", [])
     if signals:
         idx = int(rng.integers(0, len(signals)))
         signal = signals[idx]
 
-        # / tweak period if present and not None
         if signal.get("period") is not None:
             delta = int(rng.integers(-3, 4))
             signal["period"] = max(2, signal["period"] + delta)
 
-        # / tweak threshold if present and not None
         if signal.get("threshold") is not None:
             delta = float(rng.uniform(-5, 5))
             signal["threshold"] = round(signal["threshold"] + delta, 1)
 
-        # / tweak multiplier if present and not None
         if signal.get("multiplier") is not None:
             delta = float(rng.uniform(-0.3, 0.3))
             signal["multiplier"] = round(max(0.1, signal["multiplier"] + delta), 2)

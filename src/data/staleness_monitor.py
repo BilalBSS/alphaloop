@@ -1,10 +1,10 @@
-# / monitor freshness of all data sources, alert on stale data
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import asyncpg
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -19,10 +19,6 @@ class SourceFreshness:
     is_stale: bool
 
 
-# / staleness thresholds per source (hours)
-# / market_data (daily bars) → 28h = one trading day + buffer. weekends can legitimately exceed 24h.
-# / market_data_crypto → checked against intraday 1h bars not daily; 6h gives buffer for backfill cadence
-# / regime_history → 36h = updated every 6h by _regime_loop, buffer for weekend misses
 FRESHNESS_THRESHOLDS = {
     "market_data": 28,
     "market_data_crypto": 6,
@@ -36,14 +32,12 @@ FRESHNESS_THRESHOLDS = {
 }
 
 
-async def check_all_freshness(pool) -> list[SourceFreshness]:
-    # / check freshness of all data sources
+async def check_all_freshness(pool: asyncpg.Pool) -> list[SourceFreshness]:
     results = []
     now = datetime.now(timezone.utc)
 
     queries = {
         "market_data": "SELECT MAX(created_at) FROM market_data WHERE symbol NOT LIKE '%%USD'",
-        # / check crypto against intraday 1h bars (24/7 feed) not daily
         "market_data_crypto": "SELECT MAX(created_at) FROM market_data_intraday WHERE symbol LIKE '%%USD'",
         "fundamentals": "SELECT MAX(created_at) FROM fundamentals",
         "insider_trades": "SELECT MAX(created_at) FROM insider_trades",

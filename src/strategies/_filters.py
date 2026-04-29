@@ -1,9 +1,7 @@
-# / fundamental filter handlers — config_key -> (analysis, threshold, filters) -> (passed, reason)
 from __future__ import annotations
 
 from collections.abc import Callable
 
-# / handlers receive the full filters dict so they can check `strict_data` themselves
 FILTER_HANDLERS: dict[str, Callable] = {}
 
 
@@ -15,13 +13,10 @@ def register_filter(config_key: str):
 
 
 def _strict(filters: dict) -> bool:
-    # / strict_data=True (default): reject when AnalysisData field is None
-    # / strict_data=False: silently skip a filter when its data is missing
     return filters.get("strict_data", True)
 
 
 def _threshold_filter(field: str, op: str, label: str, *, pct: bool = False):
-    # / build a min/max filter for an AnalysisData field
     fmt = "{:.2%}" if pct else "{:.2f}"
     word = "min" if op == "min" else "max"
     sym = "<" if op == "min" else ">"

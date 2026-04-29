@@ -1,4 +1,3 @@
-# / per-strategy lesson accumulation — called from evolution engine after each cycle
 
 from __future__ import annotations
 
@@ -66,7 +65,6 @@ class StrategyLessons:
         return lesson_id
 
     async def get_context(self, strategy_id: str, limit: int = 10) -> list[dict]:
-        # / fetch recent lessons for a strategy, newest first
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -83,11 +81,9 @@ class StrategyLessons:
     async def _append_to_playbook(
         self, strategy_id: str, lesson_type: str, content: str, confidence: str,
     ) -> None:
-        # / append lesson as new section in strategies/{strategy_id}.md
         rel_path = f"strategies/{strategy_id}.md"
         existing = await self._writer.read_document(rel_path)
         if existing is None:
-            # / seed a stub playbook — real seeding happens via scripts.seed_wiki
             stub = (
                 f"# {strategy_id} Playbook\n\n"
                 f"*auto-generated stub — seed script should populate this*\n\n"

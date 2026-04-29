@@ -12,7 +12,6 @@ router = APIRouter()
 
 @router.get("/api/volume-profile/{symbol}")
 async def volume_profile_endpoint(symbol: str, bins: int = 24, days: int = 30, timeframe: str = "1Hour"):
-    # / horizontal histogram of traded volume at price levels + poc/vah/val anchors
     if not symbol or len(symbol) > CHART_STATE_SYMBOL_MAX:
         return JSONResponse(status_code=400, content={"error": "invalid_symbol"})
     if STATE.pool is None:

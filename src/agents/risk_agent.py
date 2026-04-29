@@ -1,6 +1,3 @@
-# / risk agent — evaluates trade signals for portfolio risk before approving
-# / uses copula-based tail dependence for correlation risk
-# / skips copula on small portfolios (< 5 positions or < 10 days history)
 
 from __future__ import annotations
 
@@ -57,7 +54,6 @@ class RiskAgent:
         self._long_only = os.environ.get("LONG_ONLY", "true").lower() in ("true", "1", "yes")
         self._min_cash_reserve_pct = rl.get("min_cash_reserve_pct", 0.10)
         self._max_daily_trades = rl.get("max_daily_trades", 20)
-        # / per-strategy breadth: 3 independent guards (slot count, NAV, activity scaling)
         self._max_daily_trades_per_strategy = rl.get("max_daily_trades_per_strategy", 6)
         self._max_positions_per_strategy = rl.get("max_positions_per_strategy", 4)
         self._max_exposure_per_strategy_pct = float(rl.get("max_exposure_per_strategy_pct", 0.08))
@@ -89,7 +85,6 @@ class RiskAgent:
         self, pool, signal_id: int, broker: BrokerInterface,
         strategy_pool=None,
     ) -> dict:
-        # / evaluate one trade signal, approve or reject
         try:
             return await self._process_signal_inner(pool, signal_id, broker, strategy_pool)
         except Exception as exc:
@@ -106,7 +101,6 @@ class RiskAgent:
     async def _reject(
         self, pool, signal_id: int, label: str, response_reason: str | None = None,
     ) -> dict:
-        # / write rejected status + emit standard response
         await update_trade_status(pool, "trade_signals", signal_id, "rejected", label)
         return {"status": "rejected", "reason": response_reason or label}
 
@@ -114,7 +108,6 @@ class RiskAgent:
         self, pool, signal_id: int, broker: BrokerInterface,
         strategy_pool=None,
     ) -> dict:
-        # / 1. fetch + normalize signal
         signal = await fetch_pending_signal_by_id(pool, signal_id)
         if not signal:
             return {"status": "skipped", "reason": "signal_not_found_or_not_pending"}
@@ -122,7 +115,6 @@ class RiskAgent:
         side = signal["signal_type"]
         strength = max(0.0, min(1.0, float(signal["strength"]) if signal["strength"] else 0.5))
 
-        # / 2. long-only guard (sells); may cap qty in signal
         rej = await self._guard_long_only(pool, signal, signal_id, broker)
         if rej is not None:
             return rej
@@ -144,9 +136,9 @@ class RiskAgent:
         try:
             price = await broker.get_price(symbol)
         except Exception:
+            # / swallow broker price failure
             return await self._reject(pool, signal_id, "no_price")
 
-        # / 6-8. buy-only gates: circuit breaker -> liquidity -> caps -> concentration
         if side == "buy":
             rej = await self._check_circuit_breakers(pool, signal_id, balance)
             if rej is not None:
@@ -161,7 +153,6 @@ class RiskAgent:
             if rej is not None:
                 return rej
 
-        # / 9. compute base position size
         qty = await self._compute_size(pool, signal, side, balance, price, strength)
 
         # / 10-11. sizing modifiers (buys)
@@ -186,19 +177,16 @@ class RiskAgent:
         if rej is not None:
             return rej
 
-        # / 14. copula tail dependence (optional)
         if side == "buy" and len(positions) >= 5:
             qty = await self._apply_tail_dependence_cap(pool, symbol, positions, qty)
 
         # / 15. approve
         return await self._approve(pool, signal_id, signal, symbol, side, qty)
 
-    # / -- gate methods (each returns rejection dict or None to continue) --
 
     async def _guard_long_only(
         self, pool, signal: dict, signal_id: int, broker: BrokerInterface,
     ) -> dict | None:
-        # / sells only when we hold the symbol; cap qty to held quantity
         if not (self._long_only and signal["signal_type"] == "sell"):
             return None
         symbol = signal["symbol"]
@@ -219,7 +207,6 @@ class RiskAgent:
     async def _check_already_holding(
         self, pool, signal: dict, signal_id: int, side: str, symbol: str, positions: list,
     ) -> dict | None:
-        # / strategies can hold the same symbol independently; reject duplicate-buy from same strategy
         if side != "buy":
             return None
         strategy_id = signal.get("strategy_id")
@@ -230,7 +217,6 @@ class RiskAgent:
             if strat_positions:
                 return await self._reject(pool, signal_id, "already_holding")
             return None
-        # / fallback when signal has no strategy_id
         if any(p.symbol == symbol for p in positions):
             return await self._reject(pool, signal_id, "already_holding")
         return None
@@ -238,7 +224,6 @@ class RiskAgent:
     async def _check_circuit_breakers(
         self, pool, signal_id: int, balance,
     ) -> dict | None:
-        # / drawdown + consecutive-loss circuit breakers (buy-side only)
         await self._cb.update_peak(pool, balance.equity)
         if self._cb.hard_stop_breached(balance.equity):
             drawdown = self._cb.current_drawdown(balance.equity)
@@ -265,7 +250,6 @@ class RiskAgent:
     async def _check_liquidity(
         self, pool, signal_id: int, symbol: str, balance, strength: float, price: float,
     ) -> dict | None:
-        # / cap trade value to a fraction of daily dollar volume
         avg_vol = await fetch_avg_volume(pool, symbol)
         if not (avg_vol and avg_vol > 0 and price > 0):
             return None
@@ -278,7 +262,6 @@ class RiskAgent:
     async def _check_buy_caps(
         self, pool, signal: dict, signal_id: int, balance, strength: float, positions: list,
     ) -> dict | None:
-        # / global caps: cash reserve, open positions, daily trades + per-strategy breadth
         if balance.cash < balance.equity * self._min_cash_reserve_pct:
             return await self._reject(pool, signal_id, "cash_reserve_insufficient")
         if len(positions) >= self._max_open_positions:
@@ -292,7 +275,6 @@ class RiskAgent:
                 pool, signal_id, "max_daily_trades",
                 response_reason=f"max_daily_trades ({self._max_daily_trades}) reached",
             )
-        # / per-strategy breadth: daily count, slot count, NAV exposure
         return await self._check_strategy_breadth(pool, signal, signal_id, balance, strength)
 
     async def _check_strategy_breadth(
@@ -320,7 +302,6 @@ class RiskAgent:
                     f"reached for {signal_strategy_id}"
                 ),
             )
-        # / NAV exposure pre-check: would this trade push strategy past cap?
         strat_notional = sum(
             float(sp.get("qty") or 0) * float(sp.get("avg_entry_price") or 0)
             for sp in strat_positions
@@ -342,7 +323,6 @@ class RiskAgent:
     async def _check_cross_strategy_concentration(
         self, pool, signal_id: int, symbol: str, balance, price: float,
     ) -> dict | None:
-        # / cap aggregate symbol holding at 2x single-strategy max
         all_sym_positions = await get_strategy_positions(pool, symbol=symbol)
         if not all_sym_positions:
             return None
@@ -360,13 +340,11 @@ class RiskAgent:
     async def _compute_size(
         self, pool, signal: dict, side: str, balance, price: float, strength: float,
     ) -> int:
-        # / sells use held qty; buys use kelly + activity scaling
         if side == "sell":
             return await self._resolve_sell_qty(pool, signal)
         return await self._compute_buy_size(pool, signal, balance, price, strength)
 
     async def _resolve_sell_qty(self, pool, signal: dict) -> int:
-        # / use signal.qty when present, else fall back to strategy's full position
         signal_details = signal.get("details") or {}
         qty = int(float(signal_details.get("qty", 0)))
         if qty > 0:
@@ -389,7 +367,6 @@ class RiskAgent:
         return max(0, int(qty_raw))
 
     async def _get_activity_scale(self, pool, strategy_id: str) -> float:
-        # / lópez de prado 1/√n damp on concurrent pending signals
         if not (self._activity_scaling_enabled and strategy_id):
             return 1.0
         try:
@@ -413,7 +390,6 @@ class RiskAgent:
             regime_mult = self._regime_multipliers.get(regime_label, 0.5)
             return int(qty * regime_mult)
         except Exception as exc:
-            # / regime lookup failed — proceed at full size
             logger.debug("regime_sizing_skipped", symbol=symbol, error=str(exc)[:100])
             return qty
 
@@ -432,7 +408,6 @@ class RiskAgent:
         self, pool, signal: dict, signal_id: int, side: str, balance,
         price: float, qty: int, strategy_pool,
     ) -> tuple[dict | None, int]:
-        # / size down so worst-case stop loss <= max_single_trade_loss_pct of equity
         if side != "buy" or strategy_pool is None or balance.equity <= 0:
             return None, qty
         stop_distance = self._infer_stop_distance(strategy_pool, signal.get("strategy_id"))
@@ -456,7 +431,6 @@ class RiskAgent:
         self, pool, signal_id: int, side: str, balance, positions: list,
         price: float, qty: int,
     ) -> tuple[dict | None, int]:
-        # / hard cap on aggregate exposure (buys only)
         if side != "buy":
             return None, qty
         total_position_value = sum(p.market_value for p in positions)
@@ -512,8 +486,6 @@ class RiskAgent:
         }
 
     def _infer_stop_distance(self, strategy_pool, strategy_id) -> float | None:
-        # / stop distance as a fraction of entry price
-        # / fixed_pct -> pct directly; atr-based -> conservative 2% default
         if not strategy_id:
             return None
         try:
@@ -535,7 +507,6 @@ class RiskAgent:
     async def _check_tail_dependence(
         self, pool, symbol: str, positions: list,
     ) -> float | None:
-        # / fit t-copula to portfolio returns; returns lambda_lower or None
         position_symbols = [p.symbol for p in positions] + [symbol]
         rows = await fetch_close_history_batch(
             pool, position_symbols, bars_per_symbol=252,

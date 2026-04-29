@@ -1,7 +1,3 @@
-# / fundamentals: edgar (primary) → finnhub (fallback) → yfinance (last resort)
-# / edgar provides authoritative financial data from sec 10-K/10-Q filings
-# / finnhub fills gaps with real-time ratios, yfinance as final fallback
-# / graceful: returns partial data when fields missing, warns but doesn't crash
 
 from __future__ import annotations
 
@@ -21,7 +17,6 @@ logger = structlog.get_logger(__name__)
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
-    # / safely convert to decimal, return none on failure
     if value is None:
         return None
     try:
@@ -34,7 +29,6 @@ def _safe_decimal(value: Any) -> Decimal | None:
 
 
 def _pct_to_dec(value: Any) -> float | None:
-    # / finnhub returns some metrics as percentages (18.5 = 18.5%), convert to decimal (0.185)
     if value is None:
         return None
     try:
@@ -50,10 +44,8 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-# / --- edgar fetcher (primary) ---
 
 def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
-    # / edgartools v5: use Financials class with standardized getters
     try:
         from edgar import Company
     except ImportError:
@@ -68,7 +60,6 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
             logger.info("edgar_no_financials", symbol=symbol)
             return None
 
-        # / standardized getters handle xbrl tag differences across companies
         revenue = _fin_val(financials.get_revenue())
         if not revenue:
             logger.info("edgar_no_revenue", symbol=symbol)
@@ -83,9 +74,8 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         total_liabilities = _fin_val(financials.get_total_liabilities())
         net_income = _fin_val(financials.get_net_income())
         current_assets = _fin_val(financials.get_current_assets())
-        total_cash = current_assets  # / best available proxy, no dedicated cash getter
+        total_cash = current_assets  # / best available proxy, no
 
-        # / xbrl fallback for fields where standardized getters return None
         facts = None
         needs_xbrl = (shares is None or total_cash is None or operating_cf is None
                       or total_liabilities is None or total_equity is None)
@@ -100,16 +90,13 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
                 "CommonStockSharesIssued",
             ])
 
-        # / real cash instead of current_assets proxy
         xbrl_cash = _xbrl_fact(facts, [
             "CashAndCashEquivalentsAtCarryingValue",
             "CashCashEquivalentsAndShortTermInvestments",
         ])
         if xbrl_cash is not None:
             total_cash = xbrl_cash
-        # / current_assets is already set as fallback from line above
 
-        # / real debt instead of liabilities - equity estimate
         xbrl_debt = _xbrl_sum(facts, [
             ["LongTermDebt", "ShortTermBorrowings"],
             ["LongTermDebtNoncurrent", "DebtCurrent"],
@@ -132,17 +119,14 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
         fcf_margin = fcf_val / revenue if (fcf_val is not None and revenue > 0) else None
         rev_growth = (revenue - prev_revenue) / abs(prev_revenue) if (prev_revenue and abs(prev_revenue) > 0) else None
 
-        # / prefer xbrl debt, fallback to liabilities - equity estimate
         total_debt_est = xbrl_debt if xbrl_debt is not None else (
             (total_liabilities - total_equity) if (total_liabilities and total_equity) else None
         )
-        # / net debt = total debt - cash
         net_debt_val = (total_debt_est - total_cash) if (total_debt_est is not None and total_cash is not None) else total_debt_est
 
         # / debt to equity
         de_ratio = total_liabilities / total_equity if (total_liabilities and total_equity and total_equity > 0) else None
 
-        # / sector from company sic description
         sector = getattr(company, "sic_description", None) or "Unknown"
         sector_lower = sector.lower()
         if any(k in sector_lower for k in ("software", "computer", "semiconductor", "electronic")):
@@ -184,7 +168,6 @@ def _fetch_edgar_sync(symbol: str) -> dict[str, Any] | None:
 
 
 def _xbrl_fact(facts: Any, concepts: list[str]) -> float | None:
-    # / try multiple xbrl concepts in order, return first valid value
     if facts is None:
         return None
     for concept in concepts:
@@ -194,13 +177,12 @@ def _xbrl_fact(facts: Any, concepts: list[str]) -> float | None:
                 val = _fin_val(fact)
                 if val is not None:
                     return val
-        except Exception:
+        except (KeyError, AttributeError, ValueError, TypeError):
             continue
     return None
 
 
 def _xbrl_sum(facts: Any, concept_groups: list[list[str]]) -> float | None:
-    # / try groups of xbrl concepts, sum each group, return first valid sum
     if facts is None:
         return None
     for group in concept_groups:
@@ -211,7 +193,6 @@ def _xbrl_sum(facts: Any, concept_groups: list[list[str]]) -> float | None:
 
 
 def _fin_val(metric: Any) -> float | None:
-    # / extract numeric value from edgartools financial metric object
     if metric is None:
         return None
     try:
@@ -223,10 +204,8 @@ def _fin_val(metric: Any) -> float | None:
         return None
 
 
-# / --- finnhub fetcher (fallback) ---
 
 async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
-    # / finnhub basic-financials + company profile
     key = os.environ.get("FINNHUB_API_KEY")
     if not key:
         return None
@@ -246,7 +225,6 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
             return None
         metrics = resp.json().get("metric", {})
 
-        # / company profile for sector + shares
         resp2 = await client.get(
             "https://finnhub.io/api/v1/stock/profile2",
             params={"symbol": symbol},
@@ -259,12 +237,10 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
             return None
 
         shares = profile.get("shareOutstanding")
-        # / finnhub returns shares in millions
         shares_int = int(shares * 1_000_000) if shares else None
         mcap = profile.get("marketCapitalization")
         mcap_val = mcap * 1_000_000 if mcap else None
 
-        # / compute revenue from P/S if available
         ps = _safe_float(metrics.get("psTTM"))
         total_rev = (mcap_val / ps) if (mcap_val and ps and ps > 0) else None
 
@@ -275,7 +251,6 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
             "pe_forward": _safe_decimal(metrics.get("peAnnual")),
             "ps_ratio": _safe_decimal(metrics.get("psTTM")),
             "peg_ratio": _safe_decimal(metrics.get("pegAnnual")),
-            # / finnhub returns growth as percentages (18.5 = 18.5%), normalize to decimal (0.185)
             "revenue_growth_1y": _safe_decimal(_pct_to_dec(metrics.get("revenueGrowthQuarterlyYoy"))),
             "revenue_growth_3y": _safe_decimal(_pct_to_dec(metrics.get("revenueGrowth3Y"))),
             "fcf_margin": _safe_decimal(_pct_to_dec(metrics.get("fcfMarginTTM"))),
@@ -303,7 +278,6 @@ async def _fetch_finnhub(symbol: str) -> dict[str, Any] | None:
 
 
 def _compute_fcf_margin(info: dict) -> Decimal | None:
-    # / fcf margin = free cash flow / total revenue
     fcf = info.get("freeCashflow")
     revenue = info.get("totalRevenue")
     if fcf is not None and revenue and revenue != 0:
@@ -311,10 +285,8 @@ def _compute_fcf_margin(info: dict) -> Decimal | None:
     return None
 
 
-# / --- yfinance fetcher (last resort) ---
 
 def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
-    # / sync yfinance fetch — run via asyncio.to_thread
     try:
         import yfinance as yf
     except ImportError:
@@ -363,10 +335,8 @@ def _fetch_yfinance(symbol: str) -> dict[str, Any] | None:
         return None
 
 
-# / --- fetch chain: edgar → finnhub → yfinance ---
 
 async def fetch_fundamentals(symbol: str) -> dict[str, Any] | None:
-    # / try edgar first (authoritative, quarterly filings)
     edgar_result = None
     async with _edgar_semaphore:
         await asyncio.sleep(_edgar_delay)
@@ -375,16 +345,13 @@ async def fetch_fundamentals(symbol: str) -> dict[str, Any] | None:
         except Exception as exc:
             logger.info("edgar_fundamentals_error", symbol=symbol, error=str(exc)[:100])
 
-    # / always fetch finnhub for price ratios (P/E, P/S, PEG) + sector
     finnhub_result = await _fetch_finnhub(symbol)
 
     if edgar_result and finnhub_result:
-        # / merge: edgar financials + finnhub price ratios
         for key in ("pe_ratio", "pe_forward", "ps_ratio", "peg_ratio", "sector",
                      "revenue_growth_1y", "debt_to_equity"):
             if edgar_result.get(key) is None and finnhub_result.get(key) is not None:
                 edgar_result[key] = finnhub_result[key]
-        # / prefer finnhub shares if edgar didn't get them
         if edgar_result.get("shares_outstanding") is None:
             edgar_result["shares_outstanding"] = finnhub_result.get("shares_outstanding")
         return edgar_result
@@ -409,7 +376,6 @@ async def fetch_fundamentals(symbol: str) -> dict[str, Any] | None:
 async def fetch_all_fundamentals(
     symbols: list[str],
 ) -> list[dict[str, Any]]:
-    # / fetch fundamentals for all symbols, compute sector averages after
     results: list[dict[str, Any]] = []
 
     for symbol in symbols:
@@ -426,7 +392,6 @@ async def fetch_all_fundamentals(
 
 
 def _compute_sector_averages(data: list[dict[str, Any]]) -> None:
-    # / fill in sector averages across the universe
     sectors: dict[str, list[dict[str, Any]]] = {}
     for d in data:
         sector = d.get("sector", "Unknown")
@@ -454,7 +419,6 @@ def _compute_sector_averages(data: list[dict[str, Any]]) -> None:
 
 
 async def store_fundamentals(pool, data: list[dict[str, Any]]) -> int:
-    # / validate and insert fundamentals, handle duplicates
     if not data:
         return 0
 

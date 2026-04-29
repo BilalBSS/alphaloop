@@ -1,7 +1,4 @@
 # / strategy calibration tracking
-# / BS = mean((predicted - actual)^2)
-# / < 0.20 = good, < 0.10 = excellent
-# / Murphy decomposition: BS = reliability - resolution + uncertainty
 
 from __future__ import annotations
 
@@ -34,8 +31,6 @@ def calibration_curve(
     outcomes: np.ndarray,
     n_bins: int = 10,
 ) -> dict:
-    # / binned predicted vs actual for reliability diagram
-    # / returns dict with bin_centers, bin_freqs, bin_counts
     predictions = np.asarray(predictions, dtype=np.float64)
     outcomes = np.asarray(outcomes, dtype=np.float64)
 
@@ -87,10 +82,6 @@ def resolution_reliability_uncertainty(
     outcomes: np.ndarray,
     n_bins: int = 10,
 ) -> dict:
-    # / murphy decomposition: BS = reliability - resolution + uncertainty
-    # / reliability: how close binned predictions are to binned outcomes (lower = better)
-    # / resolution: how much binned outcomes differ from base rate (higher = better)
-    # / uncertainty: base rate entropy (fixed for a dataset)
     predictions = np.asarray(predictions, dtype=np.float64)
     outcomes = np.asarray(outcomes, dtype=np.float64)
 
@@ -155,8 +146,6 @@ def rolling_brier(
     outcomes: np.ndarray,
     window: int = 50,
 ) -> np.ndarray:
-    # / windowed brier score for tracking drift over time
-    # / returns array of rolling brier scores (nan-padded at start)
     predictions = np.asarray(predictions, dtype=np.float64)
     outcomes = np.asarray(outcomes, dtype=np.float64)
 

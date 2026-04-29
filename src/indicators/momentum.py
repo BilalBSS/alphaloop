@@ -1,6 +1,3 @@
-# / momentum indicators: rsi, stochastic, cci, williams %r, roc
-# / all take pandas series, return series
-# / nan-safe: insufficient data returns nan
 
 from __future__ import annotations
 
@@ -12,7 +9,6 @@ import pandas as pd
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     # / relative strength index (0-100)
-    # / rsi > 70 = overbought, rsi < 30 = oversold
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
@@ -39,7 +35,6 @@ def stochastic(
     d_period: int = 3,
 ) -> StochasticResult:
     # / stochastic oscillator (0-100)
-    # / %k > 80 = overbought, %k < 20 = oversold
     lowest = low.rolling(window=k_period, min_periods=k_period).min()
     highest = high.rolling(window=k_period, min_periods=k_period).max()
     denom = highest - lowest
@@ -55,7 +50,6 @@ def cci(
     period: int = 20,
 ) -> pd.Series:
     # / commodity channel index
-    # / cci > 100 = overbought, cci < -100 = oversold
     tp = (high + low + close) / 3
     sma_tp = tp.rolling(window=period, min_periods=period).mean()
     mad = tp.rolling(window=period, min_periods=period).apply(
@@ -70,8 +64,6 @@ def williams_r(
     close: pd.Series,
     period: int = 14,
 ) -> pd.Series:
-    # / williams %r (-100 to 0)
-    # / %r > -20 = overbought, %r < -80 = oversold
     highest = high.rolling(window=period, min_periods=period).max()
     lowest = low.rolling(window=period, min_periods=period).min()
     denom = highest - lowest

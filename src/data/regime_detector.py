@@ -1,9 +1,3 @@
-# / market regime classifier: bull, bear, sideways, high_vol, insufficient_data
-# / rule-based using rolling volatility, sma cross, drawdown
-# / separate classifiers for equity (spy-based) and crypto (btc-based)
-# / graceful: returns insufficient_data when not enough history
-# / per-sector regime on sector composite returns to fix the
-# / "all stocks bull / all crypto bear" uniformity problem
 
 from __future__ import annotations
 
@@ -12,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import asyncpg
 import numpy as np
 import structlog
 
@@ -23,22 +18,17 @@ from src.data.symbols import (
 
 logger = structlog.get_logger(__name__)
 
-# / minimum trading days needed for sma200
 MIN_HISTORY_DAYS = 200
 
-# / volatility thresholds (equity vs crypto)
-EQUITY_HIGH_VOL_MULTIPLIER = 2.0   # vol > 2x median = high_vol
-CRYPTO_HIGH_VOL_MULTIPLIER = 2.0   # same multiplier but crypto baseline is ~3x equity
-DRAWDOWN_BEAR_THRESHOLD = 0.15     # > 15% drawdown from high
-DRAWDOWN_BULL_MAX = 0.10           # < 10% drawdown for bull
-VOL_BULL_MULTIPLIER = 1.5          # vol < 1.5x median for bull
+EQUITY_HIGH_VOL_MULTIPLIER = 2.0  # / vol > 2x median
+CRYPTO_HIGH_VOL_MULTIPLIER = 2.0  # / same multiplier but crypto
+DRAWDOWN_BEAR_THRESHOLD = 0.15  # / > 15% drawdown from
+DRAWDOWN_BULL_MAX = 0.10  # / < 10% drawdown for
+VOL_BULL_MULTIPLIER = 1.5  # / vol < 1.5x median
 
-# / per-sector regime cache — matches orchestrator REGIME_LOOP_INTERVAL (6h)
 SECTOR_REGIME_CACHE_TTL_SECONDS = 21600
-# / sectors with fewer than this many symbols fall back to market regime
 SECTOR_MIN_SYMBOLS = 3
 
-# / in-memory cache: {sector: (regime, confidence, cached_at_epoch)}
 _sector_regime_cache: dict[str, tuple[str, float, float]] = {}
 
 
@@ -46,7 +36,7 @@ _sector_regime_cache: dict[str, tuple[str, float, float]] = {}
 class RegimeResult:
     date: date
     market: str          # "equity" or "crypto"
-    regime: str          # bull, bear, sideways, high_vol, insufficient_data
+    regime: str  # / bull, bear, sideways, high_vol,
     confidence: float    # 0.0 to 1.0
     volatility_20d: float
     sma50_above_200: bool | None
@@ -58,8 +48,6 @@ def classify_regimes(
     closes: list[float],
     market: str = "equity",
 ) -> list[RegimeResult]:
-    # / classify regime for each date given close prices
-    # / returns one result per date (early dates get insufficient_data)
     if len(dates) != len(closes):
         raise ValueError("dates and closes must be same length")
 
@@ -82,7 +70,6 @@ def classify_regimes(
             ))
             continue
 
-        # / compute indicators using data up to this point
         window = closes_arr[:i + 1]
         vol_20d = _rolling_volatility(window, 20)
         sma50 = _sma(window, 50)
@@ -118,7 +105,6 @@ def classify_single_date(
     as_of: date,
     market: str = "equity",
 ) -> RegimeResult:
-    # / classify regime for the most recent date given price history
     if len(closes) < MIN_HISTORY_DAYS:
         return RegimeResult(
             date=as_of,
@@ -165,8 +151,6 @@ def _classify_single(
     drawdown: float,
     high_vol_mult: float,
 ) -> tuple[str, float]:
-    # / priority: high_vol > bear > bull > sideways
-    # / confidence = (supporting signals) / 3
 
     signals = {
         "vol_elevated": vol_20d > high_vol_mult * vol_median if vol_median > 0 else False,
@@ -177,7 +161,6 @@ def _classify_single(
         "shallow_drawdown": drawdown < DRAWDOWN_BULL_MAX,
     }
 
-    # / high_vol: vol > 2x median (overrides everything)
     if signals["vol_elevated"]:
         supporting = sum([
             signals["vol_elevated"],
@@ -186,7 +169,6 @@ def _classify_single(
         ])
         return "high_vol", round(supporting / 3, 2)
 
-    # / bear: trend down + deep drawdown
     if signals["trend_down"] and signals["deep_drawdown"]:
         supporting = sum([
             signals["trend_down"],
@@ -195,7 +177,6 @@ def _classify_single(
         ])
         return "bear", round(supporting / 3, 2)
 
-    # / bull: trend up + shallow drawdown + low vol
     if signals["trend_up"] and signals["shallow_drawdown"]:
         supporting = sum([
             signals["trend_up"],
@@ -214,7 +195,6 @@ def _classify_single(
 
 
 def _rolling_volatility(prices: np.ndarray, window: int) -> float:
-    # / annualized volatility from log returns over window
     if len(prices) < window + 1:
         return 0.0
     log_returns = np.diff(np.log(prices[-window - 1:]))
@@ -229,7 +209,6 @@ def _sma(prices: np.ndarray, window: int) -> float | None:
 
 
 def _drawdown_from_high(prices: np.ndarray, lookback: int) -> float:
-    # / current drawdown from highest point in lookback period
     window = prices[-lookback:] if len(prices) >= lookback else prices
     if len(window) == 0:
         return 0.0
@@ -241,7 +220,6 @@ def _drawdown_from_high(prices: np.ndarray, lookback: int) -> float:
 
 
 def _median_volatility(prices: np.ndarray, lookback: int, vol_window: int) -> float:
-    # / median of rolling volatility over lookback period
     if len(prices) < lookback + vol_window:
         # / use what we have
         lookback = max(len(prices) - vol_window, vol_window)
@@ -257,11 +235,10 @@ def _median_volatility(prices: np.ndarray, lookback: int, vol_window: int) -> fl
 
 
 async def backfill_regimes(
-    pool,
+    pool: asyncpg.Pool,
     index_symbol: str = "SPY",
     market: str = "equity",
 ) -> int:
-    # / compute regimes from market_data and populate regime_history + update market_data rows
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -306,10 +283,8 @@ async def backfill_regimes(
                 Decimal(str(round(r.drawdown_from_high, 4))),
             )
 
-    # / update market_data rows with regime tags (only matching market type)
     async with pool.acquire() as conn:
         if market == "crypto":
-            # / crypto symbols contain '-' or '/' (e.g. BTC-USD)
             await conn.execute(
                 """
                 UPDATE market_data md
@@ -324,7 +299,6 @@ async def backfill_regimes(
                 market,
             )
         else:
-            # / equity symbols are plain tickers (no '-')
             await conn.execute(
                 """
                 UPDATE market_data md
@@ -345,7 +319,6 @@ async def backfill_regimes(
 
 
 def _sector_market_type(sector: str) -> str:
-    # / crypto sectors are tagged 'crypto' in regime_history, everything else 'equity'
     symbols = SECTORS.get(sector, [])
     if not symbols:
         return "equity"
@@ -353,10 +326,8 @@ def _sector_market_type(sector: str) -> str:
 
 
 async def _fetch_sector_composite_closes(
-    pool, sector: str, lookback_days: int = 400,
+    pool: asyncpg.Pool, sector: str, lookback_days: int = 400,
 ) -> tuple[list[date], list[float]]:
-    # / average close across symbols in a sector -> composite price series
-    # / returns (dates, composite_closes) aligned; skips dates where <2 symbols reported
     symbols = SECTORS.get(sector, [])
     if len(symbols) < 2:
         return [], []
@@ -376,13 +347,10 @@ async def _fetch_sector_composite_closes(
     if not rows:
         return [], []
 
-    # / pivot: {date: {symbol: close}} then average rebased closes per date
     by_date: dict[date, dict[str, float]] = {}
     for r in rows:
         by_date.setdefault(r["date"], {})[r["symbol"]] = float(r["close"])
 
-    # / rebase each symbol to its first observed close so different price levels
-    # / don't dominate the average (e.g. NVDA at $500 vs AMD at $100)
     first_close: dict[str, float] = {}
     for d in sorted(by_date.keys()):
         for sym, px in by_date[d].items():
@@ -396,12 +364,10 @@ async def _fetch_sector_composite_closes(
         for sym, px in by_date[d].items():
             if sym in first_close and first_close[sym] > 0:
                 rebased.append(px / first_close[sym])
-        # / require at least 2 symbols reporting for a valid composite point
         if len(rebased) >= 2:
             dates.append(d)
             composites.append(float(np.mean(rebased)) * 100.0)  # / index level base=100
 
-    # / trim to most recent lookback_days points for classifier
     if len(dates) > lookback_days:
         dates = dates[-lookback_days:]
         composites = composites[-lookback_days:]
@@ -410,10 +376,8 @@ async def _fetch_sector_composite_closes(
 
 
 async def detect_market_regime(
-    pool, market: str = "equity",
+    pool: asyncpg.Pool, market: str = "equity",
 ) -> tuple[str, float]:
-    # / backward-compat: market-wide regime from regime_history
-    # / returns (regime, confidence); defaults to ("insufficient_data", 0.0) on miss
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -432,11 +396,9 @@ async def detect_market_regime(
 
 
 async def detect_regime_per_sector(
-    pool, force_refresh: bool = False,
+    pool: asyncpg.Pool, force_refresh: bool = False,
 ) -> dict[str, tuple[str, float]]:
-    # / compute regime for every sector from composite returns
     # / returns {sector_name: (regime, confidence)}
-    # / cached for 6h to match orchestrator regime loop cadence
     now = time.time()
 
     if not force_refresh and _sector_regime_cache:
@@ -444,7 +406,6 @@ async def detect_regime_per_sector(
         if now - first_ts < SECTOR_REGIME_CACHE_TTL_SECONDS:
             return {k: (v[0], v[1]) for k, v in _sector_regime_cache.items()}
 
-    # / fallbacks from market-wide regime in case a sector can't be classified
     equity_fallback = await detect_market_regime(pool, "equity")
     crypto_fallback = await detect_market_regime(pool, "crypto")
 
@@ -455,7 +416,6 @@ async def detect_regime_per_sector(
 
         symbols = SECTORS[sector]
         if len(symbols) < SECTOR_MIN_SYMBOLS:
-            # / too few symbols — use market regime directly
             out[sector] = fallback
             continue
 
@@ -486,7 +446,6 @@ async def detect_regime_per_sector(
         else:
             out[sector] = (result.regime, result.confidence)
 
-    # / refresh cache with single timestamp so TTL applies to the whole batch
     ts = time.time()
     _sector_regime_cache.clear()
     for sector, (regime, conf) in out.items():
@@ -500,10 +459,8 @@ async def detect_regime_per_sector(
 
 
 async def detect_regime_for_symbol(
-    symbol: str, pool,
+    symbol: str, pool: asyncpg.Pool,
 ) -> tuple[str, float]:
-    # / per-symbol regime: dispatches to the symbol's sector regime
-    # / falls back to market-wide when symbol isn't mapped to a sector
     sector = get_sector(symbol)
     market = "crypto" if is_crypto(symbol) else "equity"
 
@@ -514,13 +471,10 @@ async def detect_regime_for_symbol(
     if sector in per_sector:
         return per_sector[sector]
 
-    # / sector exists in map but not in per_sector result — fall back to market
     return await detect_market_regime(pool, market)
 
 
-async def backfill_regimes_per_sector(pool) -> dict[str, int]:
-    # / write today's per-sector regime snapshot to regime_history
-    # / one row per sector, keyed on (date, market=sector_name)
+async def backfill_regimes_per_sector(pool: asyncpg.Pool) -> dict[str, int]:
     per_sector = await detect_regime_per_sector(pool, force_refresh=True)
 
     today = date.today()
@@ -557,18 +511,13 @@ async def backfill_regimes_per_sector(pool) -> dict[str, int]:
 
 
 def _clear_sector_regime_cache() -> None:
-    # / test helper — not for production call sites
     _sector_regime_cache.clear()
 
 
 async def snapshot_regime_daily(
-    pool, market: str, current_regime: str | None,
+    pool: asyncpg.Pool, market: str, current_regime: str | None,
     confidence: float | None = None,
 ) -> bool:
-    # / ensure a regime_history row exists for today even when
-    # / no shift occurred — otherwise the timeline widget only has scattered
-    # / shift-triggered rows and looks empty / uniform.
-    # / returns True if a snapshot row was inserted, False if one already existed or input was invalid.
     if not market or not current_regime or current_regime == "insufficient_data":
         return False
 

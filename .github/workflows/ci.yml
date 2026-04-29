@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install deps
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: ruff
+        run: python -m ruff check src/
+
+      - name: comment lint
+        run: python scripts/lint_comments.py
+
+      - name: mypy strict whitelist
+        run: |
+          python -m mypy \
+            src/quant/brier_score.py \
+            src/quant/risk_metrics.py \
+            src/quant/particle_filter.py \
+            src/quant/monte_carlo.py \
+            src/indicators/ \
+            src/data/validators.py \
+            src/data/symbols.py \
+            src/data/cost_tracker.py \
+            src/data/regime_detector.py \
+            src/data/staleness_monitor.py
+
+      - name: import smoke
+        run: |
+          python -c "from src.dashboard.app import app; \
+            from src.dashboard.state import STATE; \
+            print('routes:', len(app.routes)); \
+            print('broker:', type(STATE.get_broker()).__name__)"

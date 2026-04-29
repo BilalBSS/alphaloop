@@ -17,7 +17,6 @@ router = APIRouter()
 
 @router.get("/api/analysis/{symbol}")
 async def get_analysis(symbol: str):
-    # / full deep-dive: parallel fetch all symbol-scoped data
     (score, signals, trades, sentiment, fundamentals, dcf, market, social, insider, evolution) = await asyncio.gather(
         db.query_one(
             """SELECT * FROM analysis_scores

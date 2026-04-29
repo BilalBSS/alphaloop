@@ -1,6 +1,3 @@
-# / strategy agent — evaluates active strategies against all symbols
-# / generates trade signals when entry conditions met
-# / uses particle filter to smooth noisy signals
 
 from __future__ import annotations
 
@@ -9,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import pandas as pd
 import structlog
 
@@ -39,13 +37,11 @@ from src.strategies.strategy_pool import StrategyPool
 
 logger = structlog.get_logger(__name__)
 
-# / minimum smoothed strength to generate a signal
 SIGNAL_THRESHOLD = 0.15
 
 
 @dataclass(frozen=True)
 class ConsensusResult:
-    # / outcome of consensus filter; .blocked means signal was rejected
     signal: EntrySignal
     reason_code: str
     kept: bool
@@ -57,12 +53,11 @@ class StrategyAgent:
         self._filters: dict[str, ParticleFilter] = {}
         self._df_cache: dict[str, pd.DataFrame | None] = {}
         self._intraday_cache: dict[str, pd.DataFrame | None] = {}
-        self._indicators_stored: set[str] = set()  # / track which symbols had indicators stored this cycle
+        self._indicators_stored: set[str] = set()  # / track which symbols had
 
     async def _fetch_market_df(
         self, pool, symbol: str, min_bars: int = 50,
     ) -> pd.DataFrame | None:
-        # / fetch ohlcv and build dataframe, cached per cycle
         if symbol in self._df_cache:
             return self._df_cache[symbol]
 
@@ -89,8 +84,6 @@ class StrategyAgent:
     async def run(
         self, pool, strategy_pool: StrategyPool, broker,
     ) -> list[dict]:
-        # / evaluate all active strategies against all symbols
-        # / returns list of generated signal dicts
         self._df_cache.clear()  # / reset per-cycle cache
         self._intraday_cache.clear()
         self._indicators_stored.clear()
@@ -124,14 +117,12 @@ class StrategyAgent:
                     error=str(exc),
                 )
 
-        # / check exits for open positions
         try:
             exit_signals = await self._check_exits(pool, strategy_pool, broker)
             signals.extend(exit_signals)
         except Exception as exc:
             logger.warning("exit_check_failed", error=str(exc))
 
-        # / sort near-misses by strength descending, keep top 3
         stats["near_misses"] = sorted(
             stats["near_misses"], key=lambda nm: nm.get("raw_strength", 0), reverse=True,
         )[:3]
@@ -144,7 +135,6 @@ class StrategyAgent:
 
         logger.info("strategy_agent_complete", signals_generated=len(signals),
                      total_evaluated=stats["total"])
-        # / log strategy eval cycle to system_events
         entry_hits = stats["total"] - stats["no_entry"] - stats.get("insufficient_data", 0)
         await log_event(
             pool, "info", "strategy",
@@ -164,7 +154,6 @@ class StrategyAgent:
         self, pool, strategy: ConfigDrivenStrategy, broker,
         stats: dict[str, Any] | None = None,
     ) -> list[dict]:
-        # / evaluate one strategy against its universe
         signals: list[dict] = []
         universe = strategy.resolve_universe()
 
@@ -187,7 +176,6 @@ class StrategyAgent:
         self, pool, strategy: ConfigDrivenStrategy, symbol: str,
         stats: dict[str, Any] | None = None,
     ) -> dict | None:
-        # / evaluate entry signal for one (strategy, symbol) pair
         if stats is not None:
             stats["total"] += 1
 
@@ -203,7 +191,6 @@ class StrategyAgent:
         intraday_df = await self._fetch_intraday_df(pool, symbol)
         entry_signal = strategy.should_enter(symbol, df, analysis_data, intraday_df=intraday_df)
 
-        # / no-entry path: log near-miss + return
         if not entry_signal.should_enter:
             if stats is not None:
                 stats["no_entry"] += 1
@@ -214,7 +201,6 @@ class StrategyAgent:
         if strategy.config.get("intraday_confirm", True):
             entry_signal = self._apply_intraday_gate(symbol, intraday_df, entry_signal)
 
-        # / consensus filter w/ symbol-trend overlay
         symbol_trend = self._classify_symbol_trend(df)
         regime = analysis_data.regime if analysis_data else None
         bypass_consensus = strategy.get_effective_bypass_consensus(regime)
@@ -235,7 +221,6 @@ class StrategyAgent:
             )
             return None
 
-        # / smoothing + threshold + ml modifier
         threshold = strategy.config.get("signal_threshold_override") or SIGNAL_THRESHOLD
         smoothed_strength = self._smooth_signal(symbol, entry_signal.strength)
         smoothed_strength = await self._apply_ml_modifier(
@@ -284,7 +269,6 @@ class StrategyAgent:
         }
 
     async def _load_analysis(self, pool, symbol: str):
-        # / fetch analysis_score row + parse details into AnalysisData
         analysis_row = await fetch_analysis_score(pool, symbol)
         analysis_data = None
         raw_details: dict | None = None
@@ -301,7 +285,6 @@ class StrategyAgent:
         self, pool, strategy: ConfigDrivenStrategy, symbol: str,
         entry_signal: EntrySignal, analysis_data,
     ) -> None:
-        # / observation_log near-miss writer; differentiates fundamental vs technical
         try:
             passed_n = entry_signal.passed_count
             total_n = entry_signal.total_count
@@ -334,7 +317,6 @@ class StrategyAgent:
     def _apply_intraday_gate(
         self, symbol: str, intraday_df, entry_signal: EntrySignal,
     ) -> EntrySignal:
-        # / 2h rsi/macd alignment: halve on misalignment, boost on confirm
         if intraday_df is None or len(intraday_df) < 14:
             return entry_signal
         try:
@@ -372,8 +354,6 @@ class StrategyAgent:
         self, consensus, bypass_consensus: bool, symbol_trend: str,
         entry_signal: EntrySignal,
     ) -> ConsensusResult:
-        # / strict mode (default) blocks bearish-consensus unless trend is up
-        # / loose mode softens bearish to 0.4x but never blocks
         is_loose = os.environ.get("CONSENSUS_MODE", "strict").strip().lower() == "loose"
         if consensus == "bearish" and not bypass_consensus:
             if symbol_trend == "up":
@@ -477,7 +457,6 @@ class StrategyAgent:
     async def _apply_ml_modifier(
         self, pool, symbol: str, df, analysis_data, smoothed_strength: float,
     ) -> float:
-        # / lightgbm probability boost/penalty; >0.6 boost, <0.4 penalty
         if len(df) < 252:
             return smoothed_strength
         try:
@@ -502,8 +481,9 @@ class StrategyAgent:
             try:
                 from src.quant.ml_signals import store_ml_prediction
                 await store_ml_prediction(pool, ml_pred)
-            except Exception:
-                pass
+            except Exception as store_exc:
+                # / swallow ml store failure
+                logger.debug("ml_store_failed", symbol=symbol, error=str(store_exc)[:120])
         except Exception as exc:
             logger.debug("ml_signal_failed", symbol=symbol, error=str(exc))
         return smoothed_strength
@@ -511,7 +491,6 @@ class StrategyAgent:
     async def _fetch_intraday_df(
         self, pool, symbol: str, min_bars: int = 20,
     ) -> pd.DataFrame | None:
-        # / fetch 2h intraday bars, cached per cycle
         if symbol in self._intraday_cache:
             return self._intraday_cache[symbol]
 
@@ -537,12 +516,11 @@ class StrategyAgent:
             )
             self._intraday_cache[symbol] = df
             return df
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
             self._intraday_cache[symbol] = None
             return None
 
     async def _store_indicators(self, pool, symbol: str, df: pd.DataFrame) -> None:
-        # / compute and store latest indicator values, once per symbol per cycle
         if symbol in self._indicators_stored or len(df) < 50:
             return
         self._indicators_stored.add(symbol)
@@ -579,7 +557,6 @@ class StrategyAgent:
             indicators = {k: (v if v == v else None) for k, v in indicators.items()}
             await store_computed_indicators(pool, symbol, indicators)
 
-            # / compute and store 2h intraday indicators
             intraday_df = await self._fetch_intraday_df(pool, symbol)
             if intraday_df is not None and len(intraday_df) >= 20:
                 try:
@@ -609,7 +586,6 @@ class StrategyAgent:
                 except Exception as exc2:
                     logger.debug("intraday_indicator_compute_failed", symbol=symbol, error=str(exc2))
 
-            # / compute and store ict indicators (fvg, order blocks, structure breaks)
             try:
                 open_ = df["open"] if "open" in df.columns else close
                 fvg_result = fair_value_gaps(high, low, close)
@@ -637,7 +613,6 @@ class StrategyAgent:
             logger.debug("indicator_compute_failed", symbol=symbol, error=str(exc))
 
     def _smooth_signal(self, symbol: str, raw_strength: float) -> float:
-        # / use particle filter to smooth noisy entry signals
         if symbol not in self._filters:
             self._filters[symbol] = ParticleFilter(
                 n_particles=500, process_noise=0.05, observation_noise=0.10,
@@ -650,7 +625,6 @@ class StrategyAgent:
 
     @staticmethod
     def _classify_symbol_trend(df) -> str:
-        # / classify individual symbol trend from price vs sma50
         if df is None or len(df) < 50:
             return "unknown"
         close = df["close"]
@@ -666,7 +640,6 @@ class StrategyAgent:
     async def _check_exits(
         self, pool, strategy_pool: StrategyPool, broker,
     ) -> list[dict]:
-        # / check exit conditions using strategy_positions (knows who owns what)
         signals: list[dict] = []
         checked_symbols: set[str] = set()
 
@@ -677,7 +650,6 @@ class StrategyAgent:
 
         for entry in active:
             strategy = entry.strategy
-            # / get this strategy's positions from db
             strat_positions = await get_strategy_positions(pool, strategy_id=strategy.strategy_id)
             for sp in strat_positions:
                 checked_symbols.add(sp["symbol"])
@@ -685,7 +657,6 @@ class StrategyAgent:
                 if exit_sig:
                     signals.append(exit_sig)
 
-        # / also check untracked positions using the first active strategy's exit rules
         if active:
             default_strategy = active[0].strategy
             untracked = await get_strategy_positions(pool, strategy_id="untracked")
@@ -702,10 +673,7 @@ class StrategyAgent:
         self, strategy, sp: dict, df: pd.DataFrame,
         override_strategy_id: str | None = None,
     ) -> dict | None:
-        # / evaluate the first partial_exits tier.
         # / strategy JSON shape:
-        # /   exit_conditions.partial_exits: [{"trigger": "take_profit_pct", "threshold": 0.05, "fraction": 0.5}]
-        # / returns None when no tier triggers or the position already consumed a tier.
         try:
             if sp.get("partial_exit_fired"):
                 return None
@@ -713,7 +681,7 @@ class StrategyAgent:
             tiers = (cfg.get("exit_conditions", {}) or {}).get("partial_exits") or []
             if not tiers:
                 return None
-            tier = tiers[0]  # / only first tier for now; future tiers can fire on re-entry
+            tier = tiers[0]  # / only first tier for
             trigger = (tier.get("trigger") or "").lower()
             threshold = float(tier.get("threshold") or 0)
             fraction = float(tier.get("fraction") or 0.5)
@@ -727,7 +695,6 @@ class StrategyAgent:
             fires = False
             if trigger in ("take_profit_pct", "take_profit"):
                 fires = gain_pct >= threshold
-            # / future triggers: "take_profit_1r" with stop distance input, etc.
             if not fires:
                 return None
             full_qty = float(sp.get("qty") or 0)
@@ -747,15 +714,11 @@ class StrategyAgent:
     async def _eval_exit(
         self, pool, strategy, sp: dict, override_strategy_id: str | None = None,
     ) -> dict | None:
-        # / evaluate exit for a single position
         try:
             df = await self._fetch_market_df(pool, sp["symbol"])
             if df is None:
                 return None
 
-            # / partial-exit tier check before full-exit evaluation.
-            # / if the strategy's exit_conditions.partial_exits[0] trigger has fired
-            # / and partial_exit_fired is still false, sell `fraction` of the position.
             partial_sig = self._eval_partial_exit(strategy, sp, df, override_strategy_id)
             if partial_sig is not None:
                 signal_id = await store_trade_signal(
@@ -772,7 +735,6 @@ class StrategyAgent:
                         "exit_fraction": partial_sig["fraction"],
                     },
                 )
-                # / mark the position so we don't re-fire next cycle; best-effort
                 try:
                     await mark_partial_exit_fired(
                         pool, partial_sig["strategy_id"], sp["symbol"],
@@ -790,7 +752,6 @@ class StrategyAgent:
                     "qty": partial_sig["qty"],
                 }
 
-            # / use position's updated_at as entry proxy, fallback to oldest bar
             entry_ts = sp.get("updated_at")
             entry_date = pd.Timestamp(entry_ts) if entry_ts else pd.Timestamp(df.index[0])
             if entry_date.tz is not None:
