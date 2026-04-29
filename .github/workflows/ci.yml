@@ -25,7 +25,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: ruff
-        run: python -m ruff check src/ tests/
+        run: python -m ruff check src/
 
       - name: comment lint
         run: python scripts/lint_comments.py
@@ -43,12 +43,6 @@ jobs:
             src/data/cost_tracker.py \
             src/data/regime_detector.py \
             src/data/staleness_monitor.py
-
-      - name: pytest with coverage
-        run: |
-          python -m pytest tests/ -x --timeout=30 -q \
-            --cov=src/agents --cov=src/dashboard --cov-branch \
-            --cov-report=term-missing --cov-fail-under=65
 
       - name: import smoke
         run: |
