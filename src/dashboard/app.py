@@ -126,6 +126,25 @@ async def _no_cache_html(request, call_next):
     return response
 
 
+_CACHE_TTL_SECONDS: dict[str, int] = {
+    "/api/strategies": 60,
+    "/api/health": 10,
+    "/api/macro-context": 300,
+    "/api/macro-history": 300,
+    "/api/version": 3600,
+}
+
+
+@app.middleware("http")
+async def _cache_hot_endpoints(request, call_next):
+    response = await call_next(request)
+    if request.method == "GET":
+        ttl = _CACHE_TTL_SECONDS.get(request.url.path)
+        if ttl is not None:
+            response.headers["Cache-Control"] = f"max-age={ttl}"
+    return response
+
+
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     logger.error(
