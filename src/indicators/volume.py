@@ -59,7 +59,7 @@ def volume_profile(
 
     bins = np.linspace(price_min, price_max, num_bins + 1)
     bin_centers = (bins[:-1] + bins[1:]) / 2
-    bin_indices = np.digitize(close.values, bins) - 1
+    bin_indices = np.digitize(close.to_numpy(), bins) - 1
     bin_indices = np.clip(bin_indices, 0, num_bins - 1)
 
     vol_at_price = np.zeros(num_bins)
