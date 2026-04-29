@@ -8,6 +8,7 @@ import math
 from datetime import date
 from typing import Any
 
+import asyncpg
 import structlog
 
 from src.notifications.notifier import notify_sentiment_shift
@@ -164,6 +165,7 @@ def _fetch_vix_sync() -> dict[str, float] | None:
         normalized = max(-1.0, min(1.0, (30.0 - vix) / 20.0))
         return {"raw_level": vix, "normalized": normalized}
     except Exception:
+        # / swallow: vix fetch fails safe to None
         return None
 
 
@@ -302,8 +304,9 @@ async def run_social_sentiment(
                         )
                         if prev is not None and abs(fear_score - float(prev)) > 0.3:
                             notify_sentiment_shift(symbol, float(prev), fear_score)
-            except Exception:
-                pass  # / notification is best-effort
+            except (asyncpg.PostgresError, ValueError, TypeError):
+                # / swallow notification best-effort
+                pass
 
             logger.info("social_sentiment_processed", symbol=symbol, score=results[symbol])
         except Exception as exc:

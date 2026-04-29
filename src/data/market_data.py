@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import structlog
 
 from .alpaca_client import DATA_URL as ALPACA_DATA_URL
@@ -399,13 +400,13 @@ async def backfill_intraday(
 
             try:
                 bars = await fetch_bars_alpaca(symbol, fetch_start, end, timeframe=timeframe)
-            except Exception:
+            except (httpx.HTTPError, ValueError, KeyError):
                 bars = []
             if not bars:
                 # / fallback: yfinance 1h bars
                 try:
                     bars = await fetch_bars_yfinance_1h(symbol, fetch_start, end)
-                except Exception:
+                except (ValueError, KeyError, TypeError, AttributeError):
                     bars = []
             count = await store_intraday_bars(pool, bars, timeframe=timeframe)
             results[symbol] = count
@@ -541,7 +542,7 @@ async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
                 price = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
                 if price and price > 0:
                     result[sym] = float(price)
-            except Exception:
+            except (ValueError, KeyError, AttributeError, TypeError):
                 pass
         return result
 

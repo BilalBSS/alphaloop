@@ -204,7 +204,7 @@ async def llm_call(
             content = choices[0].get("message", {}).get("content", "") if choices else ""
             tokens_out = len(content) // 4
         track_llm_cost(provider, model or "", tokens_in, tokens_out)
-    except Exception:
+    except (ImportError, KeyError, AttributeError, TypeError):
         pass
 
     return data

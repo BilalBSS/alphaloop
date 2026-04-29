@@ -358,7 +358,7 @@ async def get_fundamentals(pool, symbol: str) -> dict[str, Any]:
             try:
                 import json as _json
                 sources_raw = _json.loads(sources_raw)
-            except Exception:
+            except (ValueError, TypeError):
                 sources_raw = []
         updated = cached.get("updated_at")
         return {

@@ -19,7 +19,7 @@ import structlog
 try:
     from zoneinfo import ZoneInfo
     _NY_TZ = ZoneInfo("America/New_York")
-except Exception:
+except (ImportError, KeyError):
     _NY_TZ = None
 
 logger = structlog.get_logger(__name__)

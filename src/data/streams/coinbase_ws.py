@@ -38,7 +38,7 @@ def _parse_ts(s: str | None) -> int:
             s = f"{head}.{frac}{tz_suffix}"
         s = s.replace("Z", "+00:00")
         return int(datetime.fromisoformat(s).timestamp() * 1000)
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
 

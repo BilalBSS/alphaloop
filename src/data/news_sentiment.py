@@ -128,6 +128,7 @@ async def compute_sentiment_score(
         scores = [_keyword_score(h) for h in headlines]
         return sum(scores) / len(scores) if scores else 0.0
     except Exception:
+        # / swallow: sentiment fails safe to neutral 0.0
         return 0.0
 
 

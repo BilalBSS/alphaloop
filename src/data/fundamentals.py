@@ -194,7 +194,7 @@ def _xbrl_fact(facts: Any, concepts: list[str]) -> float | None:
                 val = _fin_val(fact)
                 if val is not None:
                     return val
-        except Exception:
+        except (KeyError, AttributeError, ValueError, TypeError):
             continue
     return None
 

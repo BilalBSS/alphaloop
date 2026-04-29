@@ -74,7 +74,7 @@ def _compute_next_fire(meta: dict[str, Any], base: datetime | None = None) -> da
         try:
             from zoneinfo import ZoneInfo
             et = ZoneInfo("America/New_York")
-        except Exception:
+        except (ImportError, KeyError):
             et = timezone(timedelta(hours=-5))
         et_now = now.astimezone(et)
         target = et_now.replace(hour=hour, minute=0, second=0, microsecond=0)

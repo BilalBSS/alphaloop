@@ -9,6 +9,7 @@ import os
 from datetime import date, timedelta
 from typing import Any
 
+import httpx
 import structlog
 
 from .resilience import api_get, with_retry
@@ -89,7 +90,7 @@ def _fetch_yf_calendar_sync(symbol: str) -> dict[str, Any] | None:
             if ed:
                 return {"date": str(ed[0]) if isinstance(ed, list) else str(ed)}
         return None
-    except Exception:
+    except (KeyError, ValueError, TypeError, AttributeError):
         return None
 
 
@@ -101,7 +102,7 @@ async def days_to_earnings(symbol: str) -> int | None:
             earnings_date = date.fromisoformat(cal["date"])
             delta = (earnings_date - date.today()).days
             return delta if delta >= 0 else None
-    except Exception:
+    except (httpx.HTTPError, ValueError, KeyError):
         pass
     try:
         yf_cal = await asyncio.to_thread(_fetch_yf_calendar_sync, symbol)
@@ -109,7 +110,7 @@ async def days_to_earnings(symbol: str) -> int | None:
             earnings_date = date.fromisoformat(yf_cal["date"][:10])
             delta = (earnings_date - date.today()).days
             return delta if delta >= 0 else None
-    except Exception:
+    except (ValueError, KeyError, TypeError, AttributeError):
         pass
     return None
 

@@ -119,6 +119,7 @@ async def _run_migrations(pool: asyncpg.Pool) -> None:
                     )
                 logger.info("migration_applied", filename=mf.name)
             except Exception:
+                # / migration failure is fatal - log + reraise
                 logger.error("migration_failed", filename=mf.name, exc_info=True)
                 raise
 
@@ -158,6 +159,6 @@ def _mask_url(url: str) -> str:
                 + (f":{parsed.port}" if parsed.port else "")
             )
             return urlunparse(masked)
-    except Exception:
+    except (ValueError, AttributeError):
         pass
     return url

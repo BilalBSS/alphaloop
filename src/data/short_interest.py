@@ -8,6 +8,7 @@ import os
 from datetime import date
 from typing import Any
 
+import httpx
 import structlog
 
 from .resilience import api_get, configure_rate_limit, with_retry
@@ -81,7 +82,7 @@ async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
         result = await _fetch_short_finnhub(symbol)
         if result:
             return result
-    except Exception:
+    except (httpx.HTTPError, ValueError, KeyError):
         pass
     # / fallback: finra
     return await fetch_finra_short_volume(symbol)

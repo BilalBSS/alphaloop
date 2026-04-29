@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import decimal
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -44,7 +45,7 @@ def _check_bound(
 
     try:
         numeric = Decimal(str(value))
-    except Exception:
+    except (ValueError, TypeError, decimal.InvalidOperation):
         return ValidationResult(
             valid=False, field=field, value=value,
             reason=f"not numeric: {value!r}",

@@ -106,7 +106,7 @@ def _compute_max_pain(calls, puts) -> float | None:
                 max_pain_strike = strike
 
         return max_pain_strike
-    except Exception:
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
 
 

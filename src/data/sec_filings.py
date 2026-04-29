@@ -120,6 +120,7 @@ def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
         val = getattr(obj, attr, default)
         return val if val is not None else default
     except Exception:
+        # / swallow: edgartools attr access fails safe to default
         return default
 
 
@@ -163,7 +164,7 @@ def _get_transactions(form4: Any) -> list[dict[str, Any]]:
                     "shares": _to_float(row.get("Shares", 0)),
                     "price": _to_float(row.get("Price", 0)),
                 })
-    except Exception:
+    except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
     # / v5: non-derivative table for option exercises, gifts, etc
@@ -178,7 +179,7 @@ def _get_transactions(form4: Any) -> list[dict[str, Any]]:
                     "shares": _to_float(row.get("Shares", 0)),
                     "price": _to_float(row.get("Price", 0)),
                 })
-    except Exception:
+    except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
     return txns

@@ -7,6 +7,7 @@ import os
 from datetime import date
 from typing import Any
 
+import httpx
 import structlog
 
 from .resilience import api_get, with_retry
@@ -99,7 +100,7 @@ async def fetch_congressional_trades(symbol: str) -> list[dict[str, Any]]:
         return []
     try:
         return await _fetch_finnhub_congressional(symbol)
-    except Exception:
+    except (httpx.HTTPError, ValueError, KeyError):
         return []
 
 
