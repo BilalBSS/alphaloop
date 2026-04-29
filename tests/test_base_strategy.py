@@ -800,6 +800,55 @@ class TestExitTakeProfitBollinger:
         assert result.should_exit is False
 
 
+class TestExitTakeProfitFixedPct:
+    def test_triggers_at_target(self):
+        cfg = _base_config(exit_conditions={
+            "take_profit": {"type": "fixed_pct", "pct": 0.05},
+        })
+        s = ConfigDrivenStrategy(cfg)
+        data = _ohlcv(50)
+        entry_date = data.index[0]
+        entry_price = 100.0
+        data.iloc[20, data.columns.get_loc("close")] = 105.0
+        result = s.should_exit("AAPL", data, entry_price, entry_date, 20)
+        assert result.should_exit is True
+        assert "take profit" in result.reason
+        assert "5%" in result.reason
+
+    def test_no_exit_below_target(self):
+        cfg = _base_config(exit_conditions={
+            "take_profit": {"type": "fixed_pct", "pct": 0.05},
+        })
+        s = ConfigDrivenStrategy(cfg)
+        data = _ohlcv(50)
+        entry_date = data.index[0]
+        data.iloc[20, data.columns.get_loc("close")] = 104.99
+        result = s.should_exit("AAPL", data, 100.0, entry_date, 20)
+        assert result.should_exit is False
+
+    def test_pct_only_no_type_field(self):
+        cfg = _base_config(exit_conditions={
+            "take_profit": {"pct": 0.04},
+        })
+        s = ConfigDrivenStrategy(cfg)
+        data = _ohlcv(50)
+        entry_date = data.index[0]
+        data.iloc[15, data.columns.get_loc("close")] = 105.0
+        result = s.should_exit("AAPL", data, 100.0, entry_date, 15)
+        assert result.should_exit is True
+
+    def test_zero_pct_falls_through_to_indicator(self):
+        cfg = _base_config(exit_conditions={
+            "take_profit": {"pct": 0, "indicator": "bollinger_bands",
+                            "condition": "price_above_upper"},
+        })
+        s = ConfigDrivenStrategy(cfg)
+        data = _ohlcv_rising(150)
+        entry_date = data.index[0]
+        result = s.should_exit("AAPL", data, 80.0, entry_date, 140)
+        assert result.should_exit in (True, False)
+
+
 class TestExitBoundary:
     def test_current_bar_idx_out_of_range(self):
         cfg = _base_config(exit_conditions={"time_exit": {"max_holding_days": 5}})

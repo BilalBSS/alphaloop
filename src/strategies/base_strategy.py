@@ -273,7 +273,7 @@ class ConfigDrivenStrategy(StrategyInterface):
         take_profit = self._exit_conditions.get("take_profit")
         if take_profit:
             exit_signal = self._check_take_profit(
-                take_profit, market_data, current_bar_idx,
+                take_profit, market_data, entry_price, current_bar_idx,
             )
             if exit_signal.should_exit:
                 return exit_signal
@@ -429,12 +429,25 @@ class ConfigDrivenStrategy(StrategyInterface):
         self,
         tp_config: dict[str, Any],
         market_data: pd.DataFrame,
+        entry_price: float,
         current_bar_idx: int,
     ) -> ExitSignal:
-        indicator = tp_config.get("indicator", "")
-        condition = tp_config.get("condition", "")
         close = market_data["close"]
         current_price = float(close.iloc[current_bar_idx])
+
+        # / fixed pct branch
+        pct = tp_config.get("pct")
+        if pct is not None and pct > 0:
+            target = entry_price * (1.0 + pct)
+            if current_price >= target:
+                return ExitSignal(
+                    should_exit=True,
+                    reason=f"take profit: price {current_price:.2f} >= {target:.2f} ({pct:.0%})",
+                )
+            return ExitSignal(should_exit=False)
+
+        indicator = tp_config.get("indicator", "")
+        condition = tp_config.get("condition", "")
 
         if indicator == "bollinger_bands":
             from src.indicators.volatility import bollinger_bands
