@@ -35,16 +35,15 @@
   },
   "exit_conditions": {
     "take_profit": {
-      "indicator": "bollinger_bands",
-      "condition": "price_above_upper"
+      "type": "fixed_pct",
+      "pct": 0.04
     },
     "stop_loss": {
-      "type": "atr_trailing",
-      "multiplier": 2.0,
-      "period": 14
+      "type": "fixed_pct",
+      "pct": 0.05
     },
     "time_exit": {
-      "max_holding_days": 30
+      "max_holding_days": 5
     }
   },
   "position_sizing": {
