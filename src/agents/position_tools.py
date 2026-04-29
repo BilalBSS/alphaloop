@@ -1,4 +1,3 @@
-# / strategy positions: open, close, reconcile, sync
 
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ logger = structlog.get_logger(__name__)
 async def open_strategy_position(
     pool, strategy_id: str, symbol: str, qty: float, price: float,
 ) -> None:
-    # / upsert with weighted-average entry price on add
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
@@ -32,7 +30,6 @@ async def open_strategy_position(
 async def close_strategy_position(
     pool, strategy_id: str, symbol: str, qty: float,
 ) -> float | None:
-    # / atomic reduce qty, delete if zero. returns entry_price
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             "SELECT qty, avg_entry_price FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 FOR UPDATE",
@@ -60,7 +57,6 @@ async def close_strategy_position(
 
 
 async def fetch_most_recent_open_entry(pool, symbol: str) -> dict | None:
-    # / fallback when close_strategy_position has no row
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT price, qty, strategy_id, created_at
@@ -82,7 +78,6 @@ async def fetch_most_recent_open_entry(pool, symbol: str) -> dict | None:
 async def get_strategy_positions(
     pool, strategy_id: str | None = None, symbol: str | None = None,
 ) -> list[dict]:
-    # / query with optional strategy/symbol filters
     async with pool.acquire() as conn:
         if strategy_id and symbol:
             rows = await conn.fetch(
@@ -114,14 +109,12 @@ async def reconcile_strategy_positions(
     pool, alpaca_map: dict[str, float], full_sync: bool = False,
     price_map: dict[str, float] | None = None,
 ) -> None:
-    # / smart drift heal — preserves attribution, recovers from trade_log
     price_map = price_map or {}
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, strategy_id, symbol, qty FROM strategy_positions",
         )
 
-        # / guard: empty alpaca with tracked rows likely api glitch (unless full_sync)
         if not alpaca_map and rows and not full_sync:
             logger.warning("reconcile_skipped_empty_alpaca", tracked=len(rows))
             return
@@ -154,7 +147,6 @@ async def reconcile_strategy_positions(
                     )
                     continue
 
-                # / matched qty: heal untracked attribution from trade_log
                 total_tracked = sum(float(e["qty"]) for e in entries)
                 if abs(total_tracked - alpaca_qty) < 0.0001:
                     untracked_rows = [e for e in entries if e["strategy_id"] == "untracked"]
@@ -168,7 +160,6 @@ async def reconcile_strategy_positions(
                         )
                         if recovered and recovered["strategy_id"]:
                             sid = recovered["strategy_id"]
-                            # / (strategy_id, symbol) is PK; delete + insert beats in-place key change
                             row = untracked_rows[0]
                             await conn.execute(
                                 "DELETE FROM strategy_positions WHERE id = $1",
@@ -190,7 +181,6 @@ async def reconcile_strategy_positions(
                                         symbol=symbol, from_id="untracked", to_id=sid)
                     continue
 
-                # / drift detected — update keeping attribution
                 attributed = [e for e in entries if e["strategy_id"] != "untracked"]
                 if attributed:
                     keep = attributed[0]
@@ -212,7 +202,6 @@ async def reconcile_strategy_positions(
                         "DELETE FROM strategy_positions WHERE id = ANY($1::bigint[])", remove_ids,
                     )
 
-            # / drop rows for symbols no longer in alpaca
             for symbol, entries in db_by_symbol.items():
                 ids = [e["id"] for e in entries]
                 await conn.execute(
@@ -222,7 +211,6 @@ async def reconcile_strategy_positions(
 
 
 async def sync_strategy_positions_from_alpaca(pool) -> int:
-    # / bootstrap untracked positions from alpaca on startup
     from src.data.alpaca_client import alpaca_base_url, alpaca_headers, get_alpaca_client
     base = alpaca_base_url()
     headers = alpaca_headers()

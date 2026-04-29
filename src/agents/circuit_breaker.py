@@ -1,4 +1,3 @@
-# / per-agent drawdown + consecutive-loss circuit breaker
 
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ logger = structlog.get_logger(__name__)
 
 
 class CircuitBreakerState:
-    # / encapsulates _peak_equity + circuit-breaker pause window per RiskAgent
 
     def __init__(self, max_drawdown: float, loss_pause_seconds: int) -> None:
         self._peak_equity: float = 0.0
@@ -36,15 +34,12 @@ class CircuitBreakerState:
         return self._peak_equity
 
     def is_paused(self, now: float | None = None) -> bool:
-        # / true while consecutive-loss pause is active
         return (now or time.time()) < self._paused_until
 
     def record_loss_pause(self, now: float | None = None) -> None:
-        # / extend pause window from now
         self._paused_until = (now or time.time()) + self._loss_pause_seconds
 
     async def update_peak(self, pool, equity: float) -> float:
-        # / monotonic peak tracking + persist
         if equity > self._peak_equity:
             self._peak_equity = equity
         try:
@@ -54,7 +49,6 @@ class CircuitBreakerState:
         return self._peak_equity
 
     def current_drawdown(self, equity: float) -> float:
-        # / fractional drawdown from peak (negative below)
         if self._peak_equity <= 0:
             return 0.0
         return (equity - self._peak_equity) / self._peak_equity

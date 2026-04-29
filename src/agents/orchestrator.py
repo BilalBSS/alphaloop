@@ -1,6 +1,3 @@
-# / agent orchestrator — coordinates all trading agents on schedule
-# / runs analyst, strategy, risk, executor, and evolution loops concurrently
-# / uses exchange_calendars for nyse market hours detection
 
 from __future__ import annotations
 
@@ -65,16 +62,16 @@ logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
 # / batched staleness-ordered runs, time-budgeted
-ANALYST_MARKET_HOURS = 1200      # / 20 minutes (3 batches/hour, staleness-ordered)
+ANALYST_MARKET_HOURS = 1200  # / 20 minutes (3 batches/hour,
 ANALYST_OFF_HOURS = 1800         # / 30 minutes (slower off-hours)
-ANALYST_BUDGET_S = 420.0         # / 7 min wall-clock budget per batch
-ANALYST_MIN_REFRESH_S = 1800.0   # / skip symbols refreshed within 30 min (anti-thrash)
+ANALYST_BUDGET_S = 420.0  # / 7 min wall-clock budget
+ANALYST_MIN_REFRESH_S = 1800.0  # / skip symbols refreshed within
 ANALYST_PER_SYMBOL_TIMEOUT_S = 180.0
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
-STRATEGY_OFF_HOURS = 300         # / 5 minutes (consistent for crypto)
-DEEPSEEK_INTERVAL = 1800         # / 30 minutes (dual-llm is 2x more expensive)
-DEEPSEEK_BUDGET_S = 480.0        # / 8 min wall-clock budget per batch
-DEEPSEEK_MIN_REFRESH_S = 2700.0  # / skip symbols deepseek'd within 45 min
+STRATEGY_OFF_HOURS = 300  # / 5 minutes (consistent for
+DEEPSEEK_INTERVAL = 1800  # / 30 minutes (dual-llm is
+DEEPSEEK_BUDGET_S = 480.0  # / 8 min wall-clock budget
+DEEPSEEK_MIN_REFRESH_S = 2700.0  # / skip symbols deepseek'd within
 INTRADAY_INTERVAL = 3600         # / 1 hour
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
@@ -84,17 +81,17 @@ MONITORING_INTERVAL = 3600         # / 1 hour
 COST_FLUSH_INTERVAL = 3600         # / 1 hour
 DAILY_BAR_INTERVAL = 14400         # / 4 hours
 PRICE_REFRESH_INTERVAL = 300       # / 5 minutes
-STREAM_AGGREGATOR_INTERVAL = 60    # / drain buffer + upsert latest_prices every minute
-STREAM_FRESH_TICK_S = 90           # / treat stream as healthy if a tick hit within this window
-PRICE_TICK_BROADCAST_MIN_INTERVAL = 1.0  # / cap ws broadcast rate per-symbol at 1 Hz
-ALERT_CHECK_INTERVAL = 30          # / 30 seconds — isolated from strategy cycles
-CRYPTO_BACKFILL_INTERVAL = 1800    # / 30 minutes — crypto is 24/7, no ET gate
-REGIME_LOOP_INTERVAL = 21600       # / 6 hours — regime history refresh
-KNOWLEDGE_HYDRATION_INTERVAL = 86400  # / 24 hours — daily wiki enrichment pass
-KNOWLEDGE_HYDRATION_STARTUP_DELAY = 900  # / 15 min offset so we don't stack LLM calls at startup
-KNOWLEDGE_HYDRATION_DEFAULT_CAP = 5  # / hard cap on symbols enriched per day (free-tier LLM budget)
-WIKI_STUB_WORD_THRESHOLD = 150    # / docs below this word count count as seed stubs
-WIKI_MIN_ANALYSIS_ROWS = 5        # / need N recent analyses before we have enough signal to enrich
+STREAM_AGGREGATOR_INTERVAL = 60  # / drain buffer + upsert
+STREAM_FRESH_TICK_S = 90  # / treat stream as healthy
+PRICE_TICK_BROADCAST_MIN_INTERVAL = 1.0  # / cap ws broadcast rate
+ALERT_CHECK_INTERVAL = 30  # / 30 seconds — isolated
+CRYPTO_BACKFILL_INTERVAL = 1800  # / 30 minutes — crypto
+REGIME_LOOP_INTERVAL = 21600  # / 6 hours — regime
+KNOWLEDGE_HYDRATION_INTERVAL = 86400  # / 24 hours — daily
+KNOWLEDGE_HYDRATION_STARTUP_DELAY = 900  # / 15 min offset so
+KNOWLEDGE_HYDRATION_DEFAULT_CAP = 5  # / hard cap on symbols
+WIKI_STUB_WORD_THRESHOLD = 150  # / docs below this word
+WIKI_MIN_ANALYSIS_ROWS = 5  # / need N recent analyses
 
 
 class AgentOrchestrator:
@@ -104,7 +101,6 @@ class AgentOrchestrator:
         self._pool = None
         self._broker_factory: BrokerFactory | None = None
         self._strategy_pool = StrategyPool()
-        # / load risk_limits once and pass to agents that enforce them
         rl = self._load_risk_limits()
         self._analyst = AnalystAgent()
         self._strategy = StrategyAgent()
@@ -115,10 +111,8 @@ class AgentOrchestrator:
         self._tasks: list[asyncio.Task] = []
         self._last_drift: dict[str, float] = {}
         self._alert_prev_prices: dict[str, float] = {}
-        # / track last known regime per market to fire on_regime_shift on transitions
         self._last_equity_regime: str | None = None
         self._last_crypto_regime: str | None = None
-        # / stream manager owns alpaca + coinbase ws + tick buffer + broadcast fan-out
         self._streams = StreamManager(broadcast_semaphore_size=50)
         self._service_handlers: dict = {
             "macro_backfill": self._svc_macro_backfill,
@@ -143,7 +137,6 @@ class AgentOrchestrator:
 
     @staticmethod
     def _load_risk_limits() -> dict:
-        # / load configs/risk_limits.json once at startup; shared by all agents
         from pathlib import Path
         path = Path(__file__).parent.parent.parent / "configs" / "risk_limits.json"
         if path.exists():
@@ -154,7 +147,6 @@ class AgentOrchestrator:
         return {}
 
     async def start(self) -> None:
-        # / coordinated startup: db -> sync -> broker -> strategies -> kronos -> streams -> loops
         logger.info("orchestrator_starting", mode=self._mode)
         await self._bootstrap_db()
         await self._bootstrap_alpaca_sync()
@@ -169,7 +161,6 @@ class AgentOrchestrator:
             logger.info("orchestrator_tasks_cancelled")
 
     async def _bootstrap_db(self) -> None:
-        # / init pool + prune retention tables
         self._pool = await init_db()
         try:
             await prune_system_events(self._pool, max_age_days=30)
@@ -178,7 +169,6 @@ class AgentOrchestrator:
             logger.warning("retention_prune_failed", error=str(exc)[:120])
 
     async def _bootstrap_alpaca_sync(self) -> None:
-        # / clean ghost paper trades, sync filled orders, bootstrap untracked positions
         try:
             async with self._pool.acquire() as conn:
                 cleaned = await conn.execute(
@@ -204,7 +194,6 @@ class AgentOrchestrator:
         self._broker_factory = BrokerFactory(mode=self._mode)
 
     def _bootstrap_strategies(self) -> None:
-        # / load configs filtered by status, register in pool
         strategies = load_all_configs(
             status_filter={"backtest_pending", "paper_trading", "live"},
         )
@@ -220,7 +209,6 @@ class AgentOrchestrator:
         )
 
     async def _bootstrap_kronos(self) -> None:
-        # / warm hf model + record status so dashboard reads ground truth
         try:
             from src.quant.kronos_signal import ensure_loaded_and_record_status
             kronos_status = await ensure_loaded_and_record_status(self._pool)
@@ -232,7 +220,6 @@ class AgentOrchestrator:
             logger.warning("kronos_startup_record_failed", error=str(exc)[:200])
 
     def _spawn_loops(self) -> None:
-        # / launch every periodic loop as an asyncio task
         self._tasks = [
             asyncio.create_task(self._analyst_loop(), name="analyst"),
             asyncio.create_task(self._deepseek_loop(), name="deepseek"),
@@ -272,20 +259,16 @@ class AgentOrchestrator:
         for task in self._tasks:
             task.cancel()
 
-        # / stop streams first (they sit outside self._tasks)
         await self._streams.stop()
 
-        # / wait for tasks to finish (with timeout)
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        # / drain executor's fire-and-forget post-mortem tasks
         try:
             await self._executor.tasks.drain(timeout=10)
         except Exception as exc:
             logger.debug("executor_task_drain_failed", error=str(exc)[:120])
 
-        # / close shared http clients (best-effort, may already be torn down)
         try:
             from src.data.alpaca_client import close_alpaca_client
             from src.data.llm_client import close_llm_clients
@@ -309,7 +292,6 @@ class AgentOrchestrator:
         return self._mode
 
     def _get_symbols(self) -> list[str]:
-        # / get symbols to analyze from environment or default
         symbols_env = os.environ.get("TRADE_SYMBOLS")
         if symbols_env:
             return [s.strip() for s in symbols_env.split(",") if s.strip()]
@@ -317,7 +299,6 @@ class AgentOrchestrator:
 
     @staticmethod
     def _et_tz():
-        # / dst-aware eastern time, fallback to fixed est
         try:
             from zoneinfo import ZoneInfo
             return ZoneInfo("America/New_York")
@@ -325,7 +306,6 @@ class AgentOrchestrator:
             return timezone(timedelta(hours=-5))
 
     async def _sleep_until_et_hour(self, hour: int):
-        # / wait until target hour in eastern time (dst-aware)
         et = self._et_tz()
         now = datetime.now(et)
         target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
@@ -335,7 +315,6 @@ class AgentOrchestrator:
         return await self._wait_or_stop(wait), target
 
     def _is_market_hours(self) -> bool:
-        # / check if nyse is currently open
         try:
             import exchange_calendars as xcals
             import pandas as pd
@@ -350,12 +329,10 @@ class AgentOrchestrator:
             session_close = nyse.session_close(now.normalize())
             return session_open <= now <= session_close
         except (ImportError, ValueError, KeyError, AttributeError):
-            # / fallback: simple hour check (9:30-16:00 ET)
             now = datetime.now(self._et_tz())
             return 9 <= now.hour < 16
 
     async def _wait_or_stop(self, seconds: float) -> bool:
-        # / wait for interval or stop event, returns True if stopped
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
             return True  # / stop event was set
@@ -363,9 +340,6 @@ class AgentOrchestrator:
             return False  # / timeout expired normally
 
     async def _analyst_loop(self) -> None:
-        # / batched staleness-ordered analyst cycle (phase 9).
-        # / orchestrator sets a short wall-clock budget inside run(); the
-        # / loop_registry timeout is the hard ceiling if one symbol wedges.
         timeout = loop_registry.timeout_for("analyst")
         while not self._stop_event.is_set():
             interval = ANALYST_MARKET_HOURS if self._is_market_hours() else ANALYST_OFF_HOURS
@@ -382,7 +356,6 @@ class AgentOrchestrator:
                         ),
                         timeout=timeout,
                     )
-                    # / broadcast analysis update (fire-and-forget); dashboard may not be running
                     try:
                         from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
@@ -399,9 +372,6 @@ class AgentOrchestrator:
                 break
 
     async def _deepseek_loop(self) -> None:
-        # / batched deepseek cycle (phase 9). dual-llm path, lower cadence
-        # / than analyst since each symbol pays two llm calls in parallel.
-        # / first run after short delay to let initial groq cycle start.
         timeout = loop_registry.timeout_for("deepseek")
         first_run = True
         while not self._stop_event.is_set():
@@ -430,7 +400,6 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "deepseek_loop")
 
     async def _reasoner_loop(self) -> None:
-        # / run daily synthesis at 5PM ET via deepseek-reasoner
         from src.analysis.ai_summary import generate_daily_synthesis
         from src.notifications.notifier import notify_daily_synthesis
         while not self._stop_event.is_set():
@@ -446,7 +415,6 @@ class AgentOrchestrator:
                     symbols = self._get_symbols()
                     result = await generate_daily_synthesis(self._pool, symbols)
                     if result:
-                        # / fetch portfolio stats for merged synthesis message
                         portfolio = None
                         try:
                             broker = self._broker_factory.get_broker()
@@ -467,7 +435,6 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "reasoner_loop")
 
     async def _strategy_loop(self) -> None:
-        # / run strategy agent on schedule
         while not self._stop_event.is_set():
             interval = STRATEGY_MARKET_HOURS if self._is_market_hours() else STRATEGY_OFF_HOURS
             try:
@@ -476,7 +443,6 @@ class AgentOrchestrator:
                     await self._strategy.run(
                         self._pool, self._strategy_pool, broker,
                     )
-                    # / broadcast strategy evaluation (fire-and-forget); dashboard may not be running
                     try:
                         from src.dashboard.app import _ws_clients, broadcast
                         if _ws_clients:
@@ -491,7 +457,6 @@ class AgentOrchestrator:
                 break
 
     async def _risk_poll_loop(self) -> None:
-        # / poll for pending trade signals, process each independently
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "risk"):
@@ -512,14 +477,12 @@ class AgentOrchestrator:
                                     reason=result.get("reason"),
                                 )
                         except Exception as exc:
-                            # / mark signal as error to prevent infinite retry
                             logger.error("risk_signal_error", signal_id=signal["id"], error=str(exc))
                             try:
                                 await update_trade_status(
                                     self._pool, "trade_signals", signal["id"], "error",
                                 )
                             except Exception as inner:
-                                # / db write failure: signal stuck pending, will retry next poll
                                 logger.warning(
                                     "risk_poll_status_update_failed",
                                     signal_id=signal["id"], error=str(inner)[:120],
@@ -532,7 +495,6 @@ class AgentOrchestrator:
                 break
 
     async def _executor_poll_loop(self) -> None:
-        # / poll for pending approved trades
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "executor"):
@@ -550,7 +512,6 @@ class AgentOrchestrator:
                 break
 
     async def _evolution_loop(self) -> None:
-        # / run evolution engine at midnight et
         while not self._stop_event.is_set():
             stopped, target = await self._sleep_until_et_hour(0)
 
@@ -561,13 +522,10 @@ class AgentOrchestrator:
 
             try:
                 async with loop_registry.track(self._pool, "evolution"):
-                    # / gate: evolve if pool has 3+ strategies loaded
                     if self._strategy_pool.size < 3:
                         logger.info("evolution_skipped_small_pool", pool_size=self._strategy_pool.size)
                     else:
-                        # / fetch market data for backtesting mutations
                         market_data = await self._fetch_evolution_market_data()
-                        # / pass current equity regime so wiki context loads regime-matched notes
                         current_regime = await fetch_latest_regime(self._pool, "equity")
                         await self._evolution.run(
                             self._pool, self._strategy_pool,
@@ -578,7 +536,6 @@ class AgentOrchestrator:
                 notify_system_error(str(exc), "evolution_loop")
 
     async def _insider_backfill_loop(self) -> None:
-        # / refresh insider trades from sec edgar daily at 6am et
         while not self._stop_event.is_set():
             stopped, target = await self._sleep_until_et_hour(6)
 
@@ -611,7 +568,6 @@ class AgentOrchestrator:
                 await log_event(self._pool, "error", "insider_backfill", str(exc)[:200])
 
     async def _fundamentals_backfill_loop(self) -> None:
-        # / refresh fundamentals from edgar/finnhub/yfinance daily at 7am et
         while not self._stop_event.is_set():
             stopped, target = await self._sleep_until_et_hour(7)
 
@@ -638,8 +594,6 @@ class AgentOrchestrator:
                 await log_event(self._pool, "error", "fundamentals_backfill", str(exc)[:200])
 
     async def _crypto_backfill_loop(self) -> None:
-        # / refresh crypto ohlcv bars every 30 min (24/7, no ET gate)
-        # / also logs market-cap/volume metadata via coingecko as a side-channel
         if await self._wait_or_stop(120):
             return
         while not self._stop_event.is_set():
@@ -649,12 +603,10 @@ class AgentOrchestrator:
                     from src.data.market_data import backfill
                     crypto_symbols = [s for s in self._get_symbols() if is_crypto(s)]
                     if crypto_symbols:
-                        # / alpaca v1beta3/crypto path writes real ohlcv into market_data
                         results = await backfill(self._pool, crypto_symbols, years=1)
                         total = sum(results.values())
                         if total:
                             logger.info("crypto_bar_backfill_complete", symbols=len(crypto_symbols), bars=total)
-                        # / side-channel: coingecko metadata (market cap, total volume)
                         for symbol in crypto_symbols:
                             try:
                                 data = await fetch_coin_data(symbol)
@@ -674,7 +626,6 @@ class AgentOrchestrator:
                 break
 
     async def _regime_loop(self) -> None:
-        # / compute equity + crypto regime history every 6h (not gated on market hours)
         if await self._wait_or_stop(180):
             return
         while not self._stop_event.is_set():
@@ -687,7 +638,6 @@ class AgentOrchestrator:
                     )
                     equity_count = await backfill_regimes(self._pool, "SPY", "equity")
                     crypto_count = await backfill_regimes(self._pool, "BTC-USD", "crypto")
-                    # / per-sector regimes so strategies can see sector-specific nuance
                     try:
                         sector_counts = await backfill_regimes_per_sector(self._pool)
                         sector_total = sum(sector_counts.values())
@@ -704,11 +654,8 @@ class AgentOrchestrator:
                         self._pool, "info", "regime_backfill",
                         f"equity={equity_count} crypto={crypto_count} sectors={sector_total}",
                     )
-                    # / detect regime transitions and write wiki note + regime_shifts row
                     await self._check_regime_shift("equity")
                     await self._check_regime_shift("crypto")
-                    # / write daily snapshot rows so the timeline widget has
-                    # / data points on non-shift days (otherwise it only populates on transitions)
                     try:
                         equity_regime = await fetch_latest_regime(self._pool, "equity")
                         crypto_regime = await fetch_latest_regime(self._pool, "crypto")
@@ -727,7 +674,6 @@ class AgentOrchestrator:
                 break
 
     async def _check_regime_shift(self, market: str) -> None:
-        # / compare latest regime against last-known; on change, call on_regime_shift
         try:
             latest = await fetch_latest_regime(self._pool, market)
         except (asyncpg.PostgresError, KeyError, AttributeError):
@@ -737,7 +683,6 @@ class AgentOrchestrator:
         attr = "_last_equity_regime" if market == "equity" else "_last_crypto_regime"
         previous = getattr(self, attr)
         if previous is None:
-            # / first observation — seed without firing
             setattr(self, attr, latest)
             return
         if latest == previous:
@@ -752,7 +697,6 @@ class AgentOrchestrator:
             logger.warning("regime_shift_write_failed", market=market, error=str(exc)[:200])
 
     async def _intraday_backfill_loop(self) -> None:
-        # / fetch 1h bars, aggregate to 2h
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "intraday_backfill"):
@@ -782,7 +726,6 @@ class AgentOrchestrator:
                 break
 
     async def _daily_bar_backfill_loop(self) -> None:
-        # / refresh daily ohlcv bars for all symbols every 4h
         if await self._wait_or_stop(120):
             return
         while not self._stop_event.is_set():
@@ -806,8 +749,6 @@ class AgentOrchestrator:
                 break
 
     async def _price_refresh_loop(self) -> None:
-        # / poll only stream-overflow symbols when healthy
-        # / poll full universe when streams unhealthy
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():
@@ -827,8 +768,6 @@ class AgentOrchestrator:
                                 if not crypto_healthy:
                                     poll_syms.append(s)
                             else:
-                                # / equity: poll if stream unhealthy OR the symbol
-                                # / isn't in the streamed set (overflow past 30 cap)
                                 if (not equity_healthy
                                         or s not in self._streams.streamed_equity_symbols):
                                     poll_syms.append(s)
@@ -857,11 +796,9 @@ class AgentOrchestrator:
                 break
 
     async def _start_streams(self) -> None:
-        # / delegate stream lifecycle to StreamManager
         await self._streams.start(self._get_symbols())
 
     async def _stream_aggregator_loop(self) -> None:
-        # / every 60s, drain tick buffer and write latest_prices via StreamManager
         if self._streams.tick_buffer is None:
             return
         while not self._stop_event.is_set():
@@ -870,7 +807,6 @@ class AgentOrchestrator:
                 break
 
     async def _alpaca_sync_loop(self) -> None:
-        # / periodically sync filled orders from alpaca into trade_log + reconcile positions
         while not self._stop_event.is_set():
             async with loop_registry.track(self._pool, "alpaca_sync"):
                 try:
@@ -888,19 +824,15 @@ class AgentOrchestrator:
                 break
 
     async def _alpaca_reconcile_positions(self) -> None:
-        # / reconcile strategy_positions vs alpaca positions
         try:
-            # / aggregate tracked qty per symbol from db
             all_positions = await get_strategy_positions(self._pool)
             tracked: dict[str, float] = {}
             for p in all_positions:
                 tracked[p["symbol"]] = tracked.get(p["symbol"], 0) + p["qty"]
 
-            # / get alpaca positions (source of truth)
             broker = self._broker_factory.get_broker()
             alpaca_positions = await broker.get_positions()
             alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
-            # / carry avg_entry_price for untracked projection so cost basis isn't zero
             alpaca_prices: dict[str, float] = {
                 p.symbol: float(p.avg_entry_price or 0) for p in alpaca_positions
             }
@@ -908,18 +840,15 @@ class AgentOrchestrator:
             drift_found = False
             current_drift: dict[str, float] = {}
 
-            # / check each alpaca position against tracked
             for symbol, alpaca_qty in alpaca_map.items():
                 tracked_qty = tracked.pop(symbol, 0)
                 if abs(tracked_qty - alpaca_qty) > 0.0001:
                     current_drift[symbol] = alpaca_qty
                     logger.warning("position_drift", symbol=symbol, tracked=tracked_qty, alpaca=alpaca_qty)
-                    # / only alert on new drift, not every cycle
                     if symbol not in self._last_drift:
                         notify_system_error(f"position drift: {symbol} tracked={tracked_qty} alpaca={alpaca_qty}", "reconciliation")
                     drift_found = True
 
-            # / check tracked symbols no longer in alpaca (sold externally)
             for symbol, tracked_qty in tracked.items():
                 if tracked_qty > 0.0001:
                     current_drift[symbol] = 0
@@ -930,9 +859,7 @@ class AgentOrchestrator:
 
             self._last_drift = current_drift
 
-            # / auto-fix: update drifted positions without destroying attribution
             if drift_found:
-                # / full_sync=true bypasses empty-alpaca guard after confirmed drift
                 await reconcile_strategy_positions(
                     self._pool, alpaca_map, full_sync=True, price_map=alpaca_prices,
                 )
@@ -944,7 +871,6 @@ class AgentOrchestrator:
             logger.warning("position_reconciliation_error", exc_info=True)
 
     async def _macro_backfill_loop(self) -> None:
-        # / refresh fred macro data daily at 9am et
         while not self._stop_event.is_set():
             stopped, target = await self._sleep_until_et_hour(9)
             logger.info("macro_backfill_waiting", next_run=str(target))
@@ -966,15 +892,12 @@ class AgentOrchestrator:
                 await log_event(self._pool, "error", "macro_backfill", str(exc)[:200])
 
     async def _alert_loop(self) -> None:
-        # / isolated price-cross alert scanner — never shares state with strategy/risk agents
-        # / runs every ALERT_CHECK_INTERVAL seconds, batches discord fires, ws-broadcasts each hit
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "alert"):
                     broker = self._broker_factory.get_broker() if self._broker_factory else None
                     if broker is not None:
-                        # / late-bind ws broadcast so tests that don't mount the dashboard still pass
                         ws_broadcast = None
                         try:
                             from src.dashboard.app import _ws_clients
@@ -997,10 +920,6 @@ class AgentOrchestrator:
                 break
 
     async def _alternative_data_loop(self, use_registry: bool = True) -> None:
-        # / backfill alternative data: analyst ratings, short interest, options, etc
-        # / use_registry=True (default): drive the cycle from src.data.source_registry.
-        # / use_registry=False: legacy per-source code path (kept as fallback for the one
-        # / cycle of transition; remove once registry has proven itself in prod)
         if await self._wait_or_stop(300):
             return
         while not self._stop_event.is_set():
@@ -1018,17 +937,13 @@ class AgentOrchestrator:
                 break
 
     async def _run_alternative_data_registry_cycle(self) -> None:
-        # / canonical path — iterate registered alt-data sources
         from src.data.source_registry import AltDataSource, all_sources
 
         sources = all_sources()
-        # / one fetch per (source.name) per symbol — analyst_ratings is registered twice
-        # / (for two fields) but we only want to hit yfinance once per symbol
         by_name_deduped: dict[str, AltDataSource] = {}
         for src in sources:
             by_name_deduped.setdefault(src.name, src)
 
-        # / global sources first (macro) — one fetch, no symbol iteration
         for src in by_name_deduped.values():
             if not src.is_global:
                 continue
@@ -1047,7 +962,6 @@ class AgentOrchestrator:
                 if is_etf and src.skip_etfs:
                     continue
                 try:
-                    # / dark_pool accepts (symbol, pool=...) — detect via kwarg name
                     if src.name == "dark_pool":
                         data = await src.fetch(symbol, pool=self._pool)
                     else:
@@ -1070,7 +984,6 @@ class AgentOrchestrator:
         )
 
     async def _run_alternative_data_legacy_cycle(self) -> None:
-        # / legacy per-source hardcoded code path — kept as fallback during the transition
         # / deprecated path
         from src.data.analyst_ratings import fetch_analyst_ratings, store_analyst_ratings
         from src.data.congressional_trades import fetch_congressional_trades, store_congressional_trades
@@ -1100,11 +1013,9 @@ class AgentOrchestrator:
                     options = await fetch_options_data(symbol)
                     if options:
                         await store_options_data(self._pool, options)
-                # / short interest (works for etfs too)
                 si = await fetch_short_interest(symbol)
                 if si:
                     await store_short_interest(self._pool, si)
-                # / dark pool — pass pool so ratio is computed + stored in one call
                 dp = await fetch_dark_pool_data(symbol, pool=self._pool)
                 if dp:
                     await store_dark_pool(self._pool, dp)
@@ -1117,7 +1028,6 @@ class AgentOrchestrator:
         )
 
     async def _monitoring_loop(self) -> None:
-        # / run monitoring checks: staleness, strategy decay, correlation
         if await self._wait_or_stop(600):
             return
         while not self._stop_event.is_set():
@@ -1175,7 +1085,6 @@ class AgentOrchestrator:
                 break
 
     async def _cost_flush_loop(self) -> None:
-        # / flush llm cost tracker to db hourly
         if await self._wait_or_stop(COST_FLUSH_INTERVAL):
             return
         while not self._stop_event.is_set():
@@ -1191,7 +1100,6 @@ class AgentOrchestrator:
                 break
 
     async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:
-        # / load daily ohlcv for all symbols in one query, bucket per symbol
         symbols = self._get_symbols()
         market_data: dict[str, pd.DataFrame] = {}
         try:
@@ -1227,8 +1135,6 @@ class AgentOrchestrator:
         return market_data
 
     async def _strategy_metrics_loop(self) -> None:
-        # / compute live strategy metrics from trade_log every hour
-        # / short startup delay only; run immediately after so dashboard shows real metrics on first cycle
         if await self._wait_or_stop(60):
             return
         while not self._stop_event.is_set():
@@ -1242,16 +1148,12 @@ class AgentOrchestrator:
                 break
 
     async def _compute_strategy_metrics(self) -> None:
-        # / delegate to richer live_strategy_metrics module
-        # / writes rolling sharpe/sortino/maxdd/win rate/composite per strategy/window
         from src.analysis.live_strategy_metrics import compute_live_strategy_metrics
         updated = await compute_live_strategy_metrics(self._pool)
         logger.info("strategy_metrics_computed", strategies=updated)
 
-    # / ---- phase 2: knowledge base loops ----
 
     async def _wiki_periodic(self, name: str, inner, initial_wait: int, interval: int) -> None:
-        # / shared shape for wiki_embedding + wiki_archive loops
         if await self._wait_or_stop(initial_wait):
             return
         timeout = loop_registry.timeout_for(name)
@@ -1277,10 +1179,8 @@ class AgentOrchestrator:
         from src.knowledge.loops import wiki_archive_loop
         await self._wiki_periodic("wiki_archive", wiki_archive_loop, 600, 24 * 3600)
 
-    # / ---- phase 5 step 3: daily symbol wiki hydration ----
 
     def _hydration_daily_cap(self) -> int:
-        # / configurable via env; defaults to 5 to stay in free-tier llm budget
         raw = os.environ.get("WIKI_HYDRATION_DAILY_CAP")
         if not raw:
             return KNOWLEDGE_HYDRATION_DEFAULT_CAP
@@ -1292,9 +1192,6 @@ class AgentOrchestrator:
         return max(0, cap)
 
     async def _fetch_hydration_candidates(self, cap: int) -> list[str]:
-        # / pick up to `cap` symbols whose wiki entry is a seed stub AND have
-        # / accumulated enough recent analyses to support a useful rewrite.
-        # / round-robin order by wiki_documents.updated_at ASC so stale docs rotate through.
         if cap <= 0 or self._pool is None:
             return []
         symbols = self._get_symbols()
@@ -1302,7 +1199,6 @@ class AgentOrchestrator:
             return []
         try:
             async with self._pool.acquire() as conn:
-                # / find stub docs first (seed confidence or below word threshold)
                 stub_rows = await conn.fetch(
                     """
                     SELECT unnest(symbols) AS symbol, updated_at
@@ -1314,13 +1210,11 @@ class AgentOrchestrator:
                     WIKI_STUB_WORD_THRESHOLD,
                 )
                 stub_symbols = [r["symbol"] for r in stub_rows if r["symbol"] in symbols]
-                # / symbols in the universe without any wiki doc are also stubs — add them last
                 have_docs = {r["symbol"] for r in stub_rows}
                 for sym in symbols:
                     if sym not in have_docs and sym not in stub_symbols:
                         stub_symbols.append(sym)
 
-                # / filter down to those with >= WIKI_MIN_ANALYSIS_ROWS recent analyses
                 if not stub_symbols:
                     return []
                 analysis_rows = await conn.fetch(
@@ -1338,7 +1232,6 @@ class AgentOrchestrator:
             logger.warning("wiki_hydration_candidate_fetch_failed", error=str(exc)[:200])
             return []
 
-        # / preserve stub ordering (oldest-updated first) when picking the first `cap`
         picks: list[str] = []
         for sym in stub_symbols:
             if sym in eligible and sym not in picks:
@@ -1350,7 +1243,6 @@ class AgentOrchestrator:
     async def _load_hydration_bundle(
         self, symbol: str,
     ) -> tuple[list[dict], dict | None, list[dict]]:
-        # / fetch last 30 days of analysis_scores + latest fundamentals + last 90 days insider
         analysis_rows: list[dict] = []
         fundamentals: dict | None = None
         insider: list[dict] = []
@@ -1409,8 +1301,6 @@ class AgentOrchestrator:
         return analysis_rows, fundamentals, insider
 
     async def _knowledge_hydration_loop(self) -> None:
-        # / daily enrichment of seed-stub symbol wiki docs
-        # / offset from other loops so llm calls don't stack at cold start
         if await self._wait_or_stop(KNOWLEDGE_HYDRATION_STARTUP_DELAY):
             return
         while not self._stop_event.is_set():
@@ -1452,10 +1342,8 @@ class AgentOrchestrator:
             if await self._wait_or_stop(KNOWLEDGE_HYDRATION_INTERVAL):
                 break
 
-    # / ---- phase 6 step 10: weekly kelly-weighted allocator ----
 
     async def _capital_allocator_loop(self) -> None:
-        # / first run after 1h delay so strategy_scores has fresh data; then weekly
         if await self._wait_or_stop(3600):
             return
         while not self._stop_event.is_set():
@@ -1476,11 +1364,8 @@ class AgentOrchestrator:
             if await self._wait_or_stop(604800):
                 break
 
-    # / ---- phase 6 step 1: dashboard-posted manual triggers ----
 
     async def _trigger_poll_loop(self) -> None:
-        # / poll trigger_requests every 5s and run the matching one-shot work
-        # / wait briefly so the db migration has run before we start polling
         if await self._wait_or_stop(10):
             return
         while not self._stop_event.is_set():
@@ -1494,9 +1379,6 @@ class AgentOrchestrator:
                 break
 
     async def _run_trigger(self, trigger_id: int, service: str) -> None:
-        # / execute one cycle of the named service in the background.
-        # / skip if a periodic cycle (or previous trigger) is already mid-flight —
-        # / otherwise two concurrent passes race on the same symbols/db rows.
         logger.info("trigger_received", service=service, trigger_id=trigger_id)
         if await loop_registry.is_loop_running(self._pool, service):
             logger.info("trigger_skipped_already_running", service=service, trigger_id=trigger_id)
@@ -1513,7 +1395,6 @@ class AgentOrchestrator:
             await loop_registry.complete_trigger(self._pool, trigger_id, "error", str(exc))
 
     async def _run_service_once(self, service: str) -> None:
-        # / dispatch via cached handler map
         handler = self._service_handlers.get(service)
         if handler is None:
             raise ValueError(f"service not triggerable: {service}")

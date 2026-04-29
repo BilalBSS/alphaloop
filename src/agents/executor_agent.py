@@ -1,5 +1,3 @@
-# / executor agent — places orders for approved trades
-# / logs results to trade_log, updates approved_trades status
 # / guards against double execution
 
 from __future__ import annotations
@@ -37,7 +35,6 @@ logger = structlog.get_logger(__name__)
 def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
                     strategy_id: str | None, log_id: int | None,
                     pnl: float | None) -> None:
-    # / fan trade_executed + position_update out to ws clients
     try:
         from src.dashboard.app import _ws_clients, broadcast
     except ImportError:
@@ -57,7 +54,6 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
 
 
 def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> bool:
-    # / loss > $50 OR loss > 2% of entry notional
     if pnl is None or pnl >= 0:
         return False
     try:
@@ -78,7 +74,6 @@ def _spawn_post_mortem(
     trade_id: int | None, strategy_id: str | None,
     symbol: str, pnl: float, trigger_type: str,
 ) -> None:
-    # / fire-and-forget launcher; cooldown enforced inside writer
     if not strategy_id or pnl is None:
         return
     try:
@@ -96,7 +91,6 @@ def _spawn_post_mortem(
 
 
 def _strategy_killed_on_disk(strategy_id: str) -> bool:
-    # / disk fallback when in-memory pool is missing/stale
     import json as _json
     import re as _re
     from pathlib import Path as _Path
@@ -112,7 +106,6 @@ def _strategy_killed_on_disk(strategy_id: str) -> bool:
 
 
 def _compute_extended_hours(symbol: str, order_type: str) -> bool:
-    # / off-hours stocks: weekend or before 9:30 / after 16:00 ET
     if is_crypto(symbol) or order_type != "market":
         return False
     now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -128,12 +121,10 @@ class ExecutorAgent:
     async def execute_trade(
         self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
     ) -> dict:
-        # / place order for one approved trade
         trade = await fetch_approved_trade_by_id(pool, trade_id)
         if not trade:
             return {"status": "error", "reason": "trade_not_found"}
 
-        # / preflight: killed-strategy gate + atomic claim
         gate = await self._preflight(pool, trade_id, trade, strategy_pool)
         if gate is not None:
             return gate
@@ -159,7 +150,6 @@ class ExecutorAgent:
             notify_trade_error(symbol, side, str(exc))
             return {"status": "error", "reason": str(exc)}
 
-        # / persist broker order_id so alpaca_sync can recover strategy_id later
         if getattr(order, "order_id", None):
             await attach_broker_order_id(pool, trade_id, order.order_id)
 
@@ -183,7 +173,6 @@ class ExecutorAgent:
     async def _preflight(
         self, pool, trade_id: int, trade: dict, strategy_pool,
     ) -> dict | None:
-        # / kill-gate (returns cancel result) + atomic claim (returns skip result)
         strategy_id = trade.get("strategy_id")
         if strategy_id:
             killed = False
@@ -217,7 +206,6 @@ class ExecutorAgent:
         self, pool, trade_id: int, broker: BrokerInterface,
         order: Any, trade: dict, strategy_id: str | None,
     ) -> dict:
-        # / poll up to 10s for fill, then dispatch
         for _ in range(10):
             await asyncio.sleep(1)
             try:
@@ -249,7 +237,6 @@ class ExecutorAgent:
         order: Any, trade: dict, strategy_id: str | None,
         polled: bool,
     ) -> dict:
-        # / shared fill processing: validate price, track position, log, notify
         symbol = trade["symbol"]
         side = trade["side"]
         order_type = trade.get("order_type", "market")
@@ -277,7 +264,6 @@ class ExecutorAgent:
 
         regime = await fetch_latest_regime(pool, "equity")
 
-        # / track strategy-level position; capture entry_price for sells
         pnl, entry_price = await self._update_position_and_pnl(
             pool, side, strategy_id, symbol, order,
         )
@@ -328,7 +314,6 @@ class ExecutorAgent:
     async def _update_position_and_pnl(
         self, pool, side: str, strategy_id: str | None, symbol: str, order: Any,
     ) -> tuple[float | None, float | None]:
-        # / opens a buy position or closes a sell; returns (pnl, entry_price)
         if side == "buy" and strategy_id:
             await open_strategy_position(
                 pool, strategy_id, symbol, order.filled_qty, order.filled_price,
