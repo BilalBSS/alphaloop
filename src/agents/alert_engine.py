@@ -239,6 +239,7 @@ async def alert_loop(
         try:
             await check_and_fire(pool, broker, ws_broadcast, webhook_url, prev_prices)
         except Exception:
+            # / swallow loop tick error
             logger.error("alert_loop_error", exc_info=True)
         # / sleep on error too — guarantees even pacing and yields to the event loop
         if stop_event is not None:

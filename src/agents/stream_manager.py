@@ -113,7 +113,7 @@ class StreamManager:
                 "vendor": tick.vendor,
             }
             fire_and_forget(self._bounded_broadcast("price_tick", payload))
-        except Exception:
+        except (ImportError, AttributeError, RuntimeError):
             # / dashboard not mounted in this process
             pass
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import pandas as pd
 import structlog
 
@@ -502,8 +503,9 @@ class StrategyAgent:
             try:
                 from src.quant.ml_signals import store_ml_prediction
                 await store_ml_prediction(pool, ml_pred)
-            except Exception:
-                pass
+            except Exception as store_exc:
+                # / swallow ml store failure
+                logger.debug("ml_store_failed", symbol=symbol, error=str(store_exc)[:120])
         except Exception as exc:
             logger.debug("ml_signal_failed", symbol=symbol, error=str(exc))
         return smoothed_strength
@@ -537,7 +539,7 @@ class StrategyAgent:
             )
             self._intraday_cache[symbol] = df
             return df
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
             self._intraday_cache[symbol] = None
             return None
 

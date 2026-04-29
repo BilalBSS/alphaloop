@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import asyncpg
 import structlog
 
 from src.agents.data_tools import log_event, store_analysis_score
@@ -888,7 +889,7 @@ class AnalystAgent:
                 )
                 if vix_row and vix_row["raw_score"] is not None:
                     return round(30.0 - float(vix_row["raw_score"]) * 20.0, 1)
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
             logger.debug("vix_fetch_for_details_failed", exc_info=True)
         return None
 

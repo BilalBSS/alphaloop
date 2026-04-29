@@ -72,6 +72,7 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
                 logger.warning("regime_stale", market=market, last_date=str(regime_date))
             return row["regime"]
     except Exception:
+        # / swallow: regime fetch fails safe to None
         return None
 
 

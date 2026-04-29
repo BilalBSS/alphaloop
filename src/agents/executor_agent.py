@@ -40,7 +40,7 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
     # / fan trade_executed + position_update out to ws clients
     try:
         from src.dashboard.app import _ws_clients, broadcast
-    except Exception:
+    except ImportError:
         return
     if not _ws_clients:
         return
@@ -107,7 +107,7 @@ def _strategy_killed_on_disk(strategy_id: str) -> bool:
         with open(path) as f:
             cfg = _json.load(f)
         return (cfg.get("metadata") or {}).get("status") == "killed"
-    except Exception:
+    except (OSError, _json.JSONDecodeError, AttributeError):
         return False
 
 
@@ -194,7 +194,7 @@ class ExecutorAgent:
             if not killed:
                 try:
                     killed = _strategy_killed_on_disk(strategy_id)
-                except Exception:
+                except OSError:
                     killed = False
             if killed:
                 await update_trade_status(pool, "approved_trades", trade_id, "killed_strategy")
@@ -228,8 +228,9 @@ class ExecutorAgent:
                 if updated.status in ("rejected", "cancelled"):
                     await update_trade_status(pool, "approved_trades", trade_id, "failed")
                     return {"status": "failed", "reason": updated.status}
-            except Exception:
-                pass
+            except Exception as exc:
+                # / swallow poll-tick failure
+                logger.debug("order_poll_tick_failed", trade_id=trade_id, error=str(exc)[:120])
 
         if order.status == "filled":
             return await self._handle_fill(

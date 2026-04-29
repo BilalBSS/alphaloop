@@ -144,6 +144,7 @@ class RiskAgent:
         try:
             price = await broker.get_price(symbol)
         except Exception:
+            # / swallow broker price failure
             return await self._reject(pool, signal_id, "no_price")
 
         # / 6-8. buy-only gates: circuit breaker -> liquidity -> caps -> concentration

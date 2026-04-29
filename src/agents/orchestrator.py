@@ -9,6 +9,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 import pandas as pd
 import structlog
 
@@ -196,6 +197,7 @@ class AgentOrchestrator:
             if backfilled:
                 logger.info("startup_pnl_backfill", updated=backfilled)
         except Exception:
+            # / swallow startup sync error
             logger.debug("startup_sync_failed", exc_info=True)
 
     def _bootstrap_broker(self) -> None:
@@ -319,7 +321,7 @@ class AgentOrchestrator:
         try:
             from zoneinfo import ZoneInfo
             return ZoneInfo("America/New_York")
-        except Exception:
+        except (ImportError, KeyError):
             return timezone(timedelta(hours=-5))
 
     async def _sleep_until_et_hour(self, hour: int):
@@ -347,7 +349,7 @@ class AgentOrchestrator:
             session_open = nyse.session_open(now.normalize())
             session_close = nyse.session_close(now.normalize())
             return session_open <= now <= session_close
-        except Exception:
+        except (ImportError, ValueError, KeyError, AttributeError):
             # / fallback: simple hour check (9:30-16:00 ET)
             now = datetime.now(self._et_tz())
             return 9 <= now.hour < 16
@@ -523,6 +525,7 @@ class AgentOrchestrator:
                                     signal_id=signal["id"], error=str(inner)[:120],
                                 )
             except Exception:
+                # / swallow loop tick error
                 logger.error("risk_poll_error", exc_info=True)
 
             if await self._wait_or_stop(RISK_POLL_INTERVAL):
@@ -540,6 +543,7 @@ class AgentOrchestrator:
                             self._pool, trade["id"], broker, strategy_pool=self._strategy_pool,
                         )
             except Exception:
+                # / swallow loop tick error
                 logger.error("executor_poll_error", exc_info=True)
 
             if await self._wait_or_stop(EXECUTOR_POLL_INTERVAL):
@@ -726,7 +730,7 @@ class AgentOrchestrator:
         # / compare latest regime against last-known; on change, call on_regime_shift
         try:
             latest = await fetch_latest_regime(self._pool, market)
-        except Exception:
+        except (asyncpg.PostgresError, KeyError, AttributeError):
             return
         if latest is None:
             return
@@ -874,6 +878,7 @@ class AgentOrchestrator:
                     if synced:
                         logger.info("alpaca_periodic_sync", trades_synced=synced)
                 except Exception:
+                    # / swallow alpaca sync error
                     logger.debug("alpaca_sync_error", exc_info=True)
 
                 await self._alpaca_reconcile_positions()
@@ -935,6 +940,7 @@ class AgentOrchestrator:
             else:
                 logger.debug("position_reconciliation_ok", symbols=len(alpaca_map))
         except Exception:
+            # / swallow reconcile error
             logger.warning("position_reconciliation_error", exc_info=True)
 
     async def _macro_backfill_loop(self) -> None:
@@ -975,7 +981,7 @@ class AgentOrchestrator:
                             from src.dashboard.app import broadcast as ws_broadcast_fn
                             if _ws_clients:
                                 ws_broadcast = ws_broadcast_fn
-                        except Exception:
+                        except ImportError:
                             ws_broadcast = None
                         await alert_check_and_fire(
                             self._pool, broker, ws_broadcast, webhook_url,
