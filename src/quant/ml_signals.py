@@ -1,5 +1,3 @@
-# / ml-based signal generation using lightgbm
-# / trains on indicator features, predicts forward return direction
 
 from __future__ import annotations
 
@@ -15,8 +13,6 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-# / feature-set selector lets us a/b handbuilt vs alpha158 benchmark
-# / values: "handbuilt" (default, ~13 features) | "alpha158" (~60 qlib features) | "both"
 FEATURE_SET_HANDBUILT = "handbuilt"
 FEATURE_SET_ALPHA158 = "alpha158"
 FEATURE_SET_BOTH = "both"
@@ -44,8 +40,6 @@ def build_features(
     fundamentals: dict | None = None,
     feature_set: str | None = None,
 ) -> pd.DataFrame:
-    # / construct feature matrix from ohlcv + optional data
-    # / feature_set: None (use ML_FEATURE_SET env) | "handbuilt" | "alpha158" | "both"
     fs = (feature_set or _feature_set()).lower()
     if fs not in {FEATURE_SET_HANDBUILT, FEATURE_SET_ALPHA158, FEATURE_SET_BOTH}:
         logger.warning("build_features_unknown_set", raw=fs, falling_back=FEATURE_SET_HANDBUILT)
@@ -78,12 +72,9 @@ def build_features(
         df["macd_hist"] = df["macd"] - df["macd_signal"]
 
     if fs in (FEATURE_SET_ALPHA158, FEATURE_SET_BOTH):
-        # / qlib-style feature bundle. cap to (5,10,20) windows
-        # / on the first pass to keep training fast; expand after we have a brier baseline.
         from src.quant.alpha158 import compute_alpha158
         windows = (5, 10, 20)
         alpha = compute_alpha158(df[["open", "high", "low", "close", "volume"]], windows=windows)
-        # / prefix alpha feature names so they don't collide with handbuilt ones
         alpha = alpha.rename(columns=lambda c: f"a158_{c}")
         df = df.join(alpha, how="left")
 
@@ -101,7 +92,6 @@ def build_features(
 
 
 def build_target(ohlcv: pd.DataFrame, forward_days: int = 5) -> pd.Series:
-    # / binary target: 1 if forward return > 0
     fwd_ret = ohlcv["close"].shift(-forward_days) / ohlcv["close"] - 1
     return (fwd_ret > 0).astype(int)
 
@@ -113,7 +103,6 @@ async def train_and_predict(
     train_window: int = 252,
     forward_days: int = 5,
 ) -> MlPrediction | None:
-    # / train on historical data, predict latest
     try:
         import lightgbm as lgb
     except ImportError:
@@ -173,9 +162,6 @@ async def benchmark_feature_sets(
     train_window: int = 252,
     forward_days: int = 5,
 ) -> dict:
-    # / train a lightgbm model on each feature set, return test brier
-    # / so the dashboard can visibly compare handbuilt vs alpha158.
-    # / the smaller brier wins (lower = better-calibrated probabilities).
     try:
         import lightgbm as lgb
     except ImportError:
@@ -191,8 +177,6 @@ async def benchmark_feature_sets(
         features = features.loc[common_idx]
         tgt = target.loc[common_idx]
         cols = [c for c in features.columns if c not in ["open", "high", "low", "close", "volume"]]
-        # / walk-forward split: train on [-train_window-forward_days-30:-forward_days-30],
-        # / test on the most-recent 30 rows we can still label.
         test_len = 30
         split = -(forward_days + test_len)
         X_train = features[cols].iloc[-(train_window + forward_days + test_len):split].to_numpy()
@@ -209,8 +193,6 @@ async def benchmark_feature_sets(
         model.fit(X_train, y_train)
         probs = model.predict_proba(X_test)[:, 1]
         brier = float(np.mean((probs - y_test) ** 2))
-        # / information coefficient: spearman rank corr between prob and realized return
-        # / use forward returns on the test window as the continuous target
         ic = None
         try:
             fwd_ret = ohlcv["close"].shift(-forward_days) / ohlcv["close"] - 1
@@ -248,7 +230,6 @@ async def benchmark_feature_sets(
 
 
 async def store_ml_prediction(pool, prediction: MlPrediction) -> None:
-    # / persist ml prediction to db
     from datetime import date
     try:
         async with pool.acquire() as conn:

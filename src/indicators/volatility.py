@@ -1,6 +1,3 @@
-# / volatility indicators: bollinger bands, atr, keltner channel
-# / all take pandas series, return series or dataclasses
-# / nan-safe: insufficient data returns nan
 
 from __future__ import annotations
 
@@ -17,8 +14,8 @@ class BollingerBands:
     upper: pd.Series
     middle: pd.Series
     lower: pd.Series
-    bandwidth: pd.Series  # (upper - lower) / middle
-    pct_b: pd.Series      # (close - lower) / (upper - lower)
+    bandwidth: pd.Series  # / (upper - lower) /
+    pct_b: pd.Series  # / (close - lower) /
 
 
 def bollinger_bands(
@@ -26,7 +23,6 @@ def bollinger_bands(
     period: int = 20,
     std_dev: float = 2.0,
 ) -> BollingerBands:
-    # / bollinger bands: sma +/- n standard deviations
     middle = sma(series, period)
     rolling_std = series.rolling(window=period, min_periods=period).std()
     upper = middle + std_dev * rolling_std
@@ -46,7 +42,6 @@ def atr(
     close: pd.Series,
     period: int = 14,
 ) -> pd.Series:
-    # / average true range — volatility measure in price units
     tr = true_range(high, low, close)
     return tr.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
 
@@ -66,7 +61,6 @@ def keltner_channel(
     atr_period: int = 10,
     multiplier: float = 2.0,
 ) -> KeltnerChannel:
-    # / keltner channel: ema +/- n * atr
     middle = ema(close, ema_period)
     atr_val = atr(high, low, close, atr_period)
     upper = middle + multiplier * atr_val

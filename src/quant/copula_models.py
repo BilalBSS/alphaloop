@@ -1,6 +1,3 @@
-# / copula models for tail dependence
-# / gaussian (lambda=0 baseline), student-t (symmetric tail), clayton (lower tail/crash)
-# / risk agent uses t-copula to gate trades: if tail dependence > 0.30, reject or size down
 
 from __future__ import annotations
 
@@ -12,8 +9,6 @@ logger = structlog.get_logger(__name__)
 
 
 def gaussian_copula_fit(u_data: np.ndarray) -> np.ndarray:
-    # / fit gaussian copula. returns correlation matrix.
-    # / tail dependence lambda = 0 — baseline only.
     u_data = np.asarray(u_data, dtype=np.float64)
 
     if u_data.ndim != 2:
@@ -21,20 +16,15 @@ def gaussian_copula_fit(u_data: np.ndarray) -> np.ndarray:
     if u_data.shape[0] < 3:
         raise ValueError(f"need at least 3 observations, got {u_data.shape[0]}")
 
-    # / transform uniform margins to normal
-    # / clip to avoid inf at 0 and 1
     u_clipped = np.clip(u_data, 1e-10, 1 - 1e-10)
     z = stats.norm.ppf(u_clipped)
 
-    # / correlation matrix from transformed data
     corr = np.corrcoef(z, rowvar=False)
 
     return corr
 
 
 def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
-    # / fit student-t copula via profile likelihood
-    # / fix nu, optimize sigma via Kendall's tau (nu-independent), then line-search over nu
     # / returns (nu, correlation_matrix)
     u_data = np.asarray(u_data, dtype=np.float64)
 
@@ -46,8 +36,6 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
     _, n_vars = u_data.shape
     u_clipped = np.clip(u_data, 1e-10, 1 - 1e-10)
 
-    # / estimate correlation matrix via Kendall's tau (nu-independent)
-    # / tau = (2/pi) * arcsin(rho) for t-copula => rho = sin(pi*tau/2)
     corr = np.eye(n_vars)
     for i in range(n_vars):
         for j in range(i + 1, n_vars):
@@ -66,18 +54,14 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
         # / nearest positive definite matrix
         corr = _nearest_pd(corr)
 
-    # / profile likelihood over nu using Brent's method
-    # / transform uniform margins to t-quantiles for given nu
     def neg_log_likelihood(nu):
         if nu <= 2.0:
             return 1e10
         try:
             z = stats.t.ppf(u_clipped, df=nu)
-            # / t-copula log-likelihood (simplified for bivariate+)
             n = z.shape[0]
             d = z.shape[1]
 
-            # / log-density of multivariate t relative to product of marginal t
             det_corr = np.linalg.det(corr)
             if det_corr <= 0:
                 return 1e10
@@ -115,9 +99,6 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
 
 
 def clayton_copula_fit(u_data: np.ndarray) -> float:
-    # / fit clayton copula (bivariate only)
-    # / returns theta via Kendall's tau inversion: theta = 2*tau / (1 - tau)
-    # / lower tail dependence lambda_L = 2^(-1/theta)
     u_data = np.asarray(u_data, dtype=np.float64)
 
     if u_data.ndim != 2 or u_data.shape[1] != 2:
@@ -146,20 +127,15 @@ def tail_dependence_coefficient(
     copula_type: str,
     params: float | tuple,
 ) -> dict:
-    # / compute tail dependence lambda for given copula
-    # / returns dict with lambda_lower, lambda_upper
     if copula_type == "gaussian":
-        # / gaussian copula: lambda = 0 always (asymptotically independent)
         return {"lambda_lower": 0.0, "lambda_upper": 0.0}
 
     elif copula_type == "student_t":
-        # / symmetric: lambda = 2 * t_{nu+1}(-sqrt((nu+1)(1-rho)/(1+rho)))
         if isinstance(params, tuple) and len(params) >= 2:
             nu, corr = params[0], params[1]
         else:
             raise ValueError("student_t params must be (nu, correlation_matrix)")
 
-        # / extract rho for bivariate, or average for multivariate
         if isinstance(corr, np.ndarray):
             if corr.ndim == 2:
                 # / use off-diagonal average
@@ -178,7 +154,6 @@ def tail_dependence_coefficient(
         return {"lambda_lower": float(lam), "lambda_upper": float(lam)}
 
     elif copula_type == "clayton":
-        # / lower tail only: lambda_L = 2^(-1/theta)
         theta = float(params)
         if theta <= 0:
             return {"lambda_lower": 0.0, "lambda_upper": 0.0}
@@ -196,8 +171,6 @@ def simulate_copula(
     n_samples: int,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    # / generate correlated uniform samples from fitted copula
-    # / returns (n_samples, n_vars) array of uniform marginals
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
     rng = rng or np.random.default_rng()
@@ -213,7 +186,6 @@ def simulate_copula(
         corr = np.asarray(corr)
         d = corr.shape[0]
 
-        # / multivariate t: Z = sqrt(nu/chi2) * MVN
         z = rng.multivariate_normal(np.zeros(d), corr, size=n_samples)
         chi2 = rng.chisquare(nu, size=(n_samples, 1))
         t_samples = z * np.sqrt(nu / chi2)
@@ -221,10 +193,8 @@ def simulate_copula(
 
     elif copula_type == "clayton":
         theta = float(params)
-        # / bivariate Clayton simulation via conditional method
         u1 = rng.uniform(size=n_samples)
         w = rng.uniform(size=n_samples)
-        # / conditional inverse: u2 = (u1^(-theta) * (w^(-theta/(1+theta)) - 1) + 1)^(-1/theta)
         u2 = (u1 ** (-theta) * (w ** (-theta / (1 + theta)) - 1) + 1) ** (-1 / theta)
         u2 = np.clip(u2, 0, 1)
         return np.column_stack([u1, u2])
@@ -240,8 +210,6 @@ def portfolio_tail_risk(
     n_simulations: int = 10_000,
     rng: np.random.Generator | None = None,
 ) -> dict:
-    # / estimate probability of joint extreme loss using copula
-    # / returns_matrix: (n_obs, n_assets) daily returns
     returns_matrix = np.asarray(returns_matrix, dtype=np.float64)
 
     if returns_matrix.ndim != 2:
@@ -252,7 +220,6 @@ def portfolio_tail_risk(
     rng = rng or np.random.default_rng()
     n_assets = returns_matrix.shape[1]
 
-    # / convert to pseudo-observations (uniform marginals via rank transform)
     from scipy.stats import rankdata
     u_data = np.column_stack([
         rankdata(returns_matrix[:, j]) / (returns_matrix.shape[0] + 1)
@@ -275,7 +242,6 @@ def portfolio_tail_risk(
     # / simulate from copula
     u_sim = simulate_copula(copula_type, params, n_simulations, rng)
 
-    # / transform back to returns using empirical quantile functions
     sim_returns = np.zeros_like(u_sim)
     for j in range(n_assets):
         sorted_returns = np.sort(returns_matrix[:, j])
@@ -305,14 +271,12 @@ def portfolio_tail_risk(
 
 
 def _nearest_pd(A: np.ndarray) -> np.ndarray:
-    # / nearest positive definite matrix (Higham 2002)
     B = (A + A.T) / 2
     _, s, V = np.linalg.svd(B)
     H = V.T @ np.diag(np.maximum(s, 1e-6)) @ V
     A2 = (B + H) / 2
     A3 = (A2 + A2.T) / 2
 
-    # / ensure diagonal is 1 (correlation matrix)
     d = np.sqrt(np.diag(A3))
     A3 = A3 / np.outer(d, d)
     np.fill_diagonal(A3, 1.0)

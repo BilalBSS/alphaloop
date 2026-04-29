@@ -1,7 +1,4 @@
 # / live strategy metrics writer
-# / aggregates closed trades from trade_log, computes rolling sharpe/sortino/maxdd/win rate
-# / upserts to strategy_scores so /api/quant-metrics returns real rows for live strategies
-# / evolution engine backtester only writes backtest results; this covers the live path
 
 from __future__ import annotations
 
@@ -18,14 +15,10 @@ from src.quant.risk_metrics import max_drawdown
 
 logger = structlog.get_logger(__name__)
 
-# / emit metrics once strategy has >=3 data points
-# / counts closed trades + daily mtm of open positions
 MIN_TRADES = 3
 # / matches backtest sharpe annualization
 ANNUAL_TRADING_DAYS = 252
-# / default paper trading account base; used as denominator for max drawdown %
 DEFAULT_BASE_CAPITAL = 100_000.0
-# / how many days of stale live-metric rows to retain before cleanup
 LIVE_METRIC_RETENTION_DAYS = 3
 
 
@@ -33,14 +26,10 @@ async def compute_live_strategy_metrics(
     pool, windows_days: list[int] | None = None,
     base_capital: float = DEFAULT_BASE_CAPITAL,
 ) -> int:
-    # / compute rolling metrics per strategy/window, upsert into strategy_scores
-    # / returns number of (strategy_id, window) rows upserted
     windows_days = windows_days or [30, 90]
     today = date.today()
     upserted = 0
 
-    # / cleanup: bound strategy_scores growth by deleting stale live-metric rows
-    # / identified via regime_breakdown->>'source' marker set on write
     async with pool.acquire() as conn:
         await conn.execute(
             f"""DELETE FROM strategy_scores
@@ -98,10 +87,6 @@ async def compute_live_strategy_metrics(
 async def _compute_open_position_returns(
     pool, strategy_id: str, period_start: date, period_end: date,
 ) -> tuple[list[float], float]:
-    # / build daily mark-to-market return series from strategy's currently open positions
-    # / for each open position, walk daily market_data closes and compute pct changes vs previous
-    # / close (or entry price on the first day). returns per-position daily returns concatenated.
-    # / total_pnl is the sum of unrealized p&l (current close vs entry) across all positions.
     async with pool.acquire() as conn:
         positions = await conn.fetch(
             """SELECT symbol, qty, avg_entry_price, opened_at
@@ -162,7 +147,6 @@ async def _compute_open_position_returns(
             returns.append((close - prev) / prev)
             prev = close
             last_close = close
-        # / unrealized p&l = latest close vs entry price * qty
         total_unrealized += (last_close - entry_price) * qty
     return returns, total_unrealized
 
@@ -171,9 +155,6 @@ async def _compute_for_strategy(
     pool, strategy_id: str, period_start: date, period_end: date,
     base_capital: float = DEFAULT_BASE_CAPITAL,
 ) -> dict[str, Any] | None:
-    # / fetch trade_log rows in window, fifo-match buys/sells, compute metrics
-    # / created_at is timestamptz; period_end is a date that casts to midnight.
-    # / upper bound must be < period_end + 1 day to include trades that happened today.
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT symbol, side, qty, price, pnl, created_at
@@ -191,21 +172,17 @@ async def _compute_for_strategy(
     if rows:
         returns, total_pnl, closed_trades = _fifo_match_returns([dict(r) for r in rows])
 
-    # / extend returns with daily mark-to-market from open positions so paper-trading
-    # / strategies get meaningful sharpe/sortino before any sell ever happens
     open_returns, unrealized_pnl = await _compute_open_position_returns(
         pool, strategy_id, period_start, period_end,
     )
     returns = returns + open_returns
     total_pnl += unrealized_pnl
 
-    # / combined observation count gate — closed trades OR daily MTM observations
     if len(returns) < MIN_TRADES:
         return None
 
     returns_arr = np.array(returns, dtype=np.float64)
 
-    # / sharpe (annualized; treats trade returns as iid, consistent with backtest.py:439)
     avg_return = float(np.mean(returns_arr))
     std_return = float(np.std(returns_arr, ddof=1)) if len(returns_arr) > 1 else 0.0
     sharpe = (avg_return / std_return * math.sqrt(ANNUAL_TRADING_DAYS)) if std_return > 0 else 0.0
@@ -221,12 +198,8 @@ async def _compute_for_strategy(
     wins = int(np.sum(returns_arr > 0))
     win_rate = wins / len(returns_arr)
 
-    # / max drawdown against a fixed capital base for meaningful % scaling
-    # / also include unrealized p&l deltas from open positions so paper drawdown
-    # / reflects ongoing mark-to-market moves, not just closed trade realized swings
     pnl_series_parts: list[float] = [t["pnl"] for t in closed_trades]
     if open_returns:
-        # / convert mark-to-market returns to dollar p&l at base_capital scale for a comparable curve
         pnl_series_parts.extend(r * base_capital for r in open_returns)
     pnl_series = np.array(pnl_series_parts, dtype=np.float64) if pnl_series_parts else np.array([0.0])
     equity_curve = base_capital + np.cumsum(pnl_series)
@@ -235,10 +208,8 @@ async def _compute_for_strategy(
     except (ValueError, IndexError, ZeroDivisionError):
         max_dd_pct = 0.0
 
-    # / composite score matches evolution ranking formula (sharpe 0.4 / win 0.3 / dd 0.3)
     composite = sharpe * 0.4 + win_rate * 0.3 - max_dd_pct * 0.3
 
-    # / brier calibration: how well did signal strength predict the outcome?
     brier = await _compute_brier(pool, strategy_id, period_start, period_end)
 
     return {
@@ -246,7 +217,6 @@ async def _compute_for_strategy(
         "sortino_ratio": round(sortino, 4),
         "max_drawdown_pct": round(max_dd_pct, 4),
         "win_rate": round(win_rate, 4),
-        # / total_trades = closed round-trips; observations covers MTM daily points too
         "total_trades": len(closed_trades),
         "total_observations": len(returns),
         "composite_score": round(composite, 4),
@@ -258,8 +228,6 @@ async def _compute_for_strategy(
 async def _compute_brier(
     pool, strategy_id: str, period_start: date, period_end: date,
 ) -> float | None:
-    # / pair trade_signals.strength (predictions 0..1) with trade_log.pnl>0 (binary outcome).
-    # / join on signal_id so each prediction is tied to its actual trade outcome.
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -289,8 +257,6 @@ async def _compute_brier(
 def _fifo_match_returns(
     rows: list[dict],
 ) -> tuple[list[float], float, list[dict]]:
-    # / fifo match: sells consume oldest open buy lots per symbol
-    # / returns (per-trade-return pct list, total realized pnl, closed trade records)
     open_lots: dict[str, list[dict]] = {}
     returns: list[float] = []
     total_pnl = 0.0

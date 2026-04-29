@@ -1,4 +1,3 @@
-# / detect strategy performance degradation via rolling sharpe + cusum
 
 from __future__ import annotations
 
@@ -25,7 +24,6 @@ class DecaySignal:
 
 
 def _score_decay(pnl_arr: np.ndarray, strategy_id: str) -> DecaySignal | None:
-    # / pure scoring; takes pre-fetched pnl array oldest-first
 
     # / rolling sharpe (annualized)
     window = pnl_arr[-ROLLING_WINDOW:] if len(pnl_arr) >= ROLLING_WINDOW else pnl_arr
@@ -33,7 +31,6 @@ def _score_decay(pnl_arr: np.ndarray, strategy_id: str) -> DecaySignal | None:
     std_pnl = window.std()
     rolling_sharpe = float(mean_pnl / std_pnl * np.sqrt(252)) if std_pnl > 0 else 0.0
 
-    # / count consecutive periods below threshold
     days_below = 0
     for i in range(len(pnl_arr) - 1, max(len(pnl_arr) - ROLLING_WINDOW - 1, -1), -1):
         chunk = pnl_arr[max(0, i - ROLLING_WINDOW + 1):i + 1]
@@ -45,7 +42,6 @@ def _score_decay(pnl_arr: np.ndarray, strategy_id: str) -> DecaySignal | None:
         else:
             break
 
-    # / cusum changepoint detection (downward shift)
     target_mean = pnl_arr.mean()
     target_std = pnl_arr.std() if pnl_arr.std() > 0 else 1.0
     cusum_neg = 0.0
@@ -93,7 +89,6 @@ async def check_strategy_decay(pool, strategy_id: str) -> DecaySignal | None:
 
 
 async def check_all_decay(pool) -> list[DecaySignal]:
-    # / batch: one query, bucket per strategy_id, score each
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT strategy_id, pnl FROM (
@@ -118,7 +113,6 @@ async def check_all_decay(pool) -> list[DecaySignal]:
 
 
 async def check_all_strategies(pool, strategy_pool) -> list[DecaySignal]:
-    # / check decay for all live strategies
     signals = []
     for entry in strategy_pool.list_by_status("live"):
         signal = await check_strategy_decay(pool, entry.strategy.strategy_id)

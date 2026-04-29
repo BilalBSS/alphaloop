@@ -1,6 +1,3 @@
-# / ai-powered analysis summary using groq free tier
-# / takes all analysis results for a symbol and produces natural language summary
-# / graceful: returns formatted fallback if groq unavailable
 
 from __future__ import annotations
 
@@ -22,14 +19,12 @@ from .ratio_analysis import RatioScore
 
 logger = structlog.get_logger(__name__)
 
-# / groq free tier: separate rate limit pools per model
-# / chain: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b -> structured fallback
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "openai/gpt-oss-120b"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-CEREBRAS_FAST_MODEL = "llama-3.3-70b"  # / same-model swap when groq 70b rate-limits
-CEREBRAS_MODEL = "gpt-oss-120b"         # / final escalation after groq 120b
+CEREBRAS_FAST_MODEL = "llama-3.3-70b"  # / same-model swap when groq
+CEREBRAS_MODEL = "gpt-oss-120b"  # / final escalation after groq
 MAX_TOKENS = 1200
 
 
@@ -38,7 +33,7 @@ class AnalysisSummary:
     symbol: str
     date: date
     summary: str
-    model_used: str | None  # none if fallback was used
+    model_used: str | None  # / none if fallback was
     signal: str             # bullish, bearish, neutral
     confidence: float       # 0-100
 
@@ -307,7 +302,6 @@ def _build_crypto_fallback_summary(
     price_change_7d: float | None = None,
     sentiment_score: float | None = None,
 ) -> AnalysisSummary:
-    # / structured fallback for crypto when llms unavailable
     signals: list[str] = []
     bullish_count = 0
     bearish_count = 0
@@ -367,7 +361,6 @@ def _build_fallback_summary(
     earnings: EarningsSignal | None,
     insider: InsiderSignal | None,
 ) -> AnalysisSummary:
-    # / structured fallback when groq is unavailable
     signals: list[str] = []
     bullish_count = 0
     bearish_count = 0
@@ -395,7 +388,6 @@ def _build_fallback_summary(
             bearish_count += 1
         else:
             signals.append(f"DCF: fairly valued at ${dcf.fair_value_median:.2f}")
-        # / dcf contributes to confidence via upside magnitude
         total_strength += min(100.0, abs(dcf.upside_pct) * 200)
         signal_count += 1
 
@@ -456,7 +448,6 @@ _TRANSITION_RE = re.compile(
 
 
 def _extract_signal(text: str) -> tuple[str, float]:
-    # / extract signal and confidence from llm response
     if not text or not text.strip():
         return ("neutral", 30.0)
 
@@ -465,7 +456,6 @@ def _extract_signal(text: str) -> tuple[str, float]:
     if match:
         return (match.group(1).lower(), 90.0)
 
-    # / also check unstructured opening: "Bullish." or "**Bearish**"
     stripped = text.strip().lstrip("*").strip()
     first_word = stripped.split()[0].rstrip(".*,:;!").lower() if stripped else ""
     if first_word in ("bullish", "bearish", "neutral"):
@@ -573,7 +563,6 @@ def _dispatch_prompt(
     positions: list[dict] | None,
     system_override: str | None = None,
 ) -> tuple[str, str]:
-    # / build prompt + system message, dispatching crypto vs equity
     if crypto_data is not None:
         prompt = _build_crypto_prompt(
             **crypto_data, positions=positions,
@@ -588,8 +577,6 @@ def _dispatch_prompt(
 
 
 def _parse_synthesis_json(raw: str) -> dict | None:
-    # / tolerant json parser for llm synthesis output
-    # / handles ```json fences, trailing commas, unescaped control chars, first-{ last-} slice
     if not raw:
         return None
     text = raw.strip()
@@ -598,8 +585,6 @@ def _parse_synthesis_json(raw: str) -> dict | None:
         text = match.group(1).strip()
 
     def _sanitize(s: str) -> str:
-        # / drop trailing commas inside } or ] and escape all control chars in strings
-        # / json.loads rejects raw \n \r \t inside "quoted strings"; escape them so parse succeeds
         s = re.sub(r",(\s*[}\]])", r"\1", s)
 
         def _escape_in_string(match: re.Match) -> str:
@@ -608,7 +593,6 @@ def _parse_synthesis_json(raw: str) -> dict | None:
             return inner
 
         s = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_in_string, s, flags=re.DOTALL)
-        # / any remaining control chars outside strings are whitespace safe
         s = re.sub(r"[\x00-\x1f]", " ", s)
         return s
 
@@ -638,7 +622,6 @@ def _dispatch_fallback(
     insider: InsiderSignal | None,
     crypto_data: dict | None,
 ) -> AnalysisSummary:
-    # / return structured fallback, dispatching crypto vs equity
     if crypto_data is not None:
         return _build_crypto_fallback_summary(
             symbol, nvt=crypto_data.get("nvt"), funding_rate=crypto_data.get("funding_rate"),
@@ -656,7 +639,6 @@ async def _call_llm(
     system_message: str = _EQUITY_SYSTEM_MSG,
     max_retries: int = 2,
 ) -> AnalysisSummary | None:
-    # / single llm api call with retry on 429, raises _RateLimited after exhausting retries
     from src.data.llm_client import get_llm_client
     client = await get_llm_client("groq")
     for attempt in range(max_retries + 1):
@@ -676,7 +658,6 @@ async def _call_llm(
                 timeout=20.0,
             )
             if resp.status_code == 429:
-                # / backoff: 4s, 8s between retries
                 if attempt < max_retries:
                     wait = (attempt + 1) * 4
                     logger.info("llm_rate_limited_retrying", symbol=symbol, model=model, wait=wait, attempt=attempt + 1)
@@ -688,7 +669,6 @@ async def _call_llm(
             data = resp.json()
             choice = data["choices"][0]
             summary_text = choice["message"]["content"].strip()
-            # / detect truncated output from max_tokens hit
             if choice.get("finish_reason") == "length":
                 logger.info("llm_output_truncated", symbol=symbol, model=model, tokens=MAX_TOKENS)
             signal, confidence = _extract_signal(summary_text)
@@ -709,7 +689,6 @@ async def _call_cerebras(
     prompt: str, symbol: str, system_message: str,
     model: str = CEREBRAS_MODEL,
 ) -> AnalysisSummary | None:
-    # / cerebras fallback via llm_client — free tier, openai-compatible
     try:
         from src.data.llm_client import llm_call
         data = await llm_call(
@@ -743,7 +722,6 @@ async def generate_summary(
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
 ) -> AnalysisSummary:
-    # / try groq llm, fall back to structured summary
     prompt, sys_msg = _dispatch_prompt(
         symbol, ratio, dcf, earnings, insider, regime,
         indicators, sentiment, crypto_data, positions,
@@ -754,10 +732,6 @@ async def generate_summary(
         logger.info("groq_api_key_missing_using_fallback", symbol=symbol)
         return _dispatch_fallback(symbol, ratio, dcf, earnings, insider, crypto_data)
 
-    # / chain: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b -> structured fallback
-    # / _call_llm retries 429 internally (4s/8s backoff); _RateLimited falls through to next
-    # / cerebras calls are single-shot (no retries) — if they fail, move on
-    # / primary provider is weighted by LLM_PROVIDER_SPLIT; cerebras-primary reverses the pairs
     from src.data.llm_client import build_fallback_chain
     attempts: list[tuple[str, str]] = build_fallback_chain(
         groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
@@ -790,7 +764,6 @@ async def _generate_deepseek_summary(
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
 ) -> AnalysisSummary | None:
-    # / independent second opinion via deepseek — gets same raw data, NOT groq's output
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         return None
@@ -801,7 +774,6 @@ async def _generate_deepseek_summary(
         system_override=_DEEPSEEK_SYSTEM_MSG,
     )
 
-    # / retry once on 429 or transient errors
     from src.data.llm_client import get_llm_client
     client = await get_llm_client("deepseek")
     for attempt in range(2):
@@ -847,12 +819,10 @@ def _compute_consensus(
     groq: AnalysisSummary,
     deepseek: AnalysisSummary | None,
 ) -> tuple[str, float]:
-    # / compute consensus signal and confidence from two independent analyses
     if deepseek is None:
         return (groq.signal, groq.confidence)
     if groq.signal == deepseek.signal:
         return (groq.signal, max(groq.confidence, deepseek.confidence))
-    # / soft disagree: one neutral, other directional
     if groq.signal == "neutral" and deepseek.signal in ("bullish", "bearish"):
         return (deepseek.signal, round(max(0.0, min(100.0, deepseek.confidence - 15.0)), 1))
     if deepseek.signal == "neutral" and groq.signal in ("bullish", "bearish"):
@@ -877,7 +847,6 @@ async def generate_dual_analysis(
     crypto_data: dict | None = None,
     positions: list[dict] | None = None,
 ) -> DualAnalysis:
-    # / run groq + deepseek in parallel, compute consensus
     groq_task = generate_summary(symbol, ratio, dcf, earnings, insider, regime,
                                  indicators=indicators, sentiment=sentiment,
                                  crypto_data=crypto_data, positions=positions)
@@ -902,7 +871,6 @@ async def generate_dual_analysis(
 
 
 async def _fetch_synthesis_scores(pool, today: date) -> list[dict]:
-    # / today's scores, fall back to last 3 days
     from datetime import timedelta as _td
     try:
         async with pool.acquire() as conn:
@@ -952,7 +920,6 @@ def _format_score_lines(scores: list[dict]) -> str:
 
 
 async def _fetch_positions_text(pool) -> str:
-    # / ground the narrative in actual holdings, not watchlist scores
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1015,7 +982,6 @@ async def generate_daily_synthesis(
     pool: Any,
     symbols: list[str],
 ) -> dict[str, Any] | None:
-    # / 5PM ET portfolio-wide synthesis via deepseek-reasoner
     from src.data.synthesis import store_daily_synthesis
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
@@ -1061,9 +1027,6 @@ Output ONLY valid JSON. No explanation outside the JSON."""
         )
         return data["choices"][0]["message"]["content"]
 
-    # / parse with sanitization + retry + groq fallback so one bad deepseek response
-    # / doesn't blank the whole synthesis card
-    # / keep the raw llm payload from every attempt; don't overwrite with parser exception text
     result: dict | None = None
     raw: str = ""
     raw_attempts: list[str] = []
@@ -1086,7 +1049,6 @@ Output ONLY valid JSON. No explanation outside the JSON."""
 
     if result is None:
         logger.error("daily_synthesis_failed", errors=errors)
-        # / show actual llm output (or empty markers) alongside parser errors so user can debug
         fallback_body = "\n".join(raw_attempts) + ("\n--errors--\n" + "; ".join(errors) if errors else "")
         if not fallback_body.strip():
             fallback_body = raw or "; ".join(errors) or "<no response>"

@@ -1,4 +1,3 @@
-# / orchestrator loops for knowledge base upkeep — registered by agent orchestrator
 
 from __future__ import annotations
 
@@ -11,7 +10,6 @@ from src.knowledge.wiki_writer import WikiWriter
 
 logger = structlog.get_logger(__name__)
 
-# / defaults tuned for low background pressure
 EMBED_LOOP_INTERVAL = 6 * 60 * 60   # / 6h
 ARCHIVE_LOOP_INTERVAL = 24 * 60 * 60  # / 24h
 ARCHIVE_OLDER_THAN_DAYS = 180
@@ -25,7 +23,6 @@ async def _embed_one_document(
     writer: WikiWriter,
     doc: dict,
 ) -> bool:
-    # / embed a single wiki document's chunks; returns True on success
     doc_id = doc["id"]
     rel_path = doc["path"]
     content = await writer.read_document(rel_path)
@@ -41,7 +38,6 @@ async def _embed_one_document(
 
 
 async def _embed_backfill_once(pool) -> int:
-    # / single pass over documents missing embeddings; closes embedder client before return
     embedder = OllamaEmbedder()
     store = VectorStore(pool)
     writer = WikiWriter(pool=pool)
@@ -82,15 +78,10 @@ async def _embed_backfill_once(pool) -> int:
             logger.info("wiki_embed_backfill_progress", embedded=done, scanned=len(rows))
         return done
     finally:
-        # / prevent httpx client leak across loop iterations
         await embedder.close()
 
 
 async def wiki_embedding_backfill_loop(pool) -> int:
-    # / one-shot backfill pass. orchestrator handles cadence via its own scheduler;
-    # / the prior `while True` + sleep pattern conflicted with asyncio.wait_for
-    # / in the orchestrator wrapper — the outer timeout always fired (900s).
-    # / returns the number of documents embedded in this pass.
     try:
         return await _embed_backfill_once(pool)
     except Exception as exc:
@@ -99,9 +90,6 @@ async def wiki_embedding_backfill_loop(pool) -> int:
 
 
 async def wiki_archive_loop(pool) -> int:
-    # / one-shot archive pass. same fix as wiki_embedding_backfill_loop — the
-    # / infinite-loop shape was being wrapped by asyncio.wait_for in the
-    # / orchestrator and timed out every 15 minutes without doing work.
     writer = WikiWriter(pool=pool)
     try:
         moved = await writer.archive_old(older_than_days=ARCHIVE_OLDER_THAN_DAYS)

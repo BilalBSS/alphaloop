@@ -1,6 +1,3 @@
-# / simulated broker for backtesting and paper trading
-# / tracks positions, fills orders instantly at current price
-# / no real api calls — everything in memory
 
 from __future__ import annotations
 
@@ -28,7 +25,6 @@ class PaperBroker(BrokerInterface):
         self._order_lock = asyncio.Lock()
 
     def set_price(self, symbol: str, price: float) -> None:
-        # / manually set price for a symbol (used in backtesting)
         self.prices[symbol] = price
 
     def set_prices(self, prices: dict[str, float]) -> None:
@@ -39,7 +35,6 @@ class PaperBroker(BrokerInterface):
         price = self.prices.get(symbol)
         if price is not None:
             return price
-        # / fallback: fetch latest close from market_data db
         price = await self._fetch_price_from_db(symbol)
         if price is not None:
             self.prices[symbol] = price
@@ -47,7 +42,6 @@ class PaperBroker(BrokerInterface):
         raise ValueError(f"no price available for {symbol}")
 
     async def _fetch_price_from_db(self, symbol: str) -> float | None:
-        # / get latest close price from market_data table
         try:
             from src.data.db import get_pool
             pool = await get_pool()
@@ -60,7 +54,6 @@ class PaperBroker(BrokerInterface):
                 if row and row["close"] is not None:
                     return float(row["close"])
         except Exception:
-            # / swallow: db unavailable, fall through to next price source
             logger.debug("paper_broker_db_price_fallback_failed", symbol=symbol)
         return None
 
@@ -82,11 +75,9 @@ class PaperBroker(BrokerInterface):
         order_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
-        # / lock prevents concurrent coroutines from double-spending cash
         async with self._order_lock:
             price = self.prices.get(symbol)
             if price is None:
-                # / try db fallback before rejecting
                 price = await self._fetch_price_from_db(symbol)
                 if price is not None:
                     self.prices[symbol] = price
@@ -99,7 +90,6 @@ class PaperBroker(BrokerInterface):
                 self.orders[order_id] = order
                 return order
 
-            # / for limit orders, check if fillable
             if order_type == "limit" and limit_price is not None:
                 if side == "buy" and price > limit_price:
                     order = Order(
@@ -122,8 +112,6 @@ class PaperBroker(BrokerInterface):
             if order_type not in ("market", "limit"):
                 raise ValueError(f"unsupported order type: {order_type} (stop/stop_limit not yet implemented)")
 
-            # / market orders and fillable limit orders: fill immediately
-            # / limit orders fill at the better price (market vs limit)
             if order_type == "limit" and limit_price:
                 fill_price = min(limit_price, price) if side == "buy" else max(limit_price, price)
             else:
@@ -237,7 +225,6 @@ class PaperBroker(BrokerInterface):
         symbols: list[str],
         callback: Callable[[str, float], Any],
     ) -> None:
-        # / paper broker doesn't stream — just calls back current prices
         for symbol in symbols:
             price = self.prices.get(symbol)
             if price is not None:

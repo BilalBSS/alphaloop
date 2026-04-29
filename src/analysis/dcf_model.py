@@ -1,7 +1,3 @@
-# / discounted cash flow with monte carlo simulation
-# / runs N simulations with randomized growth rates, margins, terminal multiples
-# / output: probability distribution of fair value (median, p10, p90, upside%)
-# / stores results to dcf_valuations table
 
 from __future__ import annotations
 
@@ -22,8 +18,6 @@ DEFAULT_TERMINAL_GROWTH = 0.025  # 2.5% perpetuity growth
 DEFAULT_DISCOUNT_RATE = 0.10    # 10% wacc
 DEFAULT_NUM_SIMULATIONS = 10_000
 
-# / growth-rate-to-terminal-multiple anchor points for piecewise-linear interpolation
-# / based on empirical EV/FCF multiples from sell-side equity research
 TERMINAL_MULTIPLE_TIERS: list[tuple[float, float]] = [
     (-0.20, 6.0),   # severe decline: distressed
     (-0.10, 8.0),   # moderate decline
@@ -32,19 +26,17 @@ TERMINAL_MULTIPLE_TIERS: list[tuple[float, float]] = [
     (0.10, 15.0),   # moderate growth: established tech
     (0.15, 18.0),   # solid growth: mid-cap tech
     (0.20, 21.0),   # high growth: growth SaaS
-    (0.30, 27.0),   # very high growth: scaling platforms
+    (0.30, 27.0),  # / very high growth: scaling
     (0.50, 33.0),   # hyper growth: category creators
     (0.75, 38.0),   # extreme growth: early dominance
-    (1.00, 40.0),   # cap: no multiple above 40x
+    (1.00, 40.0),  # / cap: no multiple above
 ]
 
-# / fcf margin adjustment: premium for high-margin, discount for low-margin
 FCF_MARGIN_BASELINE = 0.15
 FCF_MARGIN_WEIGHT = 0.5
 FCF_MARGIN_FLOOR = 0.70
 FCF_MARGIN_CAP = 1.30
 
-# / uncertainty scales with base multiple
 TERMINAL_MULTIPLE_CV = 0.18
 
 
@@ -52,8 +44,6 @@ def compute_terminal_multiple(
     revenue_growth: float,
     fcf_margin: float | None = None,
 ) -> float:
-    # / piecewise-linear interpolation of growth rate to terminal multiple
-    # / with optional fcf margin adjustment
     if revenue_growth is None or np.isnan(revenue_growth):
         return 15.0  # safe default
 
@@ -62,24 +52,21 @@ def compute_terminal_multiple(
     base = float(np.interp(revenue_growth, growth_rates, multiples))
 
     if fcf_margin is not None and not np.isnan(fcf_margin):
-        # / reduce margin premium for high-growth stocks (growth already in base multiple)
         effective_weight = FCF_MARGIN_WEIGHT
         if revenue_growth > 0.30:
-            effective_weight *= 0.5  # halve margin premium for hyper-growth
+            effective_weight *= 0.5  # / halve margin premium for
         elif revenue_growth > 0.15:
             effective_weight *= 0.75
         adjustment = 1.0 + effective_weight * (fcf_margin - FCF_MARGIN_BASELINE)
         adjustment = max(FCF_MARGIN_FLOOR, min(FCF_MARGIN_CAP, adjustment))
         base *= adjustment
 
-    # / cap after margin adjustment so premium doesn't exceed 40x
     base = min(base, 40.0)
 
     return round(base, 1)
 
 
 def compute_terminal_multiple_std(base_multiple: float) -> float:
-    # / uncertainty proportional to base multiple
     return round(base_multiple * TERMINAL_MULTIPLE_CV, 1)
 
 
@@ -87,16 +74,16 @@ def compute_terminal_multiple_std(base_multiple: float) -> float:
 class DCFAssumptions:
     revenue: float                  # current annual revenue
     fcf_margin: float               # current fcf margin (0.0-1.0)
-    revenue_growth: float           # base case annual growth rate
-    growth_std: float = 0.05        # std dev for growth rate randomization
-    margin_std: float = 0.03        # std dev for margin randomization
+    revenue_growth: float  # / base case annual growth
+    growth_std: float = 0.05  # / std dev for growth
+    margin_std: float = 0.03  # / std dev for margin
     terminal_multiple: float = 15.0 # base ev/fcf terminal multiple
     terminal_multiple_std: float = 3.0
     discount_rate: float = DEFAULT_DISCOUNT_RATE
     projection_years: int = DEFAULT_PROJECTION_YEARS
     terminal_growth: float = DEFAULT_TERMINAL_GROWTH
     shares_outstanding: float = 1.0 # for per-share value
-    net_debt: float = 0.0           # debt - cash, subtracted from ev
+    net_debt: float = 0.0  # / debt - cash, subtracted
 
 
 @dataclass
@@ -118,7 +105,6 @@ def run_dcf_simulation(
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    # / run monte carlo dcf, returns array of per-share fair values
     rng = rng or np.random.default_rng()
 
     if assumptions.revenue <= 0 or assumptions.shares_outstanding <= 0:
@@ -128,8 +114,6 @@ def run_dcf_simulation(
     n = num_simulations
     years = assumptions.projection_years
 
-    # / antithetic variates: generate n/2 Z-samples, mirror with -Z for n total
-    # / negatively-correlated pairs reduce variance on monotone payoffs
     half = (n + 1) // 2
 
     z_growth = rng.standard_normal((half, years))
@@ -142,10 +126,7 @@ def run_dcf_simulation(
     ])[:n]
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
-    # / mean-revert growth rates toward long-term average over projection period
     long_term_growth = assumptions.terminal_growth
-    # / higher growth = faster decay (NVDA at 65% should decay faster than AAPL at 8%)
-    # / revenue size also accelerates reversion — law of large numbers
     base_reversion = min(0.35, 0.12 + abs(assumptions.revenue_growth) * 0.5)
     if assumptions.revenue > 200_000_000_000:  # >$200B: extreme reversion
         size_reversion_boost = 0.15
@@ -164,12 +145,9 @@ def run_dcf_simulation(
         )
     growth_rates = np.clip(growth_rates, -0.50, 1.0)
 
-    # / dampen growth for large-revenue companies (law of large numbers)
-    # / stronger damping tiers: mega-caps face much harder growth scaling
     if assumptions.revenue > 200_000_000_000:  # >$200B: mega-cap
         size_factor = min(1.0, 200_000_000_000 / assumptions.revenue)
         growth_rates *= size_factor ** 0.5
-        # / additional absolute cap: no mega-cap sustains >30% yoy
         growth_rates = np.clip(growth_rates, -0.50, 0.30)
     elif assumptions.revenue > 100_000_000_000:  # >$100B
         size_factor = min(1.0, 100_000_000_000 / assumptions.revenue)
@@ -191,28 +169,23 @@ def run_dcf_simulation(
     ])[:n]
     terminal_multiples = np.clip(terminal_multiples, 3.0, 50.0)
 
-    # / vectorized dcf: cumprod for compounding, broadcast for discounting
     discount_factors = np.array([
         1.0 / (1.0 + assumptions.discount_rate) ** (y + 1)
         for y in range(years)
     ])
 
-    # / cumulative revenue growth per simulation per year
     cum_growth = np.cumprod(1.0 + growth_rates, axis=1)
     revenues = assumptions.revenue * cum_growth
 
-    # / present value of projected fcf
     fcfs = revenues * margins
     pv_fcfs = (fcfs * discount_factors[np.newaxis, :]).sum(axis=1)
 
-    # / terminal value using last year's revenue and margin
     terminal_fcfs = revenues[:, -1] * margins[:, -1]
     terminal_values = terminal_fcfs * terminal_multiples
     pv_terminals = terminal_values * discount_factors[-1]
 
     enterprise_values = pv_fcfs + pv_terminals
 
-    # / equity value = ev - net debt
     equity_values = enterprise_values - assumptions.net_debt
     equity_values = np.maximum(equity_values, 0.0)
 
@@ -230,13 +203,10 @@ def compute_dcf(
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
     rng: np.random.Generator | None = None,
 ) -> DCFResult:
-    # / run simulation and package results
     as_of = as_of or date.today()
 
     fair_values = run_dcf_simulation(assumptions, num_simulations, rng)
 
-    # / mega-cap sanity cap: market is rarely that wrong on liquid large-caps
-    # / only applies to companies with real revenue (>$10B)
     if current_price > 0 and assumptions.revenue > 10_000_000_000:
         if assumptions.revenue > 200_000_000_000:
             max_fv = current_price * 2.5
@@ -254,7 +224,6 @@ def compute_dcf(
 
     upside = (median - current_price) / current_price if current_price > 0 else 0.0
 
-    # / confidence based on spread of distribution
     spread = (p90 - p10) / median if median > 0 else float("inf")
     if spread < 0.5:
         confidence = "high"
@@ -263,7 +232,6 @@ def compute_dcf(
     else:
         confidence = "low"
 
-    # / sanity: extreme divergence from market price -> low confidence
     if current_price > 0:
         price_ratio = median / current_price
         if price_ratio > 5.0 or price_ratio < 0.1:
@@ -295,7 +263,6 @@ def compute_dcf(
 
 
 async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
-    # / pull fundamentals + latest price to construct dcf assumptions
     async with pool.acquire() as conn:
         fund_row = await conn.fetchrow(
             """
@@ -321,26 +288,22 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
     revenue_growth = float(fund_row["revenue_growth_1y"]) if fund_row["revenue_growth_1y"] else 0.05
     price = float(price_row["close"]) if price_row else 0.0
 
-    # / use real shares_outstanding and total_revenue from edgar/finnhub when available
     shares = float(fund_row["shares_outstanding"]) if fund_row.get("shares_outstanding") else None
     total_rev = float(fund_row["total_revenue"]) if fund_row.get("total_revenue") else None
     net_debt_val = float(fund_row["net_debt"]) if fund_row.get("net_debt") else 0.0
 
     if total_rev and shares and shares > 0:
-        # / real revenue and shares available — compute total DCF
         revenue = total_rev
         shares_out = shares
     else:
-        # / fallback: per-share basis using P/S ratio
         ps = float(fund_row["ps_ratio"]) if fund_row["ps_ratio"] else None
         if ps and ps > 0 and price > 0:
             revenue = price / ps  # revenue per share
         else:
             revenue = price * 0.3 if price > 0 else 100.0
         shares_out = 1.0
-        net_debt_val = 0.0  # / can't use total net debt with per-share revenue
+        net_debt_val = 0.0  # / can't use total net
 
-    # / margin expansion: high-growth companies with thin margins will likely expand
     target_margin = 0.15
     if fcf_margin < target_margin and revenue_growth > 0.08:
         margin_expansion = (target_margin - fcf_margin) * 0.5
@@ -351,13 +314,9 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
 
     tm = compute_terminal_multiple(revenue_growth, fcf_margin)
 
-    # / quality floor: high-FCF, net-cash companies deserve premium multiples
-    # / mega-cap cash cows (AAPL, MSFT) trade at 30-40x EV/FCF due to
-    # / buybacks, recurring revenue, ecosystem moat — model must reflect this
     is_mega_cap = revenue > 100_000_000_000
     if fcf_margin > 0.25 and net_debt_val < 0:
         if is_mega_cap:
-            # / scale floor with margin: 25% -> 34x, 35% -> 37x, 50%+ -> 40x
             margin_bonus = min(6.0, (fcf_margin - 0.25) * 24.0)
             tm = max(tm, 34.0 + margin_bonus)
         else:
@@ -368,18 +327,16 @@ async def build_assumptions_from_db(pool, symbol: str) -> DCFAssumptions | None:
         else:
             tm = max(tm, 21.0)
 
-    # / buyback + capital return premium
     if net_debt_val < 0 and revenue > 0 and fcf_margin > 0.20:
         cash_to_rev = abs(net_debt_val) / revenue
         if cash_to_rev > 0.2:
-            tm *= 1.08  # significant cash hoard + returns
+            tm *= 1.08  # / significant cash hoard +
         elif cash_to_rev > 0.08:
             tm *= 1.05  # moderate capital return capacity
 
     tm_std = compute_terminal_multiple_std(tm)
-    # / projection years: shorter for mega-caps (growth can't compound as long)
     if revenue > 200_000_000_000:
-        projection_years = 5  # mega-cap: 5yr max regardless of growth
+        projection_years = 5  # / mega-cap: 5yr max regardless
     elif revenue > 100_000_000_000:
         projection_years = 6 if revenue_growth > 0.15 else 5
     else:
@@ -405,7 +362,6 @@ async def analyze_dcf(
     as_of: date | None = None,
     num_simulations: int = DEFAULT_NUM_SIMULATIONS,
 ) -> DCFResult | None:
-    # / full dcf pipeline: build assumptions from db -> run simulation -> return result
     assumptions = await build_assumptions_from_db(pool, symbol)
     if not assumptions:
         return None
@@ -430,7 +386,6 @@ async def analyze_dcf(
 
 
 async def store_dcf_result(pool, result: DCFResult, regime: str | None = None) -> bool:
-    # / persist dcf result to dcf_valuations table
     try:
         async with pool.acquire() as conn:
             await conn.execute(

@@ -1,5 +1,3 @@
-# / post-mortem writer — triggered on trade close with loss over threshold
-# / narrative from groq/cerebras chain, template fallback on total failure
 
 from __future__ import annotations
 
@@ -51,7 +49,6 @@ def _build_prompt(
     strategy_config: dict[str, Any] | None,
     recent_trades: list[dict[str, Any]] | None,
 ) -> str:
-    # / compose the prompt from serialized context
     parts: list[str] = [
         f"Trade closed at a loss for strategy {strategy_id} on {symbol}.",
         f"Realized PnL: {pnl:.2f}",
@@ -70,7 +67,6 @@ def _build_prompt(
 
     if strategy_config:
         parts.append("\n## Strategy Config")
-        # / surface the moving pieces the LLM can reason about
         for key in (
             "name", "asset_class", "universe", "tier", "sector", "symbol",
             "fundamental_filters", "entry_conditions", "exit_conditions",
@@ -95,13 +91,11 @@ def _build_prompt(
 
 
 async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str | None]:
-    # / reuses the groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b chain
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.info("post_mortem_no_groq_key_using_template", symbol=symbol)
         return None, None
 
-    # / primary provider is weighted by LLM_PROVIDER_SPLIT; cerebras-primary reverses the pairs
     from src.data.llm_client import build_fallback_chain
     attempts: list[tuple[str, str]] = build_fallback_chain(
         groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
@@ -131,7 +125,6 @@ async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str
 def _template_narrative(
     symbol: str, strategy_id: str, pnl: float, trigger_type: str,
 ) -> str:
-    # / minimal template when all llms are unavailable
     return (
         f"Trade on {symbol} by {strategy_id} closed at PnL {pnl:.2f} "
         f"via trigger {trigger_type}. LLM narrative unavailable — "
@@ -149,7 +142,6 @@ def _compose_markdown(
     model_used: str | None,
     trade: dict[str, Any] | None,
 ) -> str:
-    # / build the markdown body for the wiki document
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = [
         f"# Post-Mortem: {strategy_id} on {symbol}",
@@ -186,7 +178,6 @@ def _compose_markdown(
 
 
 def _load_strategy_config(strategy_id: str) -> dict | None:
-    # / read the raw json config off disk to avoid pydantic roundtrip cost
     import re as _re
 
     from src.strategies.strategy_loader import CONFIGS_DIR
@@ -204,7 +195,6 @@ def _load_strategy_config(strategy_id: str) -> dict | None:
 async def _fetch_context(
     pool, trade_id: int | None, strategy_id: str, symbol: str,
 ) -> tuple[dict | None, dict | None, list[dict]]:
-    # / gather the trade row, strategy config, and recent trades
     from src.data.trade_history import fetch_recent_trades
 
     trade_row: dict | None = None
@@ -238,7 +228,6 @@ async def write_post_mortem(
     trigger_type: str,
     deviation_sigma: float | None = None,
 ) -> bool:
-    # / atomic cooldown-and-claim: closes the TOCTOU window a concurrent trade-close could exploit
     if not strategy_id or not symbol:
         logger.info("post_mortem_missing_identifiers",
                     strategy_id=strategy_id, symbol=symbol)
@@ -246,7 +235,6 @@ async def write_post_mortem(
 
     cooldown_hours = int(os.environ.get("POST_MORTEM_COOLDOWN_HOURS", "24"))
 
-    # / fetch context first — cheap, read-only; needed for the initial details payload
     trade_row, strategy_config, recent_trades = await _fetch_context(
         pool, trade_id, strategy_id, symbol,
     )
@@ -258,7 +246,6 @@ async def write_post_mortem(
         "recent_trade_count": len(recent_trades or []),
     }
 
-    # / atomic claim — inserts a row only if no post_mortem exists for this strategy in cooldown window
     try:
         row_id = await claim_post_mortem_slot(
             pool,
@@ -282,7 +269,6 @@ async def write_post_mortem(
         )
         return False
 
-    # / slot is claimed — now do the expensive narrative + wiki write
     prompt = _build_prompt(
         symbol=symbol,
         strategy_id=strategy_id,
@@ -328,7 +314,6 @@ async def write_post_mortem(
         logger.error("post_mortem_wiki_write_failed", error=str(exc))
         wiki_path = None
 
-    # / patch the claimed row with final details + wiki_path
     final_details = dict(initial_details)
     final_details["model_used"] = model_used
     final_details["narrative_bytes"] = len(narrative.encode("utf-8"))

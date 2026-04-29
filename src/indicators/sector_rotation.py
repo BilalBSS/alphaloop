@@ -1,4 +1,3 @@
-# / sector rotation indicators — relative strength vs SPY
 
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ def compute_sector_rotation(
     sector_data: dict[str, pd.DataFrame],
     spy_data: pd.DataFrame,
 ) -> list[SectorStrength]:
-    # / compute relative strength of each sector vs SPY
     results = []
 
     for sector, df in sector_data.items():
@@ -49,7 +47,6 @@ def compute_sector_rotation(
 
 
 def _relative_strength(sector_df: pd.DataFrame, spy_df: pd.DataFrame, period: int) -> float:
-    # / sector return / spy return over period
     if len(sector_df) < period + 1 or len(spy_df) < period + 1:
         return 0.0
     sec_ret = sector_df["close"].iloc[-1] / sector_df["close"].iloc[-period] - 1

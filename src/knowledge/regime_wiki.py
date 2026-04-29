@@ -1,4 +1,3 @@
-# / wiki writer for regime shifts — composes markdown + inserts regime_shifts row
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ def _compose_markdown(
     market: str,
     confidence: float | None,
 ) -> str:
-    # / build the regime shift note for the wiki
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = [
         f"# Regime Shift: {old_regime} -> {new_regime}",
@@ -51,7 +49,6 @@ async def on_regime_shift(
     confidence: float | None = None,
     market: str = "equity",
 ) -> str | None:
-    # / persist a regime-shift markdown + structured row; returns wiki path or none
     if not old_regime or not new_regime or old_regime == new_regime:
         logger.info(
             "regime_shift_skipped_invalid",

@@ -1,6 +1,3 @@
-# / ict/smart money indicators: fair value gaps, order blocks, structure breaks
-# / all take pandas series, return dataclasses
-# / nan-safe: insufficient data returns empty results
 
 from __future__ import annotations
 
@@ -24,14 +21,12 @@ class FairValueGap:
 @dataclass
 class FairValueGapResult:
     gaps: list[FairValueGap]
-    # / per-bar series: 1 = bullish fvg at bar, -1 = bearish, 0 = none
     signal: pd.Series
 
 
 def fair_value_gaps(
     high: pd.Series, low: pd.Series, close: pd.Series,
 ) -> FairValueGapResult:
-    # / 3-candle pattern: gap between candle 1 and candle 3
     n = len(close)
     signal = pd.Series(0, index=close.index, dtype=int)
     gaps: list[FairValueGap] = []
@@ -40,11 +35,9 @@ def fair_value_gaps(
         return FairValueGapResult(gaps=[], signal=signal)
 
     for i in range(2, n):
-        # / bullish fvg: candle 3 low > candle 1 high
         if low.iloc[i] > high.iloc[i - 2]:
             gap_high = low.iloc[i]
             gap_low = high.iloc[i - 2]
-            # / check if filled by any subsequent bar
             filled = False
             for j in range(i + 1, n):
                 if low.iloc[j] <= gap_high:
@@ -56,7 +49,6 @@ def fair_value_gaps(
             ))
             signal.iloc[i - 1] = 1
 
-        # / bearish fvg: candle 3 high < candle 1 low
         elif high.iloc[i] < low.iloc[i - 2]:
             gap_high = low.iloc[i - 2]
             gap_low = high.iloc[i]
@@ -92,7 +84,6 @@ def order_blocks(
     high: pd.Series, low: pd.Series, close: pd.Series,
     open_: pd.Series, atr_period: int = 14, impulse_atr_mult: float = 2.0,
 ) -> OrderBlockResult:
-    # / last opposite candle before a large impulse move (>N*ATR)
     n = len(close)
     signal = pd.Series(0, index=close.index, dtype=int)
     blocks: list[OrderBlock] = []
@@ -109,9 +100,7 @@ def order_blocks(
 
         move = close.iloc[i] - close.iloc[i - 1]
 
-        # / bullish impulse: large up move. order block = last bearish candle before
         if move > threshold:
-            # / find last bearish candle at or before i-1
             for k in range(i - 1, -1, -1):
                 if close.iloc[k] < open_.iloc[k]:
                     blocks.append(OrderBlock(
@@ -121,7 +110,6 @@ def order_blocks(
                     signal.iloc[k] = 1
                     break
 
-        # / bearish impulse: large down move
         elif move < -threshold:
             for k in range(i - 1, -1, -1):
                 if close.iloc[k] > open_.iloc[k]:
@@ -138,8 +126,6 @@ def order_blocks(
 def _find_swing_points(
     high: pd.Series, low: pd.Series, lookback: int = 5,
 ) -> tuple[pd.Series, pd.Series]:
-    # / swing highs: bar where high is highest in lookback window on both sides
-    # / swing lows: bar where low is lowest in lookback window on both sides
     n = len(high)
     swing_high = pd.Series(np.nan, index=high.index, dtype=float)
     swing_low = pd.Series(np.nan, index=low.index, dtype=float)
@@ -159,9 +145,9 @@ def _find_swing_points(
 @dataclass
 class StructureBreak:
     index: int
-    type: str       # "bos" (break of structure) or "choch" (change of character)
+    type: str  # / "bos" (break of structure)
     direction: str  # "bullish" or "bearish"
-    level: float    # the swing level that was broken
+    level: float  # / the swing level that
 
 
 @dataclass
@@ -176,7 +162,6 @@ def structure_breaks(
     high: pd.Series, low: pd.Series, close: pd.Series,
     swing_lookback: int = 5,
 ) -> StructureBreakResult:
-    # / bos = break in trend direction, choch = break against trend
     n = len(close)
     signal = pd.Series(0, index=close.index, dtype=int)
     breaks: list[StructureBreak] = []
@@ -189,10 +174,9 @@ def structure_breaks(
             swing_lows=swing_lows, signal=signal,
         )
 
-    # / track most recent swing high/low and trend
     last_swing_high: float | None = None
     last_swing_low: float | None = None
-    trend = 0  # 1 = bullish, -1 = bearish, 0 = undefined
+    trend = 0  # / 1 = bullish, -1
 
     for i in range(n):
         # / update swing levels
@@ -204,7 +188,6 @@ def structure_breaks(
         if last_swing_high is None or last_swing_low is None:
             continue
 
-        # / bullish break: close above last swing high
         if close.iloc[i] > last_swing_high:
             if trend == 1:
                 break_type = "bos"
@@ -221,7 +204,6 @@ def structure_breaks(
             trend = 1
             last_swing_high = None  # / consumed
 
-        # / bearish break: close below last swing low
         elif close.iloc[i] < last_swing_low:
             if trend == -1:
                 break_type = "bos"

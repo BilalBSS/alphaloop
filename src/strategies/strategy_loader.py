@@ -1,6 +1,3 @@
-# / loads strategy configs from json files, validates, creates strategy objects
-# / evolution engine creates/mutates json files — this just reads them
-# / pydantic validation ensures configs are sane before instantiation
 
 from __future__ import annotations
 
@@ -20,7 +17,6 @@ CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs" / "strategies"
 
 
 class SignalConfig(BaseModel):
-    # / extra=allow so new indicators carry bespoke params
     model_config = {"extra": "allow"}
 
     indicator: str
@@ -30,8 +26,8 @@ class SignalConfig(BaseModel):
     threshold: float | None = None
     std_dev: float | None = None
     multiplier: float | None = None
-    level: float | None = None  # / fibonacci level (0.236, 0.382, etc)
-    timeframe: str | None = None  # / "2h" for intraday, None/"1d" for daily
+    level: float | None = None  # / fibonacci level (0.236, 0.382,
+    timeframe: str | None = None  # / "2h" for intraday, None/"1d"
 
 
 class EntryConditionsConfig(BaseModel):
@@ -61,8 +57,6 @@ class StopLossConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_actionable(self) -> StopLossConfig:
-        # / require_stop_loss from risk_limits.json: every stop_loss must have teeth
-        # / fixed_pct → pct required; atr_trailing / atr_stop → multiplier required
         t = (self.type or "fixed_pct").lower()
         if t in ("fixed_pct", "percent", "pct") and (self.pct is None or self.pct <= 0 or self.pct >= 1.0):
             raise ValueError(
@@ -108,7 +102,7 @@ class PositionSizingConfig(BaseModel):
 
 
 class FundamentalFiltersConfig(BaseModel):
-    strict_data: bool = True  # / reject when data missing vs skip filter
+    strict_data: bool = True  # / reject when data missing
     pe_ratio_max: float | None = None
     pe_vs_sector: str | None = None
     revenue_growth_min: float | None = None
@@ -171,8 +165,6 @@ class StrategyMetadata(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_status(cls, v: str) -> str:
-        # / inactive = strategy failed backtest or was manually retired but not
-        # / evolution-killed; distinct from "killed" so operators can revive it.
         valid = ("backtest_pending", "backtesting", "paper_trading", "live",
                  "killed", "inactive")
         if v not in valid:
@@ -188,8 +180,8 @@ class StrategyConfig(BaseModel):
     parent_id: str | None = None
     description: str = ""
     asset_class: str = "stocks"
-    universe: str  # / universe reference: "all", "all_stocks", "all_crypto", or comma-separated symbols
-    sector: str | None = None   # / sector grouping for hierarchical evolution
+    universe: str  # / universe reference: "all", "all_stocks",
+    sector: str | None = None  # / sector grouping for hierarchical
     symbol: str | None = None   # / single-symbol targeting (tier 2+)
     tier: str = "sector"        # / "sector", "tweaked", "graduated"
     fundamental_filters: FundamentalFiltersConfig | None = None
@@ -198,13 +190,12 @@ class StrategyConfig(BaseModel):
     position_sizing: PositionSizingConfig = PositionSizingConfig()
     metadata: StrategyMetadata = StrategyMetadata()
     bear_market_overrides: BearMarketOverridesConfig | None = None
-    bypass_consensus: bool = False           # / skip ai consensus gate (for pipeline testing)
+    bypass_consensus: bool = False  # / skip ai consensus gate
     signal_threshold_override: float | None = None  # / override SIGNAL_THRESHOLD per-strategy
 
     @field_validator("universe", mode="before")
     @classmethod
     def validate_universe(cls, v: str | list[str]) -> str:
-        # / accept both string refs ("all", "all_stocks") and legacy list format
         if isinstance(v, list):
             if not v:
                 raise ValueError("universe must not be empty")
@@ -238,18 +229,14 @@ class StrategyConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_tier_constraints(self) -> StrategyConfig:
-        # / tier-2 and tier-3 require a symbol
         if self.tier in ("tweaked", "graduated") and not self.symbol:
             raise ValueError(f"tier '{self.tier}' requires a symbol to be set")
-        # / tier-1 (sector) cannot have a symbol
         if self.tier == "sector" and self.symbol:
             raise ValueError("sector-tier strategies cannot target a single symbol")
         return self
 
     @model_validator(mode="after")
     def validate_track_constraints(self) -> StrategyConfig:
-        # / fundamental-gated = at least one filter field is actually set
-        # / empty {} or all-None fields = momentum-only (no free 8% bypass)
         has_fundamentals = (
             self.fundamental_filters is not None
             and any(
@@ -268,7 +255,6 @@ class StrategyConfig(BaseModel):
         if num_signals > 8:
             raise ValueError(f"max 8 entry conditions (overfitting risk), got {num_signals}")
 
-        # / position sizing caps per track
         max_pct = self.position_sizing.max_position_pct
         if has_fundamentals and max_pct > 0.08:
             raise ValueError(f"fundamental-gated max position is 8%, got {max_pct:.0%}")
@@ -279,18 +265,15 @@ class StrategyConfig(BaseModel):
 
 
 def validate_config(raw: dict[str, Any]) -> StrategyConfig:
-    # / validate a raw dict against the strategy config schema
     return StrategyConfig(**raw)
 
 
 def load_config_file(path: Path) -> ConfigDrivenStrategy:
-    # / load and validate a single strategy config file
     with open(path) as f:
         raw = json.load(f)
 
     config = validate_config(raw)
     logger.info("strategy_loaded", id=config.id, name=config.name, path=str(path))
-    # / use validated/normalized dict (e.g. universe list -> string coercion)
     return ConfigDrivenStrategy(config.model_dump())
 
 
@@ -298,7 +281,6 @@ def load_all_configs(
     directory: Path | None = None,
     status_filter: set[str] | None = None,
 ) -> list[ConfigDrivenStrategy]:
-    # / load all strategy configs from a directory
     # / optionally filter by metadata.status
     config_dir = directory or CONFIGS_DIR
     if not config_dir.exists():
@@ -325,9 +307,6 @@ _SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def save_config(config: dict[str, Any], directory: Path | None = None) -> Path:
-    # / save a strategy config to a json file
-    # / used by evolution engine to persist mutations
-    # / validates before writing to prevent persisting invalid configs
     validate_config(config)
 
     config_dir = directory or CONFIGS_DIR

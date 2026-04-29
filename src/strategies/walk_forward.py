@@ -1,4 +1,3 @@
-# / walk-forward testing — rolling train/test windows to detect overfitting
 
 from __future__ import annotations
 
@@ -29,7 +28,6 @@ async def walk_forward_test(
     num_windows: int = 5,
     train_pct: float = 0.7,
 ) -> WalkForwardResult:
-    # / split data into N rolling windows, backtest each OOS period
     result = WalkForwardResult(strategy_id=strategy.strategy_id, num_windows=num_windows)
 
     all_dates = set()

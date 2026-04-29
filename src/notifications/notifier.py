@@ -1,6 +1,3 @@
-# / notification system — discord, slack, telegram webhooks
-# / fire-and-forget via asyncio.create_task, never blocks trading pipeline
-# / throttle: max 1 per event type per 60s, batch errors
 
 from __future__ import annotations
 
@@ -46,10 +43,9 @@ class NotificationEvent:
     title: str
     message: str
     fields: dict[str, str] = field(default_factory=dict)
-    channel: str = "system"  # / discord channel: trades, analysis, strategy, daily, sentiment, system
+    channel: str = "system"  # / discord channel: trades, analysis,
 
 
-# / discord channel routing — each maps to a separate webhook
 DISCORD_CHANNELS = {
     "trades":    "DISCORD_WEBHOOK_TRADES",
     "analysis":  "DISCORD_WEBHOOK_ANALYSIS",
@@ -60,17 +56,14 @@ DISCORD_CHANNELS = {
 }
 
 
-# / throttle state — tracks last send time per event key
 _last_sent: dict[str, float] = {}
 _throttle_seconds: float = 60.0
 
-# / error batch buffer — groups errors by type
 _error_buffer: dict[str, list[str]] = {}
 _error_flush_task: asyncio.Task | None = None
 
 
 def _throttle_key(event: NotificationEvent) -> str:
-    # / trade notifications: key per message so each trade notifies independently
     if event.channel == "trades":
         return f"{event.severity.value}:{event.title}:{event.message}"
     return f"{event.severity.value}:{event.title}"
@@ -87,7 +80,6 @@ def _is_throttled(event: NotificationEvent) -> bool:
 
 
 async def _send_discord(event: NotificationEvent) -> bool:
-    # / route to channel-specific webhook, fall back to default
     env_var = DISCORD_CHANNELS.get(event.channel, "DISCORD_WEBHOOK_SYSTEM")
     url = os.environ.get(env_var) or os.environ.get("DISCORD_WEBHOOK_URL")
     if not url:
@@ -161,7 +153,6 @@ async def _send_telegram(event: NotificationEvent) -> bool:
 
 
 async def _dispatch(event: NotificationEvent) -> dict[str, bool]:
-    # / send to all configured channels
     results = {}
     for name, sender in [("discord", _send_discord), ("slack", _send_slack), ("telegram", _send_telegram)]:
         results[name] = await sender(event)
@@ -184,7 +175,6 @@ async def notify(event: NotificationEvent) -> None:
 
 
 def notify_async(event: NotificationEvent) -> asyncio.Task | None:
-    # / fire-and-forget wrapper — returns task for testing, never awaited in prod
     try:
         loop = asyncio.get_running_loop()
         return loop.create_task(notify(event))
@@ -194,7 +184,6 @@ def notify_async(event: NotificationEvent) -> asyncio.Task | None:
 
 
 async def _flush_error_buffer() -> None:
-    # / batch-send buffered errors every 60s
     global _error_buffer
     while True:
         await asyncio.sleep(60)
@@ -214,13 +203,11 @@ async def _flush_error_buffer() -> None:
 
 
 def buffer_error(error_type: str, message: str) -> None:
-    # / add error to batch buffer instead of sending immediately
     global _error_flush_task
     if error_type not in _error_buffer:
         _error_buffer[error_type] = []
     _error_buffer[error_type].append(message)
 
-    # / start flush loop if not running
     if _error_flush_task is None or _error_flush_task.done():
         try:
             loop = asyncio.get_running_loop()
@@ -229,15 +216,12 @@ def buffer_error(error_type: str, message: str) -> None:
             pass
 
 
-# / convenience helpers for integration points
 
 
 def _truncate(text: str, max_len: int = 200) -> str:
-    # / truncate to max_len, break at last sentence boundary if possible
     if not text or len(text) <= max_len:
         return text or ""
     truncated = text[:max_len]
-    # / try to break at sentence end
     for sep in (". ", "! ", "? "):
         idx = truncated.rfind(sep)
         if idx > max_len // 2:
@@ -246,7 +230,6 @@ def _truncate(text: str, max_len: int = 200) -> str:
 
 
 def _detail_fields(details: dict[str, Any] | None) -> dict[str, str]:
-    # / build embed fields from details dict, skipping None values
     if not details:
         return {}
     fields: dict[str, str] = {}
@@ -318,7 +301,6 @@ def notify_evolution_summary(summary: dict[str, Any]) -> asyncio.Task | None:
     errors = len(summary.get("errors", []))
     scores = summary.get("scores", {})
 
-    # / top and worst performer from scores dict
     top_name = top_sharpe = worst_name = worst_sharpe = None
     if scores:
         sorted_scores = sorted(scores.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)
@@ -402,7 +384,6 @@ def notify_analysis_highlight(
 ) -> asyncio.Task | None:
     color = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡", "disagree": "🔵"}
 
-    # / build description: ai excerpt + score
     excerpt = _truncate(details.get("ai_excerpt", "")) if details else ""
     desc = f'"{excerpt}"\n\n' if excerpt else ""
     desc += f"composite score: {score:.1f}"
@@ -472,7 +453,6 @@ def notify_daily_synthesis(
 
 
 def notify_strategy_evaluation(stats: dict[str, Any]) -> asyncio.Task | None:
-    # / per-cycle strategy evaluation summary to #strategy
     total = stats.get("total", 0)
     no_entry = stats.get("no_entry", 0)
     insufficient = stats.get("insufficient_data", 0)

@@ -1,4 +1,3 @@
-# / pgvector interface for wiki_embeddings — upsert chunks + cosine search
 
 from __future__ import annotations
 
@@ -11,12 +10,10 @@ logger = structlog.get_logger(__name__)
 
 
 def _format_vector(vec: Sequence[float]) -> str:
-    # / pgvector accepts literal strings like '[0.1,0.2,...]'
     return "[" + ",".join(f"{float(v):.8g}" for v in vec) + "]"
 
 
 class VectorStore:
-    # / wraps pgvector ops for wiki_embeddings
 
     def __init__(self, pool):
         self._pool = pool
@@ -27,8 +24,6 @@ class VectorStore:
         chunks: list[str],
         embeddings: list[list[float] | None],
     ) -> int:
-        # / delete old rows for document_id and insert fresh chunks inside a txn
-        # / skips chunks whose embedding is None (failed embed)
         if not chunks:
             return 0
         if len(chunks) != len(embeddings):
@@ -60,7 +55,6 @@ class VectorStore:
         return written
 
     async def delete_by_document(self, document_id: int) -> int:
-        # / remove all chunk rows for a given document
         async with self._pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM wiki_embeddings WHERE document_id = $1",
@@ -80,7 +74,6 @@ class VectorStore:
         top_k: int = 5,
         symbols: list[str] | None = None,
     ) -> list[dict]:
-        # / cosine distance search joined to wiki_documents metadata
         if not query_embedding:
             return []
         vec_literal = _format_vector(query_embedding)

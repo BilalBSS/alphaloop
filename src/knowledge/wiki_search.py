@@ -1,5 +1,3 @@
-# / postgres tsvector-based full-text search over wiki_documents
-# / hybrid search (tsvector + pgvector) lives in src.knowledge.hybrid_retriever
 
 from __future__ import annotations
 
@@ -9,7 +7,6 @@ logger = structlog.get_logger(__name__)
 
 
 class WikiSearch:
-    # / tsvector keyword search — wraps websearch_to_tsquery for flexible queries
 
     def __init__(self, pool):
         self._pool = pool
@@ -21,7 +18,6 @@ class WikiSearch:
         symbols: list[str] | None = None,
         top_k: int = 5,
     ) -> list[dict]:
-        # / returns [{path, category, title, score, snippet}] ranked by ts_rank_cd
         if not query or not query.strip():
             return []
 
@@ -54,7 +50,6 @@ class WikiSearch:
         query: str | None = None,
         top_k: int = 10,
     ) -> list[dict]:
-        # / list recent docs in a category, optionally filtered by query
         if query:
             return await self.search(query, category=category, top_k=top_k)
         sql = """

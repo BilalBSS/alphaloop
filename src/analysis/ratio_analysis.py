@@ -1,6 +1,3 @@
-# / fundamental ratio analysis: score stocks 0-100 based on valuation ratios
-# / reads from fundamentals table, compares vs sector averages
-# / graceful: returns partial scores when some ratios missing
 
 from __future__ import annotations
 
@@ -18,16 +15,15 @@ logger = structlog.get_logger(__name__)
 class RatioScore:
     symbol: str
     date: date
-    pe_score: float | None = None       # 0-100, higher = more undervalued
+    pe_score: float | None = None  # / 0-100, higher = more
     ps_score: float | None = None
     peg_score: float | None = None
     fcf_margin_score: float | None = None
     debt_equity_score: float | None = None
-    composite_score: float | None = None  # weighted average of available scores
+    composite_score: float | None = None  # / weighted average of available
     details: dict[str, Any] = field(default_factory=dict)
 
 
-# / score weights — pe and peg matter most for value assessment
 WEIGHTS = {
     "pe": 0.25,
     "ps": 0.15,
@@ -40,7 +36,6 @@ WEIGHTS = {
 def _ratio_score(
     value: Decimal | None, sector_avg: Decimal | None, abs_max: float, abs_min: float,
 ) -> float | None:
-    # / lower value vs sector = better; negative = 0
     if value is None:
         return None
     val_f = float(value)
@@ -48,10 +43,8 @@ def _ratio_score(
         return 0.0
     if sector_avg is not None and float(sector_avg) > 0:
         ratio = val_f / float(sector_avg)
-        # / ratio < 0.5 = 100, ratio > 2.0 = 0, linear between
         score = max(0.0, min(100.0, (2.0 - ratio) / 1.5 * 100))
     else:
-        # / absolute: val < abs_min = 100, val > abs_max = 0
         score = max(0.0, min(100.0, (abs_max - val_f) / (abs_max - abs_min) * 100))
     return round(score, 1)
 
@@ -65,25 +58,21 @@ def score_ps(ps: Decimal | None, sector_avg: Decimal | None) -> float | None:
 
 
 def score_peg(peg: Decimal | None) -> float | None:
-    # / peg < 1 = undervalued, 1-2 = fair, > 2 = overvalued
     if peg is None:
         return None
     peg_f = float(peg)
     if peg_f <= 0:
-        return 0.0  # negative peg = negative growth = bad
+        return 0.0  # / negative peg = negative
 
-    # / peg 0.5 = 100, peg 3.0 = 0
     score = max(0.0, min(100.0, (3.0 - peg_f) / 2.5 * 100))
     return round(score, 1)
 
 
 def score_fcf_margin(fcf: Decimal | None) -> float | None:
-    # / higher fcf margin = better
     if fcf is None:
         return None
     fcf_f = float(fcf)
 
-    # / fcf_margin >= 0.30 = 100, <= -0.10 = 0
     score = max(0.0, min(100.0, (fcf_f + 0.10) / 0.40 * 100))
     return round(score, 1)
 
@@ -94,14 +83,11 @@ def score_debt_equity(de: Decimal | None) -> float | None:
         return None
     de_f = float(de)
 
-    # / d/e 0 = 100, d/e >= 3.0 = 0
-    # / yfinance returns d/e as a ratio (not percentage) — no normalization needed
     score = max(0.0, min(100.0, (3.0 - de_f) / 3.0 * 100))
     return round(score, 1)
 
 
 def compute_ratio_score(fundamentals: dict[str, Any]) -> RatioScore:
-    # / compute all ratio scores from a fundamentals row
     symbol = fundamentals.get("symbol", "UNKNOWN")
     as_of = fundamentals.get("date", date.today())
 
@@ -119,7 +105,6 @@ def compute_ratio_score(fundamentals: dict[str, Any]) -> RatioScore:
         "debt_equity": de,
     }
 
-    # / weighted composite from available scores
     total_weight = 0.0
     weighted_sum = 0.0
     for key, val in scores.items():
@@ -154,7 +139,6 @@ def compute_ratio_score(fundamentals: dict[str, Any]) -> RatioScore:
 
 
 async def analyze_ratios(pool, symbol: str, as_of: date | None = None) -> RatioScore | None:
-    # / fetch latest fundamentals from db and score them
     as_of = as_of or date.today()
 
     async with pool.acquire() as conn:
@@ -182,7 +166,6 @@ async def analyze_ratios_batch(
     symbols: list[str],
     as_of: date | None = None,
 ) -> list[RatioScore]:
-    # / score all symbols, skip failures
     results = []
     for symbol in symbols:
         try:
