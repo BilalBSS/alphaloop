@@ -51,20 +51,20 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", in
         symbol, timeframe, str(days),
     )
     if not ids_sorted:
-        payload = serializers.serialize(rows)
+        bars_only = serializers.serialize(rows)
         if pool_ready and rows:
-            STATE.intraday_cache.put(cache_key, payload)
-        return payload
+            STATE.intraday_cache.put(cache_key, bars_only)
+        return bars_only
 
     if not rows:
-        payload = {
+        empty: dict = {
             "bars": {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []},
             "indicators": {},
             "meta": {"symbol": symbol, "timeframe": timeframe, "bar_count": 0},
         }
         if pool_ready:
-            STATE.intraday_cache.put(cache_key, payload)
-        return payload
+            STATE.intraday_cache.put(cache_key, empty)
+        return empty
 
     import pandas as pd
 
@@ -76,7 +76,12 @@ async def get_intraday(symbol: str, days: int = 10, timeframe: str = "1Hour", in
     v_list: list[float] = []
     for r in rows:
         ts = r.get("timestamp")
-        t_list.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        if ts is None:
+            t_list.append("")
+        elif hasattr(ts, "isoformat"):
+            t_list.append(ts.isoformat())
+        else:
+            t_list.append(str(ts))
         o_list.append(float(r["open"]) if r.get("open") is not None else float("nan"))
         h_list.append(float(r["high"]) if r.get("high") is not None else float("nan"))
         l_list.append(float(r["low"]) if r.get("low") is not None else float("nan"))
