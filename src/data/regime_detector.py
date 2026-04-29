@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import asyncpg
 import numpy as np
 import structlog
 
@@ -257,7 +258,7 @@ def _median_volatility(prices: np.ndarray, lookback: int, vol_window: int) -> fl
 
 
 async def backfill_regimes(
-    pool,
+    pool: asyncpg.Pool,
     index_symbol: str = "SPY",
     market: str = "equity",
 ) -> int:
@@ -353,7 +354,7 @@ def _sector_market_type(sector: str) -> str:
 
 
 async def _fetch_sector_composite_closes(
-    pool, sector: str, lookback_days: int = 400,
+    pool: asyncpg.Pool, sector: str, lookback_days: int = 400,
 ) -> tuple[list[date], list[float]]:
     # / average close across symbols in a sector -> composite price series
     # / returns (dates, composite_closes) aligned; skips dates where <2 symbols reported
@@ -410,7 +411,7 @@ async def _fetch_sector_composite_closes(
 
 
 async def detect_market_regime(
-    pool, market: str = "equity",
+    pool: asyncpg.Pool, market: str = "equity",
 ) -> tuple[str, float]:
     # / backward-compat: market-wide regime from regime_history
     # / returns (regime, confidence); defaults to ("insufficient_data", 0.0) on miss
@@ -432,7 +433,7 @@ async def detect_market_regime(
 
 
 async def detect_regime_per_sector(
-    pool, force_refresh: bool = False,
+    pool: asyncpg.Pool, force_refresh: bool = False,
 ) -> dict[str, tuple[str, float]]:
     # / compute regime for every sector from composite returns
     # / returns {sector_name: (regime, confidence)}
@@ -500,7 +501,7 @@ async def detect_regime_per_sector(
 
 
 async def detect_regime_for_symbol(
-    symbol: str, pool,
+    symbol: str, pool: asyncpg.Pool,
 ) -> tuple[str, float]:
     # / per-symbol regime: dispatches to the symbol's sector regime
     # / falls back to market-wide when symbol isn't mapped to a sector
@@ -518,7 +519,7 @@ async def detect_regime_for_symbol(
     return await detect_market_regime(pool, market)
 
 
-async def backfill_regimes_per_sector(pool) -> dict[str, int]:
+async def backfill_regimes_per_sector(pool: asyncpg.Pool) -> dict[str, int]:
     # / write today's per-sector regime snapshot to regime_history
     # / one row per sector, keyed on (date, market=sector_name)
     per_sector = await detect_regime_per_sector(pool, force_refresh=True)
@@ -562,7 +563,7 @@ def _clear_sector_regime_cache() -> None:
 
 
 async def snapshot_regime_daily(
-    pool, market: str, current_regime: str | None,
+    pool: asyncpg.Pool, market: str, current_regime: str | None,
     confidence: float | None = None,
 ) -> bool:
     # / ensure a regime_history row exists for today even when

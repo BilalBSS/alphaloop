@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 
+import asyncpg
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -53,7 +54,7 @@ def get_daily_summary() -> dict:
     }
 
 
-async def flush_to_db(pool) -> int:
+async def flush_to_db(pool: asyncpg.Pool) -> int:
     # / write accumulated costs to api_costs table, return rows written
     if not _daily_costs:
         return 0

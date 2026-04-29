@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import asyncpg
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -36,7 +37,7 @@ FRESHNESS_THRESHOLDS = {
 }
 
 
-async def check_all_freshness(pool) -> list[SourceFreshness]:
+async def check_all_freshness(pool: asyncpg.Pool) -> list[SourceFreshness]:
     # / check freshness of all data sources
     results = []
     now = datetime.now(timezone.utc)
