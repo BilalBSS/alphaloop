@@ -81,7 +81,9 @@ class TestComputeSentimentScore:
 
     @pytest.mark.asyncio
     async def test_returns_zero_on_failure(self):
-        with patch("src.data.news_sentiment.fetch_company_news", side_effect=Exception("err")):
+        import httpx
+        with patch("src.data.news_sentiment.fetch_company_news",
+                   side_effect=httpx.HTTPError("err")):
             score = await compute_sentiment_score("AAPL")
             assert score == 0.0
 

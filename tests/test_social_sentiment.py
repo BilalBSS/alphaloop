@@ -358,7 +358,7 @@ class TestFetchVix:
         assert result is None
 
     def test_vix_exception_returns_none(self):
-        with patch("yfinance.Ticker", side_effect=Exception("api down")):
+        with patch("yfinance.Ticker", side_effect=OSError("api down")):
             result = _fetch_vix_sync()
         assert result is None
 

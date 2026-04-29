@@ -44,9 +44,11 @@ class TestSafeGet:
         assert _safe_get(obj, "name", "fallback") == "fallback"
 
     def test_returns_default_on_exception(self):
-        obj = MagicMock()
-        type(obj).name = property(lambda self: (_ for _ in ()).throw(RuntimeError))
-        assert _safe_get(obj, "name", "safe") == "safe"
+        class Flaky:
+            @property
+            def name(self):
+                raise RuntimeError("edgartools quirk")
+        assert _safe_get(Flaky(), "name", "safe") == "safe"
 
     def test_returns_numeric_attribute_value(self):
         obj = MagicMock()

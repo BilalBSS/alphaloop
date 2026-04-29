@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import structlog
 
 from .base import AccountBalance, BrokerInterface, Order, Position
@@ -53,7 +54,7 @@ class PaperBroker(BrokerInterface):
                 )
                 if row and row["close"] is not None:
                     return float(row["close"])
-        except Exception:
+        except (asyncpg.PostgresError, ConnectionError, OSError, RuntimeError):
             logger.debug("paper_broker_db_price_fallback_failed", symbol=symbol)
         return None
 
