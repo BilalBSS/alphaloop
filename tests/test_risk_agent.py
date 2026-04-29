@@ -619,14 +619,11 @@ class TestRiskLimitEnforcement:
 
     @pytest.mark.asyncio
     async def test_risk_limits_loaded_from_file(self):
-        # / RiskAgent loads risk_limits.json when risk_limits kwarg not passed.
-        # / values updated after per-strategy breadth research: raised daily
-        # / trades 20->50, open positions 15->30, cash reserve 10%->20% to
-        # / match the new 30x2.5%=75% deployed capital target.
+        # / loads risk_limits.json defaults
         agent = RiskAgent()
         assert agent._min_cash_reserve_pct == 0.10
         assert agent._max_daily_trades == 50
         assert agent._max_open_positions == 30
-        assert agent._max_daily_trades_per_strategy == 4
-        assert agent._max_positions_per_strategy == 4
-        assert agent._max_exposure_per_strategy_pct == 0.08
+        assert agent._max_daily_trades_per_strategy == 8
+        assert agent._max_positions_per_strategy == 6
+        assert agent._max_exposure_per_strategy_pct == 0.15

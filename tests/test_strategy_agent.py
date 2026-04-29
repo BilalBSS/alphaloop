@@ -461,7 +461,7 @@ class TestEvalStats:
             )),
             patch("src.agents.strategy_agent.fetch_analysis_score",
                   new_callable=AsyncMock, return_value=None),
-            patch.object(self.agent, "_smooth_signal", return_value=0.10),
+            patch.object(self.agent, "_smooth_signal", return_value=0.05),
         ):
             result = await self.agent._evaluate_symbol(pool, strat, "MSFT", stats)
 
@@ -730,7 +730,7 @@ class TestClassifySymbolTrend:
 
 class TestSoftenedConsensusConstants:
     def test_signal_threshold(self):
-        assert SIGNAL_THRESHOLD == 0.15
+        assert SIGNAL_THRESHOLD == 0.10
 
 
 # ---------------------------------------------------------------------------
