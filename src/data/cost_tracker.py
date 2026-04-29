@@ -1,4 +1,3 @@
-# / track api and llm costs per provider per day
 
 from __future__ import annotations
 
@@ -11,7 +10,6 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-# / cost per million tokens (input, output) — free providers = 0
 _COST_RATES: dict[str, tuple[float, float]] = {
     "groq": (0.0, 0.0),
     "cerebras": (0.0, 0.0),
@@ -20,14 +18,12 @@ _COST_RATES: dict[str, tuple[float, float]] = {
     "ollama-nomic-embed-text": (0.0, 0.0),
 }
 
-# / in-memory accumulator: {(date, source): {call_count, tokens_in, tokens_out, cost}}
 _daily_costs: dict[tuple[date, str], dict] = defaultdict(lambda: {
     "call_count": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
 })
 
 
 def track_llm_cost(provider: str, model: str, tokens_in: int, tokens_out: int) -> None:
-    # / accumulate cost for one llm call
     key = (date.today(), provider)
     entry = _daily_costs[key]
     entry["call_count"] += 1
@@ -39,13 +35,11 @@ def track_llm_cost(provider: str, model: str, tokens_in: int, tokens_out: int) -
 
 
 def track_api_call(source: str) -> None:
-    # / increment call counter for a data source
     key = (date.today(), source)
     _daily_costs[key]["call_count"] += 1
 
 
 def get_daily_summary() -> dict:
-    # / return current day's cost summary
     today = date.today()
     return {
         source: dict(stats)
@@ -55,7 +49,6 @@ def get_daily_summary() -> dict:
 
 
 async def flush_to_db(pool: asyncpg.Pool) -> int:
-    # / write accumulated costs to api_costs table, return rows written
     if not _daily_costs:
         return 0
     written = 0

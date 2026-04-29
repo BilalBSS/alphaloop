@@ -1,5 +1,3 @@
-# / shared llm http clients for groq and deepseek
-# / lazy-initialized, long-lived clients with connection pooling
 
 from __future__ import annotations
 
@@ -30,19 +28,14 @@ _PROVIDER_CONFIG = {
     },
 }
 
-# / module-level clients, one per provider
 _clients: dict[str, httpx.AsyncClient] = {}
 
-# / providers that can be primary in the 4-tier fallback chain
 _FALLBACK_PROVIDERS = ("groq", "cerebras")
 
-# / default split: 90% groq, 10% cerebras to keep the fallback path warm
 _DEFAULT_PROVIDER_SPLIT = "groq:0.9,cerebras:0.1"
 
 
 def _parse_provider_split(raw: str | None) -> list[tuple[str, float]]:
-    # / parse "groq:0.9,cerebras:0.1" into normalized (provider, weight) pairs
-    # / empty/invalid input falls back to pure groq (no routing change)
     if not raw or not raw.strip():
         return [("groq", 1.0)]
 
@@ -78,18 +71,15 @@ def _parse_provider_split(raw: str | None) -> list[tuple[str, float]]:
         logger.warning("llm_provider_split_zero_total_using_default", raw=raw)
         return [("groq", 1.0)]
 
-    # / normalize so weights sum to 1.0
     return [(name, w / total) for name, w in pairs]
 
 
-# / parse once at module load — re-reading env on every call is wasteful
 _PROVIDER_SPLIT: list[tuple[str, float]] = _parse_provider_split(
     os.environ.get("LLM_PROVIDER_SPLIT", _DEFAULT_PROVIDER_SPLIT),
 )
 
 
 def reload_provider_split() -> list[tuple[str, float]]:
-    # / re-read LLM_PROVIDER_SPLIT from env; useful for tests and runtime config reload
     global _PROVIDER_SPLIT
     _PROVIDER_SPLIT = _parse_provider_split(
         os.environ.get("LLM_PROVIDER_SPLIT", _DEFAULT_PROVIDER_SPLIT),
@@ -98,13 +88,11 @@ def reload_provider_split() -> list[tuple[str, float]]:
 
 
 def _pick_primary_provider() -> str:
-    # / weighted random pick of the 4-tier chain's primary provider
     names = [n for n, _ in _PROVIDER_SPLIT]
     weights = [w for _, w in _PROVIDER_SPLIT]
     if len(names) == 1:
         return names[0]
     pick = random.choices(names, weights=weights, k=1)[0]
-    # / log with the raw roll so we can verify distribution in production
     roll = random.random()
     logger.info("llm_primary_picked", provider=pick, roll=round(roll, 4))
     return pick
@@ -116,9 +104,6 @@ def build_fallback_chain(
     groq_slow: str,
     cerebras_slow: str,
 ) -> list[tuple[str, str]]:
-    # / return the ordered (provider, model) attempts list with primary chosen by weighted roll
-    # / groq-primary: groq 70b -> cerebras 70b -> groq 120b -> cerebras 120b
-    # / cerebras-primary: cerebras 70b -> groq 70b -> cerebras 120b -> groq 120b
     primary = _pick_primary_provider()
     if primary == "cerebras":
         return [
@@ -136,7 +121,6 @@ def build_fallback_chain(
 
 
 async def get_llm_client(provider: str) -> httpx.AsyncClient:
-    # / lazy-init shared client per provider
     if provider not in _PROVIDER_CONFIG:
         raise ValueError(f"unknown llm provider: {provider}")
 
@@ -149,7 +133,6 @@ async def get_llm_client(provider: str) -> httpx.AsyncClient:
 
 
 async def close_llm_clients() -> None:
-    # / call on shutdown to cleanly close all llm clients
     for client in list(_clients.values()):
         if client is not None and not client.is_closed:
             await client.aclose()
@@ -163,8 +146,6 @@ async def llm_call(
     timeout: float | None = None,
     **kwargs: Any,
 ) -> dict:
-    # / unified llm api call -- supports "groq" and "deepseek"
-    # / returns parsed json response or raises
     cfg = _PROVIDER_CONFIG.get(provider)
     if cfg is None:
         raise ValueError(f"unknown llm provider: {provider}")
@@ -191,7 +172,6 @@ async def llm_call(
     resp.raise_for_status()
     data = resp.json()
 
-    # / track cost from usage field
     try:
         from .cost_tracker import track_llm_cost
         usage = data.get("usage", {})

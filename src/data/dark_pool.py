@@ -1,5 +1,3 @@
-# / dark pool: finra ats transparency weekly summary
-# / computes dark_pool_ratio = ats_volume / total_consolidated_volume
 
 from __future__ import annotations
 
@@ -19,8 +17,6 @@ configure_rate_limit("finra_ats", max_concurrent=2, delay=1.5)
 
 @with_retry(source="finra_ats", max_retries=2, base_delay=2.0)
 async def fetch_dark_pool_data(symbol: str, pool: Any | None = None) -> dict[str, Any] | None:
-    # / fetch weekly ats volume from finra; if pool given, compute dark_pool_ratio
-    # / against consolidated market_data volume for the same iso week
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",

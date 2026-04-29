@@ -1,4 +1,3 @@
-# / alpaca iex websocket — protocol only
 # / reconnect/watchdog handled by StreamBase
 
 from __future__ import annotations
@@ -24,15 +23,11 @@ ALPACA_WS_URL = os.getenv(
 
 
 def _parse_ts(s: str | None) -> int:
-    # / alpaca ts is rfc3339 nanosecond precision; python datetime handles to micros.
-    # / fallback: now() — better than dropping the tick.
     if not s:
         return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     try:
-        # / trim to microseconds if nanosecond suffix is present
         if "." in s and len(s) > 26:
             head, tail = s.split(".", 1)
-            # / keep up to 6 digits of fractional seconds
             tz_idx = max(tail.find("Z"), tail.find("+"), tail.find("-"))
             if tz_idx == -1:
                 frac, tz_suffix = tail, ""
@@ -48,9 +43,6 @@ def _parse_ts(s: str | None) -> int:
 
 
 class AlpacaStream(StreamBase):
-    # / subscribes to trades (primary price) + quotes (fallback when no trade
-    # / activity). each frame becomes a Tick via _emit. subclass contract: return
-    # / cleanly from _connect_and_consume on disconnect so base class reconnects.
 
     @property
     def name(self) -> str:
@@ -64,7 +56,6 @@ class AlpacaStream(StreamBase):
     async def _connect_and_consume(self) -> None:
         if not self._api_key or not self._api_secret:
             logger.warning("alpaca_ws_no_credentials")
-            # / sleep a little so base-class doesn't hot-loop when creds missing
             await asyncio.sleep(30.0)
             return
         if not self.symbols:
@@ -93,10 +84,6 @@ class AlpacaStream(StreamBase):
             if not self._is_auth_ack(auth_msg):
                 raise RuntimeError(f"alpaca_auth_failed: {str(auth_msg)[:200]}")
 
-            # / 3. subscribe. free iex tier counts trades + quotes + bars as separate
-            # / subscriptions against the 30-symbol cap, so subscribing to both means
-            # / 30 symbols uses 60 slots and 405s. trades-only keeps us under the cap
-            # / and is more actionable than mid-price quotes anyway.
             sub_req: dict[str, Any] = {"action": "subscribe", "trades": self.symbols}
             if os.getenv("ALPACA_STREAM_QUOTES", "false").lower() in ("true", "1", "yes"):
                 sub_req["quotes"] = self.symbols
@@ -104,14 +91,12 @@ class AlpacaStream(StreamBase):
             sub_resp = await asyncio.wait_for(ws.recv(), timeout=10.0)
             logger.info("alpaca_ws_subscribed", response=str(sub_resp)[:200])
 
-            # / 4. mark healthy and enter read loop
             self._mark_connected()
 
             while not self._stop.is_set():
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=60.0)
                 except asyncio.TimeoutError:
-                    # / idle 60s with no frames — let watchdog / run-loop decide
                     continue
                 except ConnectionClosed:
                     logger.info("alpaca_ws_closed")
@@ -144,7 +129,7 @@ class AlpacaStream(StreamBase):
                 timestamp_ms=ts,
                 vendor=self.name,
             ))
-        elif t == "q":  # / quote — mid-price as tick when no trade activity
+        elif t == "q":  # / quote — mid-price as
             sym = f.get("S")
             bp = f.get("bp")
             ap = f.get("ap")
@@ -164,7 +149,6 @@ class AlpacaStream(StreamBase):
             ))
         elif t == "error":
             logger.warning("alpaca_ws_error_frame", frame=str(f)[:200])
-        # / subscription/success frames are ignored after setup
 
     @staticmethod
     def _is_connected_ack(msg: Any) -> bool:

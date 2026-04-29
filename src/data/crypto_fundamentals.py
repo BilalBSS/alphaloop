@@ -1,6 +1,3 @@
-# / aggregate crypto fundamentals (nvt, funding, tvl, active addrs,
-# / exchange flows, hash rate, dex volume, stablecoin supply ratio). every source
-# / is best-effort — one failure returns null for that field only, never 500s the
 # / whole response.
 
 from __future__ import annotations
@@ -26,7 +23,6 @@ from src.data.crypto_onchain import (
 
 logger = structlog.get_logger(__name__)
 
-# / symbol -> defillama chain slug for tvl + dex_volume lookups
 _DEFILLAMA_CHAIN = {
     "ETH": "ethereum",
     "SOL": "solana",
@@ -39,20 +35,14 @@ _DEFILLAMA_CHAIN = {
 
 
 def _base_symbol(symbol: str) -> str:
-    # / "BTC-USD" -> "BTC"; preserves case for passthrough tokens
     return symbol.upper().replace("-USD", "").replace("/USD", "")
 
 
 def _hash_rate_from_coingecko(coin_data: dict[str, Any] | None) -> float | None:
-    # / coingecko doesn't expose hash_rate directly in the coins endpoint we fetch,
-    # / and a standalone hash-rate api isn't part of the free tier. leave null so
-    # / the widget renders "—" for symbols without a feed.
     return None
 
 
 def _extract_nvt(coin_data: dict[str, Any] | None) -> float | None:
-    # / nvt = market_cap / total_volume. a rough proxy when a dedicated nvt feed
-    # / isn't configured. returns null for missing / zero volume.
     if not coin_data:
         return None
     mcap = coin_data.get("market_cap")
@@ -68,24 +58,20 @@ def _extract_nvt(coin_data: dict[str, Any] | None) -> float | None:
 
 
 def _extract_tvl(tvl_data: Any, sym: str) -> float | None:
-    # / pull the chain-level tvl for the symbol if defillama returns a chain slug
     chain_slug = _DEFILLAMA_CHAIN.get(sym)
     if not chain_slug or not tvl_data:
         return None
     try:
-        # / /protocols returns a list; /protocol/<slug> returns a dict with "tvl"
         if isinstance(tvl_data, dict):
             tvl_val = tvl_data.get("tvl")
             if isinstance(tvl_val, (int, float)):
                 return float(tvl_val)
-            # / /protocol/<slug> sometimes nests chain tvl under chains.<chain>
             chains = tvl_data.get("chainTvls") or tvl_data.get("chains")
             if isinstance(chains, dict):
                 val = chains.get(chain_slug) or chains.get(chain_slug.capitalize())
                 if isinstance(val, (int, float)):
                     return float(val)
         if isinstance(tvl_data, list):
-            # / sum tvl across protocols whose chain matches
             total = 0.0
             matched = False
             for p in tvl_data:
@@ -104,12 +90,9 @@ def _extract_tvl(tvl_data: Any, sym: str) -> float | None:
 
 
 def _extract_dex_volume(dex_data: Any, sym: str) -> float | None:
-    # / defillama /overview/dexs returns totalVolume + per-chain breakdown. we
-    # / prefer the chain-filtered response when possible.
     if not dex_data or not isinstance(dex_data, dict):
         return None
     try:
-        # / when fetched with chain=<slug>, totalVolume reflects that chain only
         val = dex_data.get("total24h") or dex_data.get("totalVolume")
         if isinstance(val, (int, float)):
             return round(float(val), 2)
@@ -119,10 +102,6 @@ def _extract_dex_volume(dex_data: Any, sym: str) -> float | None:
 
 
 def _extract_stablecoin_ratio(supply_data: Any) -> float | None:
-    # / ratio = sum(stablecoin market cap) / sum(non-stable crypto market cap).
-    # / defillama /stablecoins gives total stable supply; we approximate the
-    # / ratio as sum of peggedAssets circulating / 2e12 (total crypto mcap proxy).
-    # / if the data doesn't have enough shape, return null.
     if not supply_data or not isinstance(supply_data, dict):
         return None
     try:
@@ -140,8 +119,6 @@ def _extract_stablecoin_ratio(supply_data: Any) -> float | None:
                     total_stable += float(v)
         if total_stable <= 0:
             return None
-        # / crude ratio vs a static 2.5t crypto mcap baseline so the widget can
-        # / show a plausible percentage. actual ssr definitions vary by vendor.
         baseline = 2.5e12
         return round(total_stable / baseline, 6)
     except Exception as exc:
@@ -150,7 +127,6 @@ def _extract_stablecoin_ratio(supply_data: Any) -> float | None:
 
 
 def _extract_active_addresses(rows: list[dict[str, Any]] | None, sym: str) -> int | None:
-    # / dune active-addresses query returns rows like {date, chain, active_addresses}
     if not rows:
         return None
     try:
@@ -164,7 +140,6 @@ def _extract_active_addresses(rows: list[dict[str, Any]] | None, sym: str) -> in
 
 
 def _extract_exchange_inflow(rows: list[dict[str, Any]] | None, sym: str) -> float | None:
-    # / dune exchange-flows query returns rows like {date, token, inflow_usd, outflow_usd}
     if not rows:
         return None
     try:
@@ -181,8 +156,6 @@ def _extract_exchange_inflow(rows: list[dict[str, Any]] | None, sym: str) -> flo
 
 
 async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
-    # / best-effort live fetch across all configured crypto data sources.
-    # / every source is wrapped in its own try — one 500 doesn't kill the response.
     sym = _base_symbol(symbol)
     out: dict[str, Any] = {
         "nvt_ratio": None,
@@ -196,14 +169,12 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
     }
     sources: list[str] = []
 
-    # / coingecko coin data -> nvt proxy (mcap/volume)
     try:
         coin = await fetch_coin_data(symbol)
         nvt = _extract_nvt(coin)
         if nvt is not None:
             out["nvt_ratio"] = nvt
             sources.append("coingecko")
-        # / hash_rate placeholder — only BTC is meaningful; left null until a feed lands
         if sym == "BTC":
             hr = _hash_rate_from_coingecko(coin)
             if hr is not None:
@@ -211,12 +182,10 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("crypto_fundamentals_coingecko_failed", symbol=symbol, error=str(exc)[:120])
 
-    # / loris funding rates (free, no key)
     try:
         fr_data = await fetch_funding_rates()
         fr = get_funding_rate(fr_data, symbol) if fr_data else None
         if fr and fr.get("funding_rate") is not None:
-            # / convert to annualized % (8h funding * 3 * 365 ~ 1095)
             annualized = float(fr["funding_rate"]) * 1095
             out["funding_rate"] = round(annualized, 6)
             if "loris" not in sources:
@@ -224,7 +193,6 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("crypto_fundamentals_funding_failed", symbol=symbol, error=str(exc)[:120])
 
-    # / defillama tvl + dex volume (no key)
     chain_slug = _DEFILLAMA_CHAIN.get(sym)
     if chain_slug:
         try:
@@ -256,7 +224,6 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("crypto_fundamentals_stablecoin_failed", symbol=symbol, error=str(exc)[:120])
 
-    # / dune — active addresses + exchange flows. silently skip if DUNE_API_KEY is absent
     if os.environ.get("DUNE_API_KEY"):
         try:
             rows = await fetch_active_addresses(chain=chain_slug or sym.lower())
@@ -284,7 +251,6 @@ async def fetch_live_fundamentals(symbol: str) -> dict[str, Any]:
 
 
 async def load_cached_fundamentals(pool, symbol: str) -> dict[str, Any] | None:
-    # / return the most recent cached row for a symbol, or None if absent / stale (>36h).
     if pool is None:
         return None
     try:
@@ -302,7 +268,6 @@ async def load_cached_fundamentals(pool, symbol: str) -> dict[str, Any] | None:
     except Exception as exc:
         msg = str(exc).lower()
         if "does not exist" in msg or "undefined" in msg:
-            # / migration not yet applied — bubble up as "no cache" silently
             return None
         logger.warning("crypto_fundamentals_cache_read_failed", symbol=symbol, error=str(exc)[:120])
         return None
@@ -312,7 +277,6 @@ async def load_cached_fundamentals(pool, symbol: str) -> dict[str, Any] | None:
 
 
 async def upsert_fundamentals(pool, symbol: str, data: dict[str, Any]) -> None:
-    # / write the aggregate into crypto_fundamentals; caller handles fetcher errors
     if pool is None:
         return
     sym = symbol.upper()
@@ -347,12 +311,9 @@ async def upsert_fundamentals(pool, symbol: str, data: dict[str, Any]) -> None:
 
 
 async def get_fundamentals(pool, symbol: str) -> dict[str, Any]:
-    # / primary entry point for the endpoint: cache-first, fall back to live fetch.
-    # / always returns the full shape (nulls where a source failed).
     sym = symbol.upper()
     cached = await load_cached_fundamentals(pool, sym)
     if cached:
-        # / normalize types: decimal -> float, date -> iso, jsonb sources -> list
         sources_raw = cached.get("sources")
         if isinstance(sources_raw, str):
             try:
@@ -374,7 +335,6 @@ async def get_fundamentals(pool, symbol: str) -> dict[str, Any]:
             "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else (updated or datetime.now(timezone.utc).isoformat()),
         }
 
-    # / no cache — fetch live and opportunistically persist
     data = await fetch_live_fundamentals(sym)
     try:
         await upsert_fundamentals(pool, sym, data)

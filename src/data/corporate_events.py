@@ -1,5 +1,3 @@
-# / corporate events: earnings calendar, dividends, days to earnings
-# / finnhub calendar + yfinance as fallback
 
 from __future__ import annotations
 
@@ -40,7 +38,6 @@ async def fetch_earnings_calendar(symbol: str) -> dict[str, Any] | None:
     events = data.get("earningsCalendar", [])
     if not events:
         return None
-    # / return the nearest upcoming earnings
     nearest = events[0]
     return {
         "symbol": symbol,
@@ -78,7 +75,6 @@ async def fetch_dividends(symbol: str) -> list[dict[str, Any]]:
 
 
 def _fetch_yf_calendar_sync(symbol: str) -> dict[str, Any] | None:
-    # / yfinance fallback for earnings date
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -95,7 +91,6 @@ def _fetch_yf_calendar_sync(symbol: str) -> dict[str, Any] | None:
 
 
 async def days_to_earnings(symbol: str) -> int | None:
-    # / try finnhub first, fallback to yfinance
     try:
         cal = await fetch_earnings_calendar(symbol)
         if cal and cal.get("date"):

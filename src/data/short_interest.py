@@ -1,5 +1,3 @@
-# / short interest: yfinance (free) + finnhub + finra regsho fallbacks
-# / computes short_pct = short_volume / total_volume
 
 from __future__ import annotations
 
@@ -27,7 +25,6 @@ def _finnhub_headers() -> dict[str, str]:
 
 
 async def _fetch_short_yfinance(symbol: str) -> dict[str, Any] | None:
-    # / yfinance short percent of float (free, no auth)
     def _fetch():
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -70,7 +67,6 @@ async def _fetch_short_finnhub(symbol: str) -> dict[str, Any] | None:
 
 
 async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
-    # / primary: yfinance (free, no auth)
     try:
         result = await _fetch_short_yfinance(symbol)
         if result:
@@ -90,7 +86,6 @@ async def fetch_short_interest(symbol: str) -> dict[str, Any] | None:
 
 @with_retry(source="finra", max_retries=2, base_delay=2.0)
 async def fetch_finra_short_volume(symbol: str, target_date: date | None = None) -> dict[str, Any] | None:
-    # / fallback: finra regsho daily short volume report
     d = target_date or date.today()
     url = f"{FINRA_BASE}/CNMSshvol{d.strftime('%Y%m%d')}.txt"
     try:

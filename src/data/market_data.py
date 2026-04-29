@@ -1,5 +1,3 @@
-# / alpaca ohlcv via shared alpaca client + yfinance fallback for historical
-# / graceful degradation: warns on failure, returns what it can
 
 from __future__ import annotations
 
@@ -21,7 +19,6 @@ from .validators import validate_ohlcv
 
 logger = structlog.get_logger(__name__)
 
-# / rate limit: 200 req/min for alpaca free tier
 _rate_semaphore = asyncio.Semaphore(10)  # concurrency cap
 _rate_delay = 0.3  # seconds between requests
 
@@ -31,8 +28,6 @@ def _alpaca_headers() -> dict[str, str]:
 
 
 def _default_equity_feed() -> str | None:
-    # / paper base urls include "paper-api.alpaca.markets"; force iex for those.
-    # / returning None means no feed param (caller chooses via ALPACA_DATA_FEED env).
     base = os.environ.get("ALPACA_BASE_URL", "").lower()
     if "paper" in base:
         return "iex"
@@ -40,7 +35,6 @@ def _default_equity_feed() -> str | None:
 
 
 def _should_skip_alpaca_equity() -> bool:
-    # / escape hatch for debugging: SKIP_ALPACA_EQUITY_BARS=true → straight to yfinance
     return os.environ.get("SKIP_ALPACA_EQUITY_BARS", "").lower() in ("1", "true", "yes")
 
 
@@ -51,7 +45,6 @@ async def fetch_bars_alpaca(
     end: date,
     timeframe: str = "1Day",
 ) -> list[dict[str, Any]]:
-    # / fetch ohlcv bars from alpaca rest api
     alpaca_sym = to_alpaca(symbol)
     crypto = is_crypto(symbol)
 
@@ -73,8 +66,6 @@ async def fetch_bars_alpaca(
             "limit": 10000,
             "adjustment": "all",
         }
-        # / paper accounts only have iex feed access — requesting sip returns 403.
-        # / override via ALPACA_DATA_FEED for live-tier accounts with sip entitlement.
         feed = os.environ.get("ALPACA_DATA_FEED") or _default_equity_feed()
         if feed:
             params["feed"] = feed
@@ -116,7 +107,6 @@ async def fetch_bars_yfinance(
     start: date,
     end: date,
 ) -> list[dict[str, Any]]:
-    # / fallback: yfinance for historical ohlcv (sync, run in thread)
     try:
         import yfinance as yf
     except ImportError:
@@ -163,7 +153,6 @@ async def fetch_bars(
     start: date,
     end: date,
 ) -> list[dict[str, Any]]:
-    # / try alpaca first, fall back to yfinance
     if not is_crypto(symbol) and _should_skip_alpaca_equity():
         logger.info("alpaca_equity_skipped", symbol=symbol, reason="SKIP_ALPACA_EQUITY_BARS")
         return await fetch_bars_yfinance(symbol, start, end)
@@ -174,8 +163,6 @@ async def fetch_bars(
         logger.warning("alpaca_returned_empty", symbol=symbol)
     except Exception as exc:
         msg = str(exc)
-        # / paper keys return 403 on sip; we already force feed=iex, but log the downgrade
-        # / so System tab's last_error makes the root cause visible to the user.
         if "403" in msg:
             logger.warning("alpaca_feed_downgrade", symbol=symbol, error=msg[:120])
         else:
@@ -188,7 +175,6 @@ async def fetch_bars(
 
 @with_retry(source="alpaca_quote", max_retries=2, base_delay=0.5)
 async def fetch_latest_quote(symbol: str) -> dict[str, Any] | None:
-    # / get latest quote/trade for a symbol
     alpaca_sym = to_alpaca(symbol)
     crypto = is_crypto(symbol)
 
@@ -220,7 +206,6 @@ async def fetch_latest_quote(symbol: str) -> dict[str, Any] | None:
 
 
 async def store_bars(pool, bars: list[dict[str, Any]]) -> int:
-    # / validate and insert bars, skip invalid, handle duplicates
     if not bars:
         return 0
 
@@ -280,7 +265,6 @@ async def store_bars(pool, bars: list[dict[str, Any]]) -> int:
 
 
 async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str = "1Hour") -> int:
-    # / validate and insert intraday bars, handle duplicates via upsert
     if not bars:
         return 0
 
@@ -323,10 +307,6 @@ async def store_intraday_bars(pool, bars: list[dict[str, Any]], timeframe: str =
 
 
 async def fetch_bars_yfinance_1h(symbol: str, start: date, end: date) -> list[dict[str, Any]]:
-    # / yfinance 1h bars — free, 730 day lookback
-    # / yfinance returns multiindex columns like ('Open', 'AAPL') even for single
-    # / ticker, so float(row["Open"]) raised valueerror and swallowed every equity intraday
-    # / fetch. flatten columns to top level before iterating.
     def _fetch():
         import yfinance as yf
         earliest = date.today() - timedelta(days=729)
@@ -376,8 +356,6 @@ async def backfill_intraday(
     days: int = 30,
     timeframe: str = "1Hour",
 ) -> dict[str, int]:
-    # / backfill intraday bars, incremental from last stored timestamp
-    # / end = tomorrow so alpaca returns today's intraday bars (end is exclusive)
     today = date.today()
     end = today + timedelta(days=1)
     start = today - timedelta(days=days)
@@ -385,7 +363,6 @@ async def backfill_intraday(
 
     for symbol in symbols:
         try:
-            # / check last stored timestamp for incremental fetch
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     """SELECT MAX(timestamp) as max_ts FROM market_data_intraday
@@ -393,7 +370,6 @@ async def backfill_intraday(
                     symbol, timeframe,
                 )
                 if row and row["max_ts"]:
-                    # / for intraday, re-fetch from last bar's date to get newer bars
                     fetch_start = row["max_ts"].date()
                 else:
                     fetch_start = start
@@ -423,9 +399,6 @@ async def aggregate_intraday_to_2h(
     symbols: list[str],
     days: int = 10,
 ) -> dict[str, int]:
-    # / build 2Hour bars from stored 1Hour bars via sql window aggregation
-    # / bucket every pair of consecutive 1h bars into the lower one's even-hour timestamp
-    # / idempotent upsert into market_data_intraday with timeframe='2Hour'
     if not symbols:
         return {}
     results: dict[str, int] = {}
@@ -490,21 +463,18 @@ async def backfill(
     symbols: list[str],
     years: int = 5,
 ) -> dict[str, int]:
-    # / backfill historical data for all symbols, returns counts per symbol
     end = date.today()
     start = end - timedelta(days=years * 365)
 
     results: dict[str, int] = {}
     for symbol in symbols:
         try:
-            # / check what we already have
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT MAX(date) as max_date FROM market_data WHERE symbol = $1",
                     symbol,
                 )
                 if row and row["max_date"]:
-                    # / incremental: only fetch from last date + 1
                     existing_max = row["max_date"]
                     fetch_start = existing_max + timedelta(days=1)
                     if fetch_start >= end:
@@ -522,13 +492,11 @@ async def backfill(
         except Exception as exc:
             logger.warning("backfill_failed", symbol=symbol, error=str(exc))
             results[symbol] = 0
-            # / graceful: continue with next symbol
 
     return results
 
 
 async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
-    # / batch fetch current prices via yfinance fast_info
     import asyncio
     prices: dict[str, float] = {}
 
@@ -552,7 +520,6 @@ async def fetch_latest_prices(symbols: list[str]) -> dict[str, float]:
 
 
 async def store_latest_prices(pool, prices: dict[str, float]) -> int:
-    # / upsert into latest_prices (one row per symbol) — NOT market_data_intraday
     if not prices:
         return 0
     async with pool.acquire() as conn:
@@ -570,7 +537,6 @@ async def store_latest_prices(pool, prices: dict[str, float]) -> int:
 
 
 def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any] | None:
-    # / normalize alpaca bar response to our format
     timestamp = bar.get("t", "")
     if isinstance(timestamp, str) and "T" in timestamp:
         bar_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -582,7 +548,7 @@ def _parse_bar(symbol: str, bar: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "symbol": symbol,
         "date": bar_date,
-        "timestamp": bar_dt,  # / full datetime for intraday storage
+        "timestamp": bar_dt,  # / full datetime for intraday
         "open": Decimal(str(bar["o"])),
         "high": Decimal(str(bar["h"])),
         "low": Decimal(str(bar["l"])),

@@ -1,6 +1,3 @@
-# / news sentiment: finnhub company news + groq llm scoring
-# / groq scores headlines for free, keyword scoring as fallback
-# / stores to existing news_sentiment table
 
 from __future__ import annotations
 
@@ -19,7 +16,6 @@ FINNHUB_BASE = "https://finnhub.io/api/v1"
 
 configure_rate_limit("finnhub", max_concurrent=5, delay=0.5)
 
-# / keyword scoring fallback when groq is unavailable
 _POSITIVE_KEYWORDS = {
     "beat", "exceed", "record", "growth", "upgrade", "buy",
     "outperform", "bullish", "strong", "surge", "rally", "profit",
@@ -33,7 +29,6 @@ _NEGATIVE_KEYWORDS = {
 
 
 def _keyword_score(text: str) -> float:
-    # / simple keyword-based sentiment: +1 to -1
     text_lower = text.lower()
     pos = sum(1 for kw in _POSITIVE_KEYWORDS if kw in text_lower)
     neg = sum(1 for kw in _NEGATIVE_KEYWORDS if kw in text_lower)
@@ -44,7 +39,6 @@ def _keyword_score(text: str) -> float:
 
 
 async def _groq_score_headlines(headlines: list[str]) -> float | None:
-    # / use groq llm to score a batch of headlines, returns -1.0 to 1.0
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key or not headlines:
         return None
@@ -62,13 +56,12 @@ async def _groq_score_headlines(headlines: list[str]) -> float | None:
         data = await llm_call(
             "groq",
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",  # / 70b for headline scoring — same as analyst primary
+            model="llama-3.3-70b-versatile",  # / 70b for headline scoring
             max_tokens=10,
             temperature=0.1,
             timeout=10.0,
         )
         text = data["choices"][0]["message"]["content"].strip()
-        # / extract first number from response in case llm adds words
         match = re.search(r"-?\d+\.?\d*", text)
         if not match:
             return None
@@ -88,7 +81,6 @@ def _finnhub_headers() -> dict[str, str]:
 async def fetch_company_news(
     symbol: str, days: int = 7,
 ) -> list[dict[str, Any]]:
-    # / fetch recent news from finnhub
     if not os.environ.get("FINNHUB_API_KEY"):
         return []
 
@@ -108,8 +100,6 @@ async def fetch_company_news(
 async def compute_sentiment_score(
     symbol: str, days: int = 7,
 ) -> float:
-    # / fetch headlines from finnhub /company-news, score via groq llm
-    # / falls back to keyword scoring if groq unavailable
     try:
         articles = await fetch_company_news(symbol, days=days)
         if not articles:
@@ -119,7 +109,6 @@ async def compute_sentiment_score(
         if not headlines:
             return 0.0
 
-        # / try groq llm scoring first
         groq_score = await _groq_score_headlines(headlines)
         if groq_score is not None:
             return groq_score
@@ -128,12 +117,10 @@ async def compute_sentiment_score(
         scores = [_keyword_score(h) for h in headlines]
         return sum(scores) / len(scores) if scores else 0.0
     except Exception:
-        # / swallow: sentiment fails safe to neutral 0.0
         return 0.0
 
 
 async def store_sentiment(pool, symbol: str, score: float, source: str = "finnhub") -> None:
-    # / store to existing news_sentiment table
     label = "positive" if score > 0.1 else "negative" if score < -0.1 else "neutral"
     async with pool.acquire() as conn:
         await conn.execute(

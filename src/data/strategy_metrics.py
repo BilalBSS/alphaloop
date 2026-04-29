@@ -1,5 +1,3 @@
-# / strategy scores, evaluations, evolution log
-# / lives in data/ because evolution and analysis import these helpers
 
 from __future__ import annotations
 
@@ -51,7 +49,6 @@ async def store_strategy_score(
 
 
 async def fetch_strategy_scores(pool) -> list[dict]:
-    # / all strategy scores, most recent first
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM strategy_scores ORDER BY created_at DESC"
@@ -60,7 +57,6 @@ async def fetch_strategy_scores(pool) -> list[dict]:
 
 
 async def store_strategy_evaluation(pool, stats: dict[str, Any]) -> int | None:
-    # / persist strategy evaluation cycle stats for dashboard
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -87,7 +83,6 @@ async def store_evolution_log(
     pool, generation: int, action: str, strategy_id: str,
     parent_id: str | None, reason: str, details: dict | None = None,
 ) -> int:
-    # / log evolution action (kill, mutate, promote, demote)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO evolution_log (generation, action, strategy_id, parent_id, reason, details)

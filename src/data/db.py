@@ -1,4 +1,3 @@
-# / asyncpg pool + migration runner for VPS Postgres
 
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 def _get_lock() -> asyncio.Lock:
-    # / lazy-init lock to avoid creating it outside a running event loop
     global _init_lock
     if _init_lock is None:
         _init_lock = asyncio.Lock()
@@ -27,7 +25,6 @@ def _get_lock() -> asyncio.Lock:
 
 
 async def init_db(database_url: str | None = None) -> asyncpg.Pool:
-    # / connect to VPS Postgres pooled endpoint and run pending migrations
     global _pool
 
     if _pool is not None:
@@ -46,7 +43,6 @@ async def init_db(database_url: str | None = None) -> asyncpg.Pool:
         logger.info("connecting_to_database", url=_mask_url(url))
 
         async def _init_conn(conn):
-            # / register jsonb codec so asyncpg returns dicts, not strings
             await conn.set_type_codec(
                 'jsonb', encoder=lambda v: json.dumps(v, default=str),
                 decoder=json.loads, schema='pg_catalog',
@@ -66,14 +62,12 @@ async def init_db(database_url: str | None = None) -> asyncpg.Pool:
 
 
 async def get_pool() -> asyncpg.Pool:
-    # / return initialized pool, raises if init_db() not called
     if _pool is None:
         raise RuntimeError("database not initialized. call init_db() first.")
     return _pool
 
 
 async def close_db() -> None:
-    # / gracefully close the connection pool
     global _pool
     if _pool is not None:
         await _pool.close()
@@ -82,7 +76,6 @@ async def close_db() -> None:
 
 
 async def _run_migrations(pool: asyncpg.Pool) -> None:
-    # / run numbered .sql files from migrations dir, skip already-applied
     async with pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _migrations (
@@ -119,13 +112,11 @@ async def _run_migrations(pool: asyncpg.Pool) -> None:
                     )
                 logger.info("migration_applied", filename=mf.name)
             except Exception:
-                # / migration failure is fatal - log + reraise
                 logger.error("migration_failed", filename=mf.name, exc_info=True)
                 raise
 
 
 async def cleanup_old_data(pool: asyncpg.Pool) -> dict[str, int]:
-    # / data retention — keeps VPS Postgres small
     # / news_sentiment: 180d, crypto_onchain: 180d
     retention = {
         "news_sentiment": 180,
@@ -150,7 +141,6 @@ async def cleanup_old_data(pool: asyncpg.Pool) -> dict[str, int]:
 
 
 def _mask_url(url: str) -> str:
-    # / hide password in connection url for logging
     try:
         parsed = urlparse(url)
         if parsed.password:

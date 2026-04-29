@@ -1,5 +1,3 @@
-# / on-chain data via dune analytics
-# / execute query -> poll results pattern, 3 concurrent max
 
 from __future__ import annotations
 
@@ -27,7 +25,6 @@ def _dune_headers() -> dict[str, str]:
 
 @with_retry(source="dune", max_retries=2, base_delay=5.0)
 async def execute_query(query_id: int, params: dict | None = None) -> str | None:
-    # / submit a dune query for execution, returns execution_id
     if not os.environ.get("DUNE_API_KEY"):
         return None
 
@@ -44,7 +41,6 @@ async def execute_query(query_id: int, params: dict | None = None) -> str | None
 async def poll_results(
     execution_id: str, max_polls: int = 30, poll_interval: float = 2.0,
 ) -> list[dict[str, Any]]:
-    # / poll until query completes or timeout
     if not os.environ.get("DUNE_API_KEY"):
         return []
 
@@ -70,7 +66,6 @@ async def poll_results(
 
 
 async def run_query(query_id: int, params: dict | None = None) -> list[dict[str, Any]]:
-    # / convenience: execute + poll in one call
     execution_id = await execute_query(query_id, params)
     if not execution_id:
         return []
@@ -78,7 +73,6 @@ async def run_query(query_id: int, params: dict | None = None) -> list[dict[str,
 
 
 async def fetch_active_addresses(chain: str = "ethereum") -> list[dict[str, Any]]:
-    # / active addresses trend from configured dune query
     query_id = int(os.environ.get("DUNE_QUERY_ACTIVE_ADDRESSES", "0"))
     if not query_id:
         return []
@@ -86,7 +80,6 @@ async def fetch_active_addresses(chain: str = "ethereum") -> list[dict[str, Any]
 
 
 async def fetch_exchange_flows(symbol: str = "ETH") -> list[dict[str, Any]]:
-    # / exchange inflow/outflow from configured dune query
     query_id = int(os.environ.get("DUNE_QUERY_EXCHANGE_FLOWS", "0"))
     if not query_id:
         return []
@@ -94,7 +87,6 @@ async def fetch_exchange_flows(symbol: str = "ETH") -> list[dict[str, Any]]:
 
 
 async def fetch_whale_transactions(min_usd: int = 1_000_000) -> list[dict[str, Any]]:
-    # / large transactions from configured dune query
     query_id = int(os.environ.get("DUNE_QUERY_WHALE_TRANSACTIONS", "0"))
     if not query_id:
         return []

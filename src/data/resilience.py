@@ -1,6 +1,3 @@
-# / retry + circuit breaker decorator for external api calls
-# / shared http client with per-source rate limiting
-# / circuit states: closed -> open (after N failures) -> half_open (after timeout) -> closed
 
 from __future__ import annotations
 
@@ -24,7 +21,6 @@ class CircuitState(Enum):
 
 
 class CircuitBreakerOpen(Exception):
-    # / raised when call rejected because circuit is open
     def __init__(self, source: str, retry_after: float):
         self.source = source
         self.retry_after = retry_after
@@ -56,11 +52,9 @@ class _CircuitBreaker:
             self.state = CircuitState.OPEN
 
     def can_execute(self) -> bool:
-        # / sync version for simple checks (non-concurrent use)
         return self._check_execute()
 
     async def can_execute_async(self) -> bool:
-        # / async-safe version — serializes half_open probe selection
         async with self._lock:
             return self._check_execute()
 
@@ -71,10 +65,8 @@ class _CircuitBreaker:
             elapsed = time.monotonic() - self.last_failure_time
             if elapsed >= self.reset_timeout:
                 self.state = CircuitState.HALF_OPEN
-                # / fall through to half_open check
             else:
                 return False
-        # / half_open: allow exactly one probe request
         if self.state == CircuitState.HALF_OPEN:
             if self._half_open_probe_in_flight:
                 return False
@@ -89,13 +81,11 @@ class _CircuitBreaker:
 
 
 def _is_403(exc: Exception) -> bool:
-    # / check if exception is an http 403 auth error
     if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
         return exc.response.status_code == 403
     return "403" in str(exc)
 
 
-# / global registry of breakers keyed by source name
 _breakers: dict[str, _CircuitBreaker] = {}
 
 
@@ -106,7 +96,6 @@ def with_retry(
     failure_threshold: int = 5,
     reset_timeout: float = 900.0,
 ) -> Callable:
-    # / decorator: exponential backoff retry + circuit breaker
     def decorator(fn: Callable) -> Callable:
         @wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -127,7 +116,6 @@ def with_retry(
                     raise
                 except Exception as exc:
                     last_exc = exc
-                    # / don't count 403 auth errors as circuit breaker failures
                     if _is_403(exc):
                         raise
                     breaker.record_failure()
@@ -158,24 +146,20 @@ def with_retry(
 
 
 def reset_breaker(source: str) -> None:
-    # / manually reset a circuit breaker
     if source in _breakers:
         _breakers[source].record_success()
 
 
 def get_breaker_state(source: str) -> CircuitState | None:
-    # / get current state, none if not created yet
     return _breakers[source].state if source in _breakers else None
 
 
-# / shared http client — reused across all data source modules
 _http_client: httpx.AsyncClient | None = None
 _rate_limiters: dict[str, asyncio.Semaphore] = {}
 _rate_delays: dict[str, float] = {}
 
 
 def configure_rate_limit(source: str, max_concurrent: int = 5, delay: float = 0.3) -> None:
-    # / set concurrency + delay for a source (call at module import time)
     _rate_limiters[source] = asyncio.Semaphore(max_concurrent)
     _rate_delays[source] = delay
 
@@ -189,7 +173,6 @@ async def get_http_client() -> httpx.AsyncClient:
 
 
 async def close_http_client() -> None:
-    # / call on shutdown to cleanly close the shared client
     global _http_client
     if _http_client is not None and not _http_client.is_closed:
         await _http_client.aclose()
@@ -200,7 +183,6 @@ async def _rate_limited_request(
     source: str | None,
     call: Callable[[], Any],
 ) -> httpx.Response:
-    # / wrap an http call with optional per-source semaphore + delay
     if source and source in _rate_limiters:
         async with _rate_limiters[source]:
             delay = _rate_delays.get(source, 0)
@@ -220,7 +202,6 @@ async def api_get(
     source: str | None = None,
     timeout: float = 30.0,
 ) -> httpx.Response:
-    # / shared GET with optional per-source rate limiting
     client = await get_http_client()
     return await _rate_limited_request(
         source, lambda: client.get(url, headers=headers, params=params, timeout=timeout)
@@ -235,7 +216,6 @@ async def api_post(
     source: str | None = None,
     timeout: float = 30.0,
 ) -> httpx.Response:
-    # / shared POST with optional per-source rate limiting
     client = await get_http_client()
     return await _rate_limited_request(
         source, lambda: client.post(url, headers=headers, json=json, content=data, timeout=timeout)
