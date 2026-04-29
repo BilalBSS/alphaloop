@@ -96,7 +96,7 @@ def student_t_copula_fit(u_data: np.ndarray) -> tuple[float, np.ndarray]:
             ll += ((nu + 1) / 2) * np.log1p(z * z / nu).sum()
 
             return -ll
-        except Exception:
+        except (ValueError, np.linalg.LinAlgError, FloatingPointError):
             return 1e10
 
     result = optimize.minimize_scalar(

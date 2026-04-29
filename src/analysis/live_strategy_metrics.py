@@ -232,7 +232,7 @@ async def _compute_for_strategy(
     equity_curve = base_capital + np.cumsum(pnl_series)
     try:
         _, max_dd_pct = max_drawdown(equity_curve)
-    except Exception:
+    except (ValueError, IndexError, ZeroDivisionError):
         max_dd_pct = 0.0
 
     # / composite score matches evolution ranking formula (sharpe 0.4 / win 0.3 / dd 0.3)

@@ -88,7 +88,7 @@ def _fetch_earnings_sync(symbol: str) -> dict[str, Any] | None:
                 if hasattr(next_date, "date"):
                     next_date = next_date.date()
                 result["next_earnings_date"] = str(next_date)
-            except Exception:
+            except (IndexError, AttributeError, ValueError):
                 pass
 
         return result

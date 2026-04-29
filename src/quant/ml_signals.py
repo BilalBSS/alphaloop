@@ -221,7 +221,7 @@ async def benchmark_feature_sets(
                 denom = np.std(r_prob) * np.std(r_ret)
                 if denom > 0:
                     ic = float(np.mean((r_prob - np.mean(r_prob)) * (r_ret - np.mean(r_ret))) / denom)
-        except Exception:
+        except (ValueError, ZeroDivisionError, FloatingPointError):
             ic = None
         return {
             "brier": round(brier, 5),

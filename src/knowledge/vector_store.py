@@ -68,7 +68,7 @@ class VectorStore:
             )
         try:
             count = int(result.split()[-1])
-        except Exception:
+        except (ValueError, IndexError, AttributeError):
             count = 0
         if count:
             logger.info("wiki_embeddings_deleted", document_id=document_id, count=count)

@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import structlog
 
 from src.analysis.ai_summary import (
@@ -196,7 +197,7 @@ def _load_strategy_config(strategy_id: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return None
 
 
@@ -222,7 +223,7 @@ async def _fetch_context(
 
     try:
         recent = await fetch_recent_trades(pool, strategy_id=strategy_id, limit=10)
-    except Exception:
+    except (asyncpg.PostgresError, KeyError):
         recent = []
 
     return trade_row, strategy_config, recent

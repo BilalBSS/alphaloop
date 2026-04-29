@@ -60,6 +60,7 @@ class PaperBroker(BrokerInterface):
                 if row and row["close"] is not None:
                     return float(row["close"])
         except Exception:
+            # / swallow: db unavailable, fall through to next price source
             logger.debug("paper_broker_db_price_fallback_failed", symbol=symbol)
         return None
 

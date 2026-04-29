@@ -47,7 +47,7 @@ def _available_memory_mb() -> float | None:
         return None
     try:
         return psutil.virtual_memory().available / (1024 * 1024)
-    except Exception:
+    except (AttributeError, OSError):
         return None
 
 

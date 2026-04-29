@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncpg
 import numpy as np
 import structlog
 
@@ -51,7 +52,7 @@ def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
     # / (killed, paper_trading, live). late-bind so headless tests pass.
     try:
         from src.dashboard.app import _ws_clients, broadcast
-    except Exception:
+    except ImportError:
         return
     if not _ws_clients:
         return
@@ -202,7 +203,7 @@ class EvolutionEngine:
                 )
                 if rows:
                     generation = int(rows[0]["max_gen"]) + 1
-            except Exception:
+            except (asyncpg.PostgresError, KeyError, ValueError, TypeError):
                 generation = 1
 
         return db_scores, generation
@@ -299,7 +300,7 @@ class EvolutionEngine:
                     notify_system_error(
                         f"kill_save_config_failed strategy={sid}: {str(exc)[:100]}", "evolution",
                     )
-                except Exception:
+                except (ImportError, RuntimeError):
                     pass
             _broadcast_status_change(sid, prev_status, "killed", reason=reason)
             killed_configs.append({"id": sid, "config": config, "reason": reason})
@@ -352,7 +353,7 @@ class EvolutionEngine:
                         notify_system_error(
                             f"tier2_kill_save_failed strategy={sid}: {str(exc)[:100]}", "evolution",
                         )
-                    except Exception:
+                    except (ImportError, RuntimeError):
                         pass
                 killed_configs.append({"id": sid, "config": config, "reason": reason})
                 summary["killed"].append({"id": sid, "reason": reason})
@@ -383,7 +384,7 @@ class EvolutionEngine:
             sid = killed["id"]
             try:
                 trades = await fetch_recent_trades(pool, strategy_id=sid, limit=10)
-            except Exception:
+            except (asyncpg.PostgresError, KeyError):
                 trades = []
 
             # / 80/20 wiki-guided split (env override via WIKI_GUIDED_RATIO)
@@ -821,7 +822,7 @@ class EvolutionEngine:
 
             try:
                 total_trades = await count_all_symbol_trades(pool, symbol)
-            except Exception:
+            except (asyncpg.PostgresError, KeyError):
                 continue
             if total_trades < self._tier3_graduate_trades:
                 continue
