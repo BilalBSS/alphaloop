@@ -27,6 +27,7 @@ module = [
     "src.data.cost_tracker",
     "src.data.regime_detector",
     "src.data.staleness_monitor",
+    "src.dashboard.routers.meta",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
