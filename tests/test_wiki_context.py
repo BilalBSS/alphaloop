@@ -20,7 +20,7 @@ def _make_context(
     read_results: dict | None = None,
     list_results: list[dict] | None = None,
 ) -> WikiContext:
-    # / factory that wires stub writer + search with pre-canned responses
+    # / stub writer + retriever with canned responses
     pool = MagicMock()
 
     writer = MagicMock()
@@ -29,22 +29,19 @@ def _make_context(
     )
     writer.list_documents = AsyncMock(return_value=list_results or [])
 
-    search = MagicMock()
+    retriever = MagicMock()
     lookup = search_results or {}
 
     def _search(*args, **kwargs):
-        # / positional query also supported, but source always passes as kwarg or first arg
         category = kwargs.get("category")
-        return lookup.get(("search", category), [])
+        if category is None:
+            return lookup.get(("search", None), [])
+        # / category-keyed lookup matches both by_category and search+category
+        return lookup.get(("by_category", category)) or lookup.get(("search", category), [])
 
-    def _search_by_category(*args, **kwargs):
-        category = kwargs.get("category") or (args[0] if args else None)
-        return lookup.get(("by_category", category), [])
+    retriever.search = AsyncMock(side_effect=_search)
 
-    search.search = AsyncMock(side_effect=_search)
-    search.search_by_category = AsyncMock(side_effect=_search_by_category)
-
-    return WikiContext(pool=pool, writer=writer, search=search)
+    return WikiContext(pool=pool, writer=writer, retriever=retriever)
 
 
 # ──────────────────────────────────────────────────────
@@ -109,8 +106,7 @@ class TestGetMutationContextEmpty:
     async def test_no_regime_does_not_call_regime_fetch(self):
         ctx = _make_context()
         await ctx.get_mutation_context(strategy_id="sid_1", regime=None)
-        # / no regime arg means _fetch_regime should not be invoked via `category="regimes"`
-        calls = [c for c in ctx._search.search.await_args_list
+        calls = [c for c in ctx._retriever.search.await_args_list
                  if c.kwargs.get("category") == "regimes"]
         assert calls == []
 

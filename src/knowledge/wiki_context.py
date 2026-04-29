@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import structlog
 
-from src.knowledge.wiki_search import WikiSearch
+from src.knowledge.hybrid_retriever import HybridRetriever
 from src.knowledge.wiki_writer import WikiWriter
 
 logger = structlog.get_logger(__name__)
@@ -29,10 +29,15 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
 
 class WikiContext:
 
-    def __init__(self, pool, writer: WikiWriter | None = None, search: WikiSearch | None = None):
+    def __init__(
+        self,
+        pool,
+        writer: WikiWriter | None = None,
+        retriever: HybridRetriever | None = None,
+    ):
         self._pool = pool
         self._writer = writer or WikiWriter(pool=pool)
-        self._search = search or WikiSearch(pool=pool)
+        self._retriever = retriever or HybridRetriever(pool=pool)
 
     async def get_mutation_context(
         self,
@@ -75,7 +80,7 @@ class WikiContext:
         if profile:
             sections.append((f"{symbol} PROFILE", profile, 250))
 
-        post_mortems = await self._search.search(
+        post_mortems = await self._retriever.search(
             f"{symbol} lessons loss", symbols=[symbol], top_k=2,
         )
         if post_mortems:
@@ -90,16 +95,15 @@ class WikiContext:
         return self._assemble(sections, budget)
 
     async def _fetch_latest(self, category: str, strategy_id: str) -> str | None:
-        results = await self._search.search_by_category(
-            category=category, query=strategy_id, top_k=1,
+        results = await self._retriever.search(
+            query=strategy_id, category=category, top_k=1,
         )
         if not results:
             return None
-        content = await self._writer.read_document(results[0]["path"])
-        return content
+        return await self._writer.read_document(results[0]["path"])
 
     async def _fetch_regime(self, regime: str) -> str | None:
-        results = await self._search.search(
+        results = await self._retriever.search(
             query=regime, category="regimes", top_k=1,
         )
         if not results:
@@ -107,8 +111,8 @@ class WikiContext:
         return await self._writer.read_document(results[0]["path"])
 
     async def _fetch_meta_known_issues(self) -> str | None:
-        results = await self._search.search_by_category(
-            category="meta", query="known issues biases", top_k=1,
+        results = await self._retriever.search(
+            query="known issues biases", category="meta", top_k=1,
         )
         if not results:
             return None
