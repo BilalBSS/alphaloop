@@ -67,7 +67,10 @@ async def _fetch_closes(
         close = _num(r.get("close"))
         if ts is None or close is None:
             continue
-        out.append((_iso(ts), close))
+        ts_iso = _iso(ts)
+        if ts_iso is None:
+            continue
+        out.append((ts_iso, close))
     return out
 
 
@@ -99,8 +102,8 @@ async def fetch_compare(
         _fetch_closes(pool, against, timeframe, days_clamped),
         return_exceptions=True,
     )
-    base_closes = [] if isinstance(base_res, Exception) else base_res
-    against_closes = [] if isinstance(against_res, Exception) else against_res
+    base_closes: list[tuple[str, float]] = [] if isinstance(base_res, BaseException) else base_res
+    against_closes: list[tuple[str, float]] = [] if isinstance(against_res, BaseException) else against_res
     if not base_closes or not against_closes:
         return empty
 

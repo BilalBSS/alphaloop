@@ -112,7 +112,7 @@ async def fetch_analyst_ratings(symbol: str) -> dict[str, Any]:
         logger.debug("yfinance_analyst_failed", symbol=symbol, error=str(exc))
 
     # / fallback: finnhub
-    result: dict[str, Any] = {"symbol": symbol, "source": "finnhub"}
+    result = {"symbol": symbol, "source": "finnhub"}
     try:
         recs = await _fetch_recommendations(symbol)
         if recs:

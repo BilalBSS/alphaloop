@@ -139,7 +139,7 @@ async def check_and_fire(
     if not active:
         return []
 
-    symbols = sorted({a.get("symbol") for a in active if isinstance(a.get("symbol"), str)})
+    symbols: list[str] = sorted({a["symbol"] for a in active if isinstance(a.get("symbol"), str)})
     # / fetch prices in parallel so one tick is one round-trip per broker, not N sequential calls
     price_results = await asyncio.gather(
         *(_resolve_price(broker, sym) for sym in symbols),
@@ -147,7 +147,7 @@ async def check_and_fire(
     )
     prices: dict[str, float] = {}
     for sym, res in zip(symbols, price_results, strict=False):
-        if isinstance(res, Exception):
+        if isinstance(res, BaseException):
             logger.debug("alert_price_fetch_failed", symbol=sym, error=str(res))
             continue
         if res is not None:

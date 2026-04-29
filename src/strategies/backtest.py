@@ -233,9 +233,10 @@ async def _process_exits(
 
     # / 3. execute exits at current bar open
     for symbol, reason in exits_to_process:
-        pos = open_positions.get(symbol)
-        if pos is None:
+        exit_pos = open_positions.get(symbol)
+        if exit_pos is None:
             continue
+        pos = exit_pos
 
         # / set price to current open for fill
         if current_date in market_data[symbol].index:
@@ -312,7 +313,7 @@ async def _process_entries(
             continue
 
         order = await broker.place_order(symbol, sizing.qty, "buy")
-        if order.status == "filled":
+        if order.status == "filled" and order.filled_price is not None:
             open_positions[symbol] = OpenPosition(
                 symbol=symbol,
                 qty=sizing.qty,
