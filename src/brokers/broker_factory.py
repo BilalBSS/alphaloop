@@ -22,8 +22,10 @@ class BrokerFactory:
 
     def get_broker(self, symbol: str | None = None) -> BrokerInterface:
         if self._mode == "backtest":
-            return self._paper  # type: ignore[return-value]
-        return self._alpaca  # type: ignore[return-value]
+            assert self._paper is not None
+            return self._paper
+        assert self._alpaca is not None
+        return self._alpaca
 
     @property
     def mode(self) -> str:
