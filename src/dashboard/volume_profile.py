@@ -1,6 +1,3 @@
-# / horizontal volume-at-price histogram — bins closes into price buckets and sums volume
-# / adds poc (point of control), vah/val (70% value area) for quick visual anchors
-# / pure observation: uses existing market_data_intraday rows, zero new tables
 from __future__ import annotations
 
 import time
@@ -13,7 +10,6 @@ from ._serialize import num as _num
 
 logger = structlog.get_logger(__name__)
 
-# / clamps matching the backend style — keep payload small + response predictable
 _BINS_MIN = 4
 _BINS_MAX = 100
 _BINS_DEFAULT = 24
@@ -22,11 +18,8 @@ _DAYS_MIN = 1
 _DAYS_MAX = 365
 _DAYS_DEFAULT = 30
 
-# / value area covers this much of total traded volume (tradingview convention)
 _VALUE_AREA_PCT = 0.70
 
-# / ttl cache mirroring /api/intraday — 30s ttl keeps data fresh without hammering the db
-# / key = (symbol, bins, days, timeframe) -> (expires_at_monotonic, payload)
 _VP_CACHE: dict[tuple, tuple[float, object]] = {}
 _VP_CACHE_MAX = 64
 _VP_CACHE_TTL = 30.0
@@ -88,7 +81,6 @@ def _empty_payload(symbol: str, bins: int, days: int, timeframe: str) -> dict:
 def _build_profile(
     rows: list[dict], symbol: str, bins: int, days: int, timeframe: str
 ) -> dict:
-    # / turn raw (close, volume) rows into a bins-by-price histogram + value area stats
     closes: list[float] = []
     vols: list[float] = []
     for r in rows:
@@ -104,7 +96,6 @@ def _build_profile(
     price_min = min(closes)
     price_max = max(closes)
     if price_max <= price_min:
-        # / degenerate case: single price level — collapse to one bin
         total = sum(vols)
         bin_entry = {
             "price_low": price_min,
@@ -148,11 +139,9 @@ def _build_profile(
             "pct": pct,
         })
 
-    # / poc = bin with max volume
     poc_idx = max(range(bins), key=lambda i: volume_buckets[i]) if total_volume > 0 else 0
     poc = bins_out[poc_idx]
 
-    # / value area: expand outward from poc until 70% of total volume captured
     vah_price = poc["price_high"]
     val_price = poc["price_low"]
     if total_volume > 0:
@@ -161,7 +150,6 @@ def _build_profile(
         lo_i = poc_idx
         hi_i = poc_idx
         while captured < target and (lo_i > 0 or hi_i < bins - 1):
-            # / walk outward toward the higher-volume neighbor so the area stays tight
             up_vol = volume_buckets[hi_i + 1] if hi_i + 1 < bins else -1.0
             dn_vol = volume_buckets[lo_i - 1] if lo_i - 1 >= 0 else -1.0
             if up_vol < 0 and dn_vol < 0:

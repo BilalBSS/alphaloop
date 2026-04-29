@@ -1,4 +1,3 @@
-# / shared helpers for dashboard endpoints
 from __future__ import annotations
 
 from typing import Any
@@ -22,7 +21,6 @@ def num(value: Any) -> float | None:
 
 
 def whitelist(value: Any, allowed: set) -> str | None:
-    # / lowercase + strip + membership check, none if rejected
     if not isinstance(value, str):
         return None
     normalized = value.strip().lower()

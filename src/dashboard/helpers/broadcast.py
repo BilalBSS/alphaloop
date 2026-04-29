@@ -1,5 +1,3 @@
-# / push event to all connected websocket clients
-# / consumed by orchestrator/executor/risk_agent via the dashboard package
 
 from __future__ import annotations
 

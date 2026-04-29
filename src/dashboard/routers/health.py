@@ -125,7 +125,6 @@ def _health_sources(source_stats, groq_status: str, deepseek_status: str) -> dic
 
 
 async def _health_last_analysis_ts() -> str | None:
-    # / canonical analyst timestamp from loop_registry
     try:
         from src.data.loop_registry import describe_loops
         loops_rows = await describe_loops(STATE.pool)

@@ -1,6 +1,4 @@
 # / chart indicator dispatch table
-# / id format: name_int_int (no floats)
-# / kinds: series (per-bar) or horizontal_levels (static)
 
 from __future__ import annotations
 
@@ -18,12 +16,11 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class IndicatorSpec:
-    pane: str  # "price" | "rsi" | "macd" | "stoch" | "adx" | "cci" | "williams" | "obv" | "mfi" | "atr" | "roc"
+    pane: str  # / "price" | "rsi" |
     compute: Callable[[pd.DataFrame], dict]
 
 
 def _to_list(s: pd.Series) -> list:
-    # / pandas series to list with nan -> none
     out: list = []
     for v in s.tolist():
         if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -111,8 +108,6 @@ def _donchian(df: pd.DataFrame, period: int) -> dict:
 
 
 def _fib_auto(df: pd.DataFrame, lookback: int) -> dict:
-    # / static horizontal levels, not per-bar
-    # / marked kind=horizontal_levels so the frontend renders as price lines, not line series
     fib = support_resistance.fib_auto(df["high"], df["low"], df["close"], lookback)
     return {
         "kind": "horizontal_levels",
@@ -130,7 +125,6 @@ def _fib_auto(df: pd.DataFrame, lookback: int) -> dict:
 
 
 def _macd(df: pd.DataFrame, fast: int, slow: int, signal: int) -> dict:
-    # / macd line + signal + histogram
     res = trend.macd(df["close"], fast, slow, signal)
     return {
         "kind": "series",
@@ -153,7 +147,6 @@ def _stoch(df: pd.DataFrame, k: int, d: int) -> dict:
 
 
 REGISTRY: dict[str, IndicatorSpec] = {
-    # / price pane overlays — moving averages
     "sma_20": IndicatorSpec("price", lambda df: _series("price", trend.sma(df["close"], 20))),
     "sma_50": IndicatorSpec("price", lambda df: _series("price", trend.sma(df["close"], 50))),
     "sma_200": IndicatorSpec("price", lambda df: _series("price", trend.sma(df["close"], 200))),
@@ -168,7 +161,6 @@ REGISTRY: dict[str, IndicatorSpec] = {
     "vwap": IndicatorSpec("price", lambda df: _series("price", volume.vwap(df["high"], df["low"], df["close"], df["volume"]))),
     # / ichimoku 9/26/52/26
     "ichimoku_9_26_52_26": IndicatorSpec("price", lambda df: _ichimoku(df, 9, 26, 52, 26)),
-    # / parabolic sar — id uses step*100 / max_step*100 (2/20 = 0.02/0.2) to avoid floats in the id
     "psar_2_20": IndicatorSpec("price", lambda df: _psar(df, 0.02, 0.2)),
     # / supertrend 10/3
     "supertrend_10_3": IndicatorSpec("price", lambda df: _supertrend(df, 10, 3.0)),
@@ -191,18 +183,15 @@ REGISTRY: dict[str, IndicatorSpec] = {
 
 
 def compute(df: pd.DataFrame, indicator_id: str) -> dict | None:
-    # / dispatch indicator by id, returns none for unknown id or compute failure
     spec = REGISTRY.get(indicator_id)
     if spec is None:
         return None
     try:
         return spec.compute(df)
     except Exception as exc:
-        # / debug-level so dashboard stays quiet on normal use but surfaces real data issues
         logger.debug("indicator_compute_failed", indicator=indicator_id, exc_type=type(exc).__name__)
         return None
 
 
 def available_indicators() -> list[str]:
-    # / sorted list of all registered indicator ids
     return sorted(REGISTRY.keys())

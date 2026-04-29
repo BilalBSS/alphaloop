@@ -1,4 +1,3 @@
-# / decimal/date/datetime serialization for json responses
 
 from __future__ import annotations
 

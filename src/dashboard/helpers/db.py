@@ -1,4 +1,3 @@
-# / shared db query helpers — pool sourced from STATE singleton
 
 from __future__ import annotations
 

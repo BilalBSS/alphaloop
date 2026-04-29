@@ -1,5 +1,3 @@
-# / fastapi dashboard backend — thin shell, routes live in src/dashboard/routers
-# / serves api endpoints + react static files
 
 from __future__ import annotations
 
@@ -47,8 +45,6 @@ logger = structlog.get_logger(__name__)
 
 STATE.load_config_from_env()
 
-# / module-level alias for executor/orchestrator/evolution back-references.
-# / set is mutated in place, so consumers always see live state.
 _ws_clients = STATE.ws_clients
 
 
@@ -113,7 +109,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _head_fallback(request, call_next):
-    # / FastAPI APIRoute sets methods={'GET'} without HEAD; gate rewrite to /api/ only
     if request.method == "HEAD" and request.url.path.startswith("/api/"):
         request.scope["method"] = "GET"
     return await call_next(request)
@@ -121,7 +116,6 @@ async def _head_fallback(request, call_next):
 
 @app.middleware("http")
 async def _no_cache_html(request, call_next):
-    # / vite fingerprints bundles; index.html must not cache so the hash refs stay live
     response = await call_next(request)
     path = request.url.path
     if path == "/" or path.endswith(".html") or path.endswith("/index.html"):

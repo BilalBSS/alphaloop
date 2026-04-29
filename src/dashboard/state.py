@@ -1,4 +1,3 @@
-# / dashboard runtime state — replaces scattered module-level globals
 
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ logger = structlog.get_logger(__name__)
 
 
 class TTLCache:
-    # / lru-ish cache with monotonic ttl
 
     def __init__(self, max_entries: int, ttl_s: float, clock=time.monotonic) -> None:
         self._max = max_entries
@@ -38,7 +36,6 @@ class TTLCache:
 
     def put(self, key: Any, payload: Any) -> None:
         if key not in self._data and len(self._data) >= self._max:
-            # / evict the entry closest to expiry
             oldest = min(self._data, key=lambda k: self._data[k][0])
             self._data.pop(oldest, None)
         self._data[key] = (self._clock() + self._ttl, payload)
@@ -52,7 +49,6 @@ class TTLCache:
 
 
 class DashboardState:
-    # / single bag of dashboard runtime state
 
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
@@ -113,7 +109,6 @@ class DashboardState:
         self.pool = None
 
 
-# / module-level singleton; lifespan populates pool, env loads config
 STATE = DashboardState()
 
 
