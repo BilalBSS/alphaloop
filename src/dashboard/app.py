@@ -28,6 +28,7 @@ from src.dashboard.routers import (
     health,
     macro,
     markers,
+    meta,
     portfolio,
     portfolio_risk,
     replay,
@@ -141,6 +142,7 @@ app.include_router(portfolio.router)
 app.include_router(symbol_data.router)
 app.include_router(system_metrics.router)
 app.include_router(macro.router)
+app.include_router(meta.router)
 app.include_router(health.router)
 app.include_router(charts.router)
 app.include_router(markers.router)
