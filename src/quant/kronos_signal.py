@@ -40,7 +40,8 @@ _model_load_failed_reason: str | None = None
 
 def _available_memory_mb() -> float | None:
     try:
-        import psutil  # type: ignore
+        # / optional dep without stubs
+        import psutil  # type: ignore[import-untyped]
     except ImportError:
         return None
     try:

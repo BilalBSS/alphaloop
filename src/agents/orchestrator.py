@@ -98,7 +98,7 @@ class AgentOrchestrator:
     def __init__(self, mode: str = "paper"):
         self._mode = mode
         self._stop_event: asyncio.Event = asyncio.Event()
-        self._pool = None
+        self._pool: asyncpg.Pool | None = None
         self._broker_factory: BrokerFactory | None = None
         self._strategy_pool = StrategyPool()
         rl = self._load_risk_limits()
@@ -146,6 +146,11 @@ class AgentOrchestrator:
                 logger.warning("risk_limits_load_failed", error=str(exc)[:120])
         return {}
 
+    def _broker(self):
+        # / set in start()
+        assert self._broker_factory is not None
+        return self._broker_factory.get_broker()
+
     async def start(self) -> None:
         logger.info("orchestrator_starting", mode=self._mode)
         await self._bootstrap_db()
@@ -169,6 +174,7 @@ class AgentOrchestrator:
             logger.warning("retention_prune_failed", error=str(exc)[:120])
 
     async def _bootstrap_alpaca_sync(self) -> None:
+        assert self._pool is not None
         try:
             async with self._pool.acquire() as conn:
                 cleaned = await conn.execute(
@@ -417,7 +423,7 @@ class AgentOrchestrator:
                     if result:
                         portfolio = None
                         try:
-                            broker = self._broker_factory.get_broker()
+                            broker = self._broker()
                             account = await broker.get_account_balance()
                             positions = await broker.get_positions()
                             portfolio = {
@@ -439,7 +445,7 @@ class AgentOrchestrator:
             interval = STRATEGY_MARKET_HOURS if self._is_market_hours() else STRATEGY_OFF_HOURS
             try:
                 async with loop_registry.track(self._pool, "strategy"):
-                    broker = self._broker_factory.get_broker()
+                    broker = self._broker()
                     await self._strategy.run(
                         self._pool, self._strategy_pool, broker,
                     )
@@ -463,7 +469,7 @@ class AgentOrchestrator:
                     pending = await fetch_pending_signals(self._pool)
                     for signal in pending:
                         try:
-                            broker = self._broker_factory.get_broker()
+                            broker = self._broker()
                             result = await self._risk.process_signal(
                                 self._pool, signal["id"], broker,
                                 strategy_pool=self._strategy_pool,
@@ -500,7 +506,7 @@ class AgentOrchestrator:
                 async with loop_registry.track(self._pool, "executor"):
                     pending = await fetch_pending_trades(self._pool)
                     for trade in pending:
-                        broker = self._broker_factory.get_broker()
+                        broker = self._broker()
                         await self._executor.execute_trade(
                             self._pool, trade["id"], broker, strategy_pool=self._strategy_pool,
                         )
@@ -830,7 +836,7 @@ class AgentOrchestrator:
             for p in all_positions:
                 tracked[p["symbol"]] = tracked.get(p["symbol"], 0) + p["qty"]
 
-            broker = self._broker_factory.get_broker()
+            broker = self._broker()
             alpaca_positions = await broker.get_positions()
             alpaca_map: dict[str, float] = {p.symbol: p.qty for p in alpaca_positions}
             alpaca_prices: dict[str, float] = {
@@ -896,7 +902,7 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "alert"):
-                    broker = self._broker_factory.get_broker() if self._broker_factory else None
+                    broker = self._broker() if self._broker_factory else None
                     if broker is not None:
                         ws_broadcast = None
                         try:
@@ -1065,7 +1071,7 @@ class AgentOrchestrator:
                 # / portfolio correlation check
                 try:
                     from src.quant.correlation_monitor import check_portfolio_correlation
-                    broker = self._broker_factory.get_broker()
+                    broker = self._broker()
                     positions = await broker.get_positions()
                     if len(positions) >= 2:
                         alert = await check_portfolio_correlation(self._pool, positions)
@@ -1100,6 +1106,7 @@ class AgentOrchestrator:
                 break
 
     async def _fetch_evolution_market_data(self) -> dict[str, pd.DataFrame]:
+        assert self._pool is not None
         symbols = self._get_symbols()
         market_data: dict[str, pd.DataFrame] = {}
         try:
@@ -1243,6 +1250,7 @@ class AgentOrchestrator:
     async def _load_hydration_bundle(
         self, symbol: str,
     ) -> tuple[list[dict], dict | None, list[dict]]:
+        assert self._pool is not None
         analysis_rows: list[dict] = []
         fundamentals: dict | None = None
         insider: list[dict] = []
@@ -1461,7 +1469,7 @@ class AgentOrchestrator:
         await self._analyst.run(self._pool, self._get_symbols(), run_deepseek=True)
 
     async def _svc_strategy(self) -> None:
-        broker = self._broker_factory.get_broker()
+        broker = self._broker()
         await self._strategy.run(self._pool, self._strategy_pool, broker)
 
     async def _svc_wiki_embedding(self) -> None:

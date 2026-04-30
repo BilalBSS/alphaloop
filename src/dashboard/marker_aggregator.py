@@ -298,5 +298,6 @@ async def build_markers(
             logger.debug("marker_fetch_failed", kind=kind, error=str(result))
             out[kind] = []
         else:
+            # / gather narrows poorly
             out[kind] = result  # type: ignore[assignment]
     return out

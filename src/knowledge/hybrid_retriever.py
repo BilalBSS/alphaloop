@@ -33,17 +33,22 @@ class HybridRetriever:
         query: str,
         top_k: int = 5,
         symbols: list[str] | None = None,
+        category: str | None = None,
     ) -> list[dict]:
         if not query or not query.strip():
             return []
 
-        keyword_hits = await self._wiki.search(query=query, symbols=symbols, top_k=top_k * 4)
+        keyword_hits = await self._wiki.search(
+            query=query, symbols=symbols, top_k=top_k * 4, category=category,
+        )
 
         vec_hits: list[dict] = []
         query_vec = await self._embedder.embed(query)
         if query_vec is not None:
             try:
                 vec_hits = await self._vec.search(query_vec, top_k=top_k * 4, symbols=symbols)
+                if category is not None:
+                    vec_hits = [h for h in vec_hits if h.get("category") == category]
             except Exception as exc:
                 logger.info("hybrid_vector_search_failed", error=str(exc)[:120])
                 vec_hits = []

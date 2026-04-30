@@ -42,7 +42,8 @@ jobs:
             src/data/symbols.py \
             src/data/cost_tracker.py \
             src/data/regime_detector.py \
-            src/data/staleness_monitor.py
+            src/data/staleness_monitor.py \
+            src/dashboard/routers/meta.py
 
       - name: import smoke
         run: |
@@ -50,3 +51,6 @@ jobs:
             from src.dashboard.state import STATE; \
             print('routes:', len(app.routes)); \
             print('broker:', type(STATE.get_broker()).__name__)"
+
+      - name: pytest
+        run: python -m pytest tests/ -x --timeout=120 -q

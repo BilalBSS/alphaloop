@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, TypeGuard
 
 import asyncpg
 import structlog
@@ -33,7 +33,7 @@ def sanitize_drawing_type(dt: Any) -> str | None:
     return _whitelist(dt, VALID_DRAWING_TYPES)
 
 
-def validate_payload(payload: Any) -> bool:
+def validate_payload(payload: Any) -> TypeGuard[dict]:
     if not isinstance(payload, dict):
         return False
     try:

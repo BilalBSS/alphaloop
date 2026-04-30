@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import asyncpg
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -68,7 +69,7 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
             if regime_date and (_date.today() - regime_date).days > 2:
                 logger.warning("regime_stale", market=market, last_date=str(regime_date))
             return row["regime"]
-    except Exception:
+    except (asyncpg.PostgresError, KeyError, TypeError):
         return None
 
 

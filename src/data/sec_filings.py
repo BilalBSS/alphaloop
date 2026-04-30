@@ -108,7 +108,7 @@ def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
     try:
         val = getattr(obj, attr, default)
         return val if val is not None else default
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return default
 
 

@@ -37,7 +37,7 @@ from src.strategies.strategy_pool import StrategyPool
 
 logger = structlog.get_logger(__name__)
 
-SIGNAL_THRESHOLD = 0.15
+SIGNAL_THRESHOLD = 0.10
 
 
 @dataclass(frozen=True)

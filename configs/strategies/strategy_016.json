@@ -43,15 +43,15 @@
   },
   "exit_conditions": {
     "take_profit": {
-      "indicator": "prior_high",
-      "condition": "lookback_60"
-    },
-    "stop_loss": {
       "type": "fixed_pct",
       "pct": 0.04
     },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.05
+    },
     "time_exit": {
-      "max_holding_days": 6
+      "max_holding_days": 5
     }
   },
   "position_sizing": {

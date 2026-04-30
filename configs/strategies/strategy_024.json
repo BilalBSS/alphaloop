@@ -43,15 +43,14 @@
   "exit_conditions": {
     "take_profit": {
       "type": "fixed_pct",
-      "pct": 0.06
+      "pct": 0.04
     },
     "stop_loss": {
-      "type": "atr_trailing",
-      "multiplier": 1.5,
-      "period": 14
+      "type": "fixed_pct",
+      "pct": 0.05
     },
     "time_exit": {
-      "max_holding_days": 45
+      "max_holding_days": 5
     }
   },
   "position_sizing": {

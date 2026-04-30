@@ -191,6 +191,7 @@ async def fetch_volume_profile(
     key = _cache_key(symbol, bins_clamped, days_clamped, timeframe)
     cached = _cache_get(key)
     if cached is not None:
+        # / lru_cache returns Any
         return cached  # type: ignore[return-value]
 
     try:

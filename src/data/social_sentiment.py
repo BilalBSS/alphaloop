@@ -150,7 +150,7 @@ def _fetch_vix_sync() -> dict[str, float] | None:
         vix = float(hist["Close"].iloc[-1])
         normalized = max(-1.0, min(1.0, (30.0 - vix) / 20.0))
         return {"raw_level": vix, "normalized": normalized}
-    except Exception:
+    except (KeyError, ValueError, IndexError, OSError, AttributeError):
         return None
 
 

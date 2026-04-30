@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import cast
 
 import structlog
 from fastapi import APIRouter
@@ -90,16 +91,16 @@ async def get_analysis(symbol: str):
         ),
     )
     return {
-        "score": serializers.serialize_one(score),
-        "signals": serializers.serialize(signals),
-        "trades": serializers.serialize(trades),
-        "sentiment": serializers.serialize(sentiment),
-        "social_sentiment": serializers.serialize(social),
-        "fundamentals": serializers.serialize_one(fundamentals),
-        "dcf": serializers.serialize_one(dcf),
-        "price_history": serializers.serialize(market),
-        "insider_trades": serializers.serialize(insider),
-        "evolution": serializers.serialize(evolution),
+        "score": serializers.serialize_one(cast("dict | None", score)),
+        "signals": serializers.serialize(cast("list[dict]", signals)),
+        "trades": serializers.serialize(cast("list[dict]", trades)),
+        "sentiment": serializers.serialize(cast("list[dict]", sentiment)),
+        "social_sentiment": serializers.serialize(cast("list[dict]", social)),
+        "fundamentals": serializers.serialize_one(cast("dict | None", fundamentals)),
+        "dcf": serializers.serialize_one(cast("dict | None", dcf)),
+        "price_history": serializers.serialize(cast("list[dict]", market)),
+        "insider_trades": serializers.serialize(cast("list[dict]", insider)),
+        "evolution": serializers.serialize(cast("list[dict]", evolution)),
     }
 
 

@@ -6,6 +6,7 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
+import httpx
 import structlog
 
 from .resilience import api_get, configure_rate_limit, with_retry
@@ -116,7 +117,7 @@ async def compute_sentiment_score(
         # / fallback: keyword scoring
         scores = [_keyword_score(h) for h in headlines]
         return sum(scores) / len(scores) if scores else 0.0
-    except Exception:
+    except (httpx.HTTPError, ValueError, KeyError):
         return 0.0
 
 

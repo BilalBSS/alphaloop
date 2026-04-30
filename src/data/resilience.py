@@ -139,7 +139,8 @@ def with_retry(
                         )
                         await asyncio.sleep(delay)
 
-            raise last_exc  # type: ignore[misc]
+            assert last_exc is not None
+            raise last_exc
 
         return wrapper
     return decorator
