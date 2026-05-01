@@ -80,7 +80,7 @@ async def sync_trades_from_alpaca(pool) -> int:
                 "SELECT id, strategy_id FROM approved_trades WHERE order_id = $1",
                 order_id,
             )
-            # / proximity match on missed attach
+            # / proximity match fallback
             if approved_row is None:
                 approved_row = await conn.fetchrow(
                     """SELECT id, strategy_id FROM approved_trades
