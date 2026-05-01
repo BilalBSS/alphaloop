@@ -91,6 +91,7 @@ class StrategyAgent:
         stats: dict[str, Any] = {
             "total": 0, "insufficient_data": 0, "no_entry": 0,
             "blocked_consensus": 0, "blocked_threshold": 0,
+            "blocked_already_holding": 0,
             "signals": 0, "strategies_evaluated": 0,
             "near_misses": [],
         }
@@ -145,6 +146,7 @@ class StrategyAgent:
                 "total": stats["total"], "entry_hits": entry_hits,
                 "blocked_consensus": stats.get("blocked_consensus", 0),
                 "blocked_threshold": stats.get("blocked_threshold", 0),
+                "blocked_already_holding": stats.get("blocked_already_holding", 0),
                 "signals": len(signals),
             },
         )
@@ -195,6 +197,23 @@ class StrategyAgent:
             if stats is not None:
                 stats["no_entry"] += 1
             await self._log_near_miss(pool, strategy, symbol, entry_signal, analysis_data)
+            return None
+
+        # / skip if already held
+        try:
+            held = await get_strategy_positions(
+                pool, strategy_id=strategy.strategy_id, symbol=symbol,
+            )
+        except Exception as exc:
+            logger.debug("already_holding_check_failed",
+                         strategy_id=strategy.strategy_id, symbol=symbol,
+                         error=str(exc)[:100])
+            held = None
+        if held:
+            if stats is not None:
+                stats["blocked_already_holding"] += 1
+            logger.debug("signal_blocked_already_holding",
+                         strategy_id=strategy.strategy_id, symbol=symbol)
             return None
 
         # / 2h intraday confirmation gate
