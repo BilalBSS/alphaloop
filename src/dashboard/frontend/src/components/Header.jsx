@@ -1,30 +1,88 @@
-// / compact top chrome — brand + ws health indicator.
-// / hero-level "what's happening now" now lives inside each tab to keep the header light.
-export default function Header({ portfolio, wsStatus }) {
-  const value = portfolio?.positions_count ?? '—'
-  const statusColor = {
-    connected: 'bg-profit',
-    reconnecting: 'bg-warning',
-    connecting: 'bg-warning',
-    disconnected: 'bg-loss',
-  }[wsStatus] || 'bg-text-muted'
-  const statusLabel = wsStatus === 'connected' ? 'live'
-    : wsStatus === 'reconnecting' || wsStatus === 'connecting' ? 'reconnecting'
+// / v3 .bar topbar
+
+const fmtMoney = (n) => {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—'
+  const sign = n < 0 ? '−' : ''
+  const abs = Math.abs(Number(n))
+  return `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+const fmtCycle = (iso) => {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    return d.toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/New_York' }) + ' ET'
+  } catch {
+    return '—'
+  }
+}
+
+export default function Header({ portfolio, health, macro, version, wsStatus, onRunCycle, onPauseExec, paused }) {
+  const nav = portfolio?.equity ?? portfolio?.nav ?? portfolio?.total_value
+  const pnl24 = portfolio?.pnl_24h ?? portfolio?.daily_pnl ?? portfolio?.pnl_today
+  const positions = portfolio?.positions_count ?? portfolio?.positions?.length
+  const positionsCap = portfolio?.max_open_positions ?? health?.risk?.max_open_positions
+  const regime = macro?.regime ?? portfolio?.regime
+  const regimeProb = macro?.regime_probability ?? macro?.p_bull
+  const cycleTs = health?.next_cycle_ts ?? health?.next_cycle
+  const versionLabel = version?.version ? `v${version.version}` : 'v0.10'
+  const brokerMode = version?.broker_mode ?? portfolio?.broker_mode ?? 'paper'
+
+  const wsLabel = wsStatus === 'connected' ? 'live'
+    : (wsStatus === 'reconnecting' || wsStatus === 'connecting') ? 'reconnecting'
     : 'offline'
+  const wsTone = wsStatus === 'connected' ? 'pos'
+    : (wsStatus === 'reconnecting' || wsStatus === 'connecting') ? 'warn'
+    : 'neg'
+
+  const pnlClass = pnl24 === undefined || pnl24 === null ? '' : (pnl24 < 0 ? 'neg' : 'pos')
 
   return (
-    <header className="h-12 bg-bg-surface border-b border-border flex items-center px-6 gap-6 text-sm shrink-0">
-      <span className="font-mono text-xl font-semibold text-text-primary tracking-wide">QTS</span>
+    <header className="bar">
+      <div className="b-l">
+        <span className="logo">▮ alphaloop</span>
+        <span className="v">{versionLabel} · {brokerMode}</span>
+      </div>
 
-      <div className="flex items-center gap-3 ml-auto">
-        <span className="text-text-secondary text-xs">
-          <span className="font-mono text-text-primary">{value}</span> positions
+      <div className="b-c">
+        <span><b>NAV</b> {fmtMoney(nav)}</span>
+        <span>
+          <b>P/L 24h</b>{' '}
+          <span className={pnlClass}>{fmtMoney(pnl24)}</span>
         </span>
-        <div className="flex items-center gap-1.5" title={`WebSocket: ${wsStatus}`}>
-          <div className={`w-2 h-2 rounded-full ${statusColor} ${wsStatus === 'connected' ? 'market-pulse' : ''}`} />
-          <span className="text-[10px] uppercase text-text-muted tracking-wider">{statusLabel}</span>
-        </div>
+        <span>
+          <b>regime</b> {regime ?? '—'}
+          {regimeProb !== undefined && regimeProb !== null
+            ? ` · ${Number(regimeProb).toFixed(2)}`
+            : ''}
+        </span>
+        <span><b>positions</b> {positions ?? '—'}{positionsCap ? `/${positionsCap}` : ''}</span>
+        <span><b>cycle</b> {fmtCycle(cycleTs)}</span>
+      </div>
+
+      <div className="b-r">
+        <button
+          type="button"
+          className="btn"
+          onClick={onRunCycle}
+          title="trigger /api/admin/trigger/strategy"
+        >
+          ⟳ run cycle
+        </button>
+        <button
+          type="button"
+          className={`btn ${paused ? 'neg' : 'warn'}`.trim()}
+          onClick={onPauseExec}
+          title="trigger /api/admin/pause"
+        >
+          {paused ? '▶ resume exec' : '‖ pause exec'}
+        </button>
+        <span title={`websocket: ${wsStatus}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <span className={`pulse`} style={{ background: `var(--${wsTone})` }} />
+          WS · {wsLabel}
+        </span>
       </div>
     </header>
   )
 }
+

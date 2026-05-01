@@ -177,6 +177,14 @@ class ExecutorAgent:
     async def _preflight(
         self, pool, trade_id: int, trade: dict, strategy_pool,
     ) -> dict | None:
+        from src.agents.system_flags import is_executor_paused
+        if await is_executor_paused(pool):
+            logger.warning(
+                "executor_paused_skip",
+                trade_id=trade_id, symbol=trade.get("symbol"),
+            )
+            return {"status": "paused", "reason": "executor_paused"}
+
         strategy_id = trade.get("strategy_id")
         if strategy_id:
             killed = False

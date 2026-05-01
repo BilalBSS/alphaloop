@@ -1,58 +1,86 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
 @import "tailwindcss";
 @import "./design-tokens.css";
+@import "./v3-components.css";
 
 @theme {
-  --color-bg-primary: #0a0a0f;
-  --color-bg-surface: #12121a;
-  --color-bg-hover: #1a1a25;
-  --color-border: #1e1e2a;
-  --color-text-primary: #e8e8ec;
-  --color-text-secondary: #8888a0;
-  --color-text-muted: #555570;
-  --color-profit: #00dc82;
-  --color-loss: #ff4757;
-  --color-accent: #3b82f6;
-  --color-warning: #f59e0b;
-  --color-critical: #ef4444;
+  --color-bg-primary:     #0b0d0c;
+  --color-bg-surface:     #111413;
+  --color-bg-hover:       #161a18;
+  --color-border:         #232927;
+  --color-text-primary:   #e7e3d6;
+  --color-text-secondary: #b8b3a3;
+  --color-text-muted:     #807b6d;
+  --color-profit:         #7fb87a;
+  --color-loss:           #d56a5b;
+  --color-accent:         #d8b466;
+  --color-warning:        #c79a3a;
+  --color-critical:       #d56a5b;
 }
 
-body {
+html, body {
   margin: 0;
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 14px;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  font-feature-settings: "tnum", "zero", "ss01";
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
 
+::selection { background: var(--acc); color: var(--bg); }
+
+a { color: var(--acc); text-decoration: none; }
+a:hover { color: var(--ink); background: var(--hl); }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--acc);
+  background: var(--bg-3);
+  padding: 1px 5px;
+}
+
 .font-mono {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
-/* skeleton loading animation */
-@keyframes pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.7; }
-}
-.skeleton {
-  background: var(--color-bg-hover);
-  animation: pulse 1.5s ease-in-out infinite;
-  border-radius: 4px;
+.font-sans {
+  font-family: var(--sans);
 }
 
-/* market pulse dot */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.7; }
+}
+.skeleton {
+  background: var(--bg-3);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 @keyframes market-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  50%      { opacity: 0.5; }
 }
 .market-pulse {
   animation: market-pulse 2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skeleton, .market-pulse {
+  .skeleton, .market-pulse, .bar .pulse {
     animation: none;
   }
 }

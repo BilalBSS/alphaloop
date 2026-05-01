@@ -1,8 +1,15 @@
 # / shared fixtures for test suite
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture
+def default_executor_unpaused():
+    # / opt-in: executor pause flag stubbed false
+    with patch("src.agents.system_flags.is_executor_paused", new=AsyncMock(return_value=False)):
+        yield
 
 
 @pytest.fixture

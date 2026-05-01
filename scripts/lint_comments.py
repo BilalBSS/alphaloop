@@ -103,7 +103,7 @@ def main() -> int:
         out.reconfigure(encoding="utf-8", errors="replace")
     total = 0
     for py in sorted(SRC.rglob("*.py")):
-        if "vendor" in py.parts:
+        if "vendor" in py.parts or "node_modules" in py.parts:
             continue
         violations = lint_file(py)
         if violations:

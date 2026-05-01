@@ -9,6 +9,8 @@ import pytest
 from src.agents.executor_agent import ExecutorAgent
 from src.brokers.base import Order
 
+pytestmark = pytest.mark.usefixtures("default_executor_unpaused")
+
 # ---------------------------------------------------------------------------
 # / helpers
 # ---------------------------------------------------------------------------
