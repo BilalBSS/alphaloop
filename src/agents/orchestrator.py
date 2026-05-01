@@ -142,7 +142,7 @@ class AgentOrchestrator:
         if path.exists():
             try:
                 return json.loads(path.read_text())
-            except Exception as exc:
+            except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("risk_limits_load_failed", error=str(exc)[:120])
         return {}
 

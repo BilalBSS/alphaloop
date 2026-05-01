@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+import asyncpg
 import structlog
 
 from src.agents.market_tools import fetch_peak_equity, store_peak_equity
@@ -44,8 +45,8 @@ class CircuitBreakerState:
             self._peak_equity = equity
         try:
             await store_peak_equity(pool, equity, self._peak_equity)
-        except Exception as exc:
-            logger.debug("store_peak_equity_failed", error=str(exc)[:80])
+        except (asyncpg.PostgresError, ConnectionError, OSError) as exc:
+            logger.warning("store_peak_equity_failed", error=str(exc)[:80])
         return self._peak_equity
 
     def current_drawdown(self, equity: float) -> float:
