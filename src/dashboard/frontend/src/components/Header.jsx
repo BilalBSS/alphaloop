@@ -25,8 +25,8 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
   const regime = macro?.regime ?? portfolio?.regime
   const regimeProb = macro?.regime_probability ?? macro?.p_bull
   const cycleTs = health?.next_cycle_ts ?? health?.next_cycle
-  const versionLabel = version?.version ? `v${version.version}` : 'v0.10'
-  const brokerMode = version?.broker_mode ?? portfolio?.broker_mode ?? 'paper'
+  const versionLabel = version?.version ? `v${version.version}` : null
+  const brokerMode = version?.broker_mode ?? portfolio?.broker_mode
 
   const wsLabel = wsStatus === 'connected' ? 'live'
     : (wsStatus === 'reconnecting' || wsStatus === 'connecting') ? 'reconnecting'
@@ -41,7 +41,11 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
     <header className="bar">
       <div className="b-l">
         <span className="logo">▮ alphaloop</span>
-        <span className="v">{versionLabel} · {brokerMode}</span>
+        {(versionLabel || brokerMode) && (
+          <span className="v">
+            {versionLabel}{versionLabel && brokerMode ? ' · ' : ''}{brokerMode}
+          </span>
+        )}
       </div>
 
       <div className="b-c">
@@ -78,7 +82,7 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
           {paused ? '▶ resume exec' : '‖ pause exec'}
         </button>
         <span title={`websocket: ${wsStatus}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <span className={`pulse`} style={{ background: `var(--${wsTone})` }} />
+          <span className={`pulse ${wsTone === 'pos' ? '' : wsTone}`.trim()} />
           WS · {wsLabel}
         </span>
       </div>
