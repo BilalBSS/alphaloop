@@ -189,17 +189,21 @@ async def claim_approved_trade_atomic(pool, trade_id: int) -> bool:
 
 
 async def attach_broker_order_id(pool, trade_id: int, order_id: str) -> None:
+    # / persist broker order_id
     if not order_id:
         return
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 "UPDATE approved_trades SET order_id = $1 WHERE id = $2",
                 order_id, trade_id,
             )
+        if result != "UPDATE 1":
+            logger.warning("attach_broker_order_id_no_match",
+                           trade_id=trade_id, order_id=order_id, result=result)
     except Exception as exc:
-        logger.debug("attach_broker_order_id_failed",
-                     trade_id=trade_id, error=str(exc)[:120])
+        logger.warning("attach_broker_order_id_failed",
+                       trade_id=trade_id, order_id=order_id, error=str(exc)[:120])
 
 
 async def fetch_strategy_id_by_order(pool, order_id: str) -> tuple[int | None, str | None]:

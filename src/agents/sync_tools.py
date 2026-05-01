@@ -80,6 +80,26 @@ async def sync_trades_from_alpaca(pool) -> int:
                 "SELECT id, strategy_id FROM approved_trades WHERE order_id = $1",
                 order_id,
             )
+            # / proximity match on missed attach
+            if approved_row is None:
+                approved_row = await conn.fetchrow(
+                    """SELECT id, strategy_id FROM approved_trades
+                    WHERE order_id IS NULL
+                      AND symbol = $1 AND side = $2
+                      AND ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamptz))) <= 300
+                      AND ABS(qty - $4) < 0.0001
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamptz))) ASC
+                    LIMIT 1""",
+                    symbol, side, filled_at, Decimal(str(qty)),
+                )
+                if approved_row is not None:
+                    await conn.execute(
+                        "UPDATE approved_trades SET order_id = $1 WHERE id = $2",
+                        order_id, approved_row["id"],
+                    )
+                    logger.info("alpaca_sync_proximity_recovery",
+                                trade_id=approved_row["id"], order_id=order_id,
+                                symbol=symbol, strategy_id=approved_row["strategy_id"])
             linked_trade_id = approved_row["id"] if approved_row else None
             linked_strategy_id = approved_row["strategy_id"] if approved_row else None
             await conn.execute(
