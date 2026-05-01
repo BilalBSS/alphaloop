@@ -135,6 +135,15 @@ async def reconcile_strategy_positions(
                         ORDER BY created_at DESC LIMIT 1""",
                         symbol,
                     )
+                    # / fall back to approved_trades
+                    if not recovered or recovered["strategy_id"] is None:
+                        recovered = await conn.fetchrow(
+                            """SELECT strategy_id FROM approved_trades
+                            WHERE symbol = $1 AND side = 'buy' AND strategy_id IS NOT NULL
+                              AND status IN ('filled', 'executing', 'pending')
+                            ORDER BY created_at DESC LIMIT 1""",
+                            symbol,
+                        )
                     strat = (recovered["strategy_id"] if recovered else None) or "untracked"
                     await conn.execute(
                         """INSERT INTO strategy_positions (strategy_id, symbol, qty, avg_entry_price, updated_at)
@@ -158,6 +167,14 @@ async def reconcile_strategy_positions(
                             ORDER BY created_at DESC LIMIT 1""",
                             symbol,
                         )
+                        if not recovered or recovered["strategy_id"] is None:
+                            recovered = await conn.fetchrow(
+                                """SELECT strategy_id FROM approved_trades
+                                WHERE symbol = $1 AND side = 'buy' AND strategy_id IS NOT NULL
+                                  AND status IN ('filled', 'executing', 'pending')
+                                ORDER BY created_at DESC LIMIT 1""",
+                                symbol,
+                            )
                         if recovered and recovered["strategy_id"]:
                             sid = recovered["strategy_id"]
                             row = untracked_rows[0]

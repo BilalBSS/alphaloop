@@ -1341,9 +1341,8 @@ class TestSyncTradesFromAlpacaPnl:
 
         mock_conn = AsyncMock()
         mock_conn.fetch.return_value = []  # / no existing order_ids
-        # / three fetchrow calls now: (1) prior-buy pnl lookup, (2) approved_trades
-        # / link lookup (fix 4), (3) owned_by_real guard for bug 1a
-        mock_conn.fetchrow.side_effect = [{"price": Decimal("175.68")}, None, None]
+        # / fetchrow calls: prior_buy, approved_by_id, approved_proximity, owned_by_real
+        mock_conn.fetchrow.side_effect = [{"price": Decimal("175.68")}, None, None, None]
         pool = _mock_pool(mock_conn)
 
         result = await sync_trades_from_alpaca(pool)
@@ -1488,9 +1487,8 @@ class TestSyncTradesStrategyPositionProjection:
 
         mock_conn = AsyncMock()
         mock_conn.fetch.return_value = []
-        # / fetchrow calls: (1) approved_row lookup — None, (2) owned_by_real
-        # / guard — truthy row meaning a real strategy already owns AAPL.
-        mock_conn.fetchrow.side_effect = [None, {"?column?": 1}]
+        # / fetchrow calls: approved_by_id, approved_proximity, owned_by_real
+        mock_conn.fetchrow.side_effect = [None, None, {"?column?": 1}]
         pool = _mock_pool(mock_conn)
 
         result = await sync_trades_from_alpaca(pool)
@@ -1521,9 +1519,8 @@ class TestSyncTradesStrategyPositionProjection:
 
         mock_conn = AsyncMock()
         mock_conn.fetch.return_value = []
-        # / fetchrow calls: (1) prior_buy pnl lookup, (2) approved_row lookup,
-        # / (3) owned_by_real guard — none of them block projection.
-        mock_conn.fetchrow.side_effect = [{"price": Decimal("250.00")}, None, None]
+        # / fetchrow calls: prior_buy, approved_by_id, approved_proximity, owned_by_real
+        mock_conn.fetchrow.side_effect = [{"price": Decimal("250.00")}, None, None, None]
         pool = _mock_pool(mock_conn)
 
         result = await sync_trades_from_alpaca(pool)

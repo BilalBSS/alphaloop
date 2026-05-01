@@ -133,7 +133,7 @@ class TestRiskAgentApproval:
         mock_conn.fetchrow.return_value = _make_signal_row()
         pool = _mock_pool(mock_conn)
         broker = _make_broker()
-        broker.get_price.side_effect = Exception("no price data")
+        broker.get_price.side_effect = ConnectionError("no price data")
 
         with patch("src.agents.risk_agent.update_trade_status", new_callable=AsyncMock):
             result = await self.agent.process_signal(pool, 1, broker)

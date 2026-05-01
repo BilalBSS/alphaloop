@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import structlog
 
 from src.dashboard import alerts as alerts_mod
@@ -25,7 +26,7 @@ def _prev_price_cache() -> dict[str, float]:
 async def _resolve_price(broker: Any, symbol: str) -> float | None:
     try:
         value = await broker.get_price(symbol)
-    except Exception as exc:
+    except (ConnectionError, TimeoutError, OSError) as exc:
         logger.debug("alert_price_fetch_failed", symbol=symbol, error=str(exc))
         return None
     if value is None:
@@ -91,7 +92,7 @@ async def _send_discord(webhook_url: str, fired: list[dict]) -> bool:
             logger.warning("alert_discord_send_failed", status=status)
             return False
         return True
-    except Exception as exc:
+    except (httpx.HTTPError, TimeoutError, OSError) as exc:
         logger.warning("alert_discord_send_failed", error_type=type(exc).__name__)
         return False
 

@@ -152,6 +152,10 @@ class ExecutorAgent:
 
         if getattr(order, "order_id", None):
             await attach_broker_order_id(pool, trade_id, order.order_id)
+        else:
+            logger.warning("executor_no_order_id",
+                           trade_id=trade_id, symbol=symbol, side=side,
+                           broker=type(broker).__name__)
 
         if order.status == "filled":
             return await self._handle_fill(

@@ -12,19 +12,19 @@
   "activity_scaling_enabled": true,
   "max_single_trade_loss_pct": 0.02,
   "require_stop_loss": true,
-  "paper_trade_min_days": 14,
+  "paper_trade_min_days": 7,
   "promotion_min_sharpe": 0.8,
   "promotion_min_win_rate": 0.45,
 
   "evolution": {
     "tier2_spawn_trades": 20,
-    "tier2_kill_trades": 20,
+    "tier2_kill_trades": 10,
     "tier3_graduate_trades": 100,
     "tier3_sharpe_delta": 0.2,
     "tier2_param_freedom": 0.20
   },
 
-  "consecutive_loss_pause_count": 3,
+  "consecutive_loss_pause_count": 5,
   "consecutive_loss_pause_seconds": 3600,
   "max_liquidity_pct": 0.01,
   "regime_sizing_multipliers": {

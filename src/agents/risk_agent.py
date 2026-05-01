@@ -135,8 +135,8 @@ class RiskAgent:
         # / 5. price quote
         try:
             price = await broker.get_price(symbol)
-        except Exception:
-            # / swallow broker price failure
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.warning("risk_get_price_failed", symbol=symbol, error=str(exc)[:80])
             return await self._reject(pool, signal_id, "no_price")
 
         if side == "buy":

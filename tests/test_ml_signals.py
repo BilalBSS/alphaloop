@@ -78,6 +78,7 @@ class TestBenchmarkFeatureSets:
     @pytest.mark.asyncio
     async def test_short_history_returns_insufficient_error(self):
         pytest.importorskip("lightgbm")
+        pytest.importorskip("sklearn")
         ohlcv = _synthetic_ohlcv(80)
         result = await ml_signals.benchmark_feature_sets(ohlcv)
         for key in ("handbuilt", "alpha158"):
@@ -86,6 +87,7 @@ class TestBenchmarkFeatureSets:
     @pytest.mark.asyncio
     async def test_full_history_returns_brier_for_both_sets(self):
         pytest.importorskip("lightgbm")
+        pytest.importorskip("sklearn")
         ohlcv = _synthetic_ohlcv(400)
         result = await ml_signals.benchmark_feature_sets(ohlcv)
         assert "brier" in result["handbuilt"]
