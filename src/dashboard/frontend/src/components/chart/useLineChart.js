@@ -26,25 +26,26 @@ export function useLineChart(containerRef, { theme, color, height = 220, seriesT
 
     let lineSeries
     if (seriesType === 'area') {
-      // / area series: same line + translucent fill beneath
+      // / area + translucent fill
+      const stroke = color || theme.up
       lineSeries = chart.addSeries(AreaSeries, {
-        lineColor: color || theme.up,
-        topColor: color ? hexToRgba(color, 0.28) : 'rgba(0, 220, 130, 0.28)',
-        bottomColor: color ? hexToRgba(color, 0) : 'rgba(0, 220, 130, 0)',
+        lineColor: stroke,
+        topColor: hexToRgba(stroke, 0.28),
+        bottomColor: hexToRgba(stroke, 0),
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: false,
       })
     } else if (seriesType === 'baseline') {
-      // / baseline series: auto-split above/below baseValue with distinct top/bottom palettes
+      // / baseline split by tone
       lineSeries = chart.addSeries(BaselineSeries, {
         baseValue: { type: 'price', price: 0 },
         topLineColor: theme.up,
-        topFillColor1: 'rgba(0, 220, 130, 0.28)',
-        topFillColor2: 'rgba(0, 220, 130, 0.05)',
+        topFillColor1: hexToRgba(theme.up, 0.28),
+        topFillColor2: hexToRgba(theme.up, 0.05),
         bottomLineColor: theme.down,
-        bottomFillColor1: 'rgba(255, 71, 87, 0.05)',
-        bottomFillColor2: 'rgba(255, 71, 87, 0.28)',
+        bottomFillColor1: hexToRgba(theme.down, 0.05),
+        bottomFillColor2: hexToRgba(theme.down, 0.28),
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -91,10 +92,10 @@ export function useLineChart(containerRef, { theme, color, height = 220, seriesT
   return state
 }
 
-// / convert #rrggbb to rgba(r, g, b, a) — used for area fill gradient derived from a solid stroke
+// / hex to rgba
 function hexToRgba(hex, alpha) {
   if (typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) {
-    return `rgba(0, 220, 130, ${alpha})`
+    return `rgba(127, 184, 122, ${alpha})`
   }
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)

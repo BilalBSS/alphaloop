@@ -47,7 +47,7 @@ function PriceChart({ priceHistory }) {
       data={priceHistory}
       timeKey="date"
       valueKey="close"
-      color="var(--acc)"
+      color="#d8b466"
       height={220}
       valueFmt={v => `$${v.toFixed(2)}`}
       emptyText="No price data"

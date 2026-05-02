@@ -13,10 +13,10 @@ const CONSENSUS_VALUES = {
 }
 
 const CONSENSUS_COLORS = {
-  bullish: 'rgba(0, 220, 130, 0.8)',
-  bearish: 'rgba(255, 71, 87, 0.8)',
-  neutral: 'rgba(136, 136, 160, 0.6)',
-  disagree: 'rgba(255, 169, 77, 0.8)',
+  bullish: 'rgba(127, 184, 122, 0.85)',
+  bearish: 'rgba(213, 106, 91, 0.85)',
+  neutral: 'rgba(184, 179, 163, 0.55)',
+  disagree: 'rgba(216, 180, 102, 0.85)',
 }
 
 export function createConsensusStrip(chart, paneIndex = 0) {

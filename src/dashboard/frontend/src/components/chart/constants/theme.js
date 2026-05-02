@@ -1,16 +1,17 @@
-// / dark theme for lightweight-charts matching the dashboard palette (index.css tokens)
-// / used by useCandlestickChart to style chart layout, axes, candles, and volume histogram
+// / v3 chart theme
 
 export const darkTheme = {
-  bg: '#12121a',
-  border: '#1e1e2a',
-  axisText: '#8888a0',
-  grid: '#1a1a25',
-  up: '#00dc82',
-  down: '#ff4757',
-  volumeUp: 'rgba(0, 220, 130, 0.5)',
-  volumeDown: 'rgba(255, 71, 87, 0.5)',
-  crosshair: '#8888a0',
+  bg: '#0b0d0c',
+  border: '#232927',
+  axisText: '#b8b3a3',
+  grid: '#161a18',
+  up: '#7fb87a',
+  down: '#d56a5b',
+  acc: '#d8b466',
+  acc2: '#6fa8c9',
+  volumeUp: 'rgba(127, 184, 122, 0.55)',
+  volumeDown: 'rgba(213, 106, 91, 0.55)',
+  crosshair: '#807b6d',
 }
 
 // / maps darkTheme into a lightweight-charts ChartOptions object

@@ -97,7 +97,7 @@ export default function LWChart({
       volume[w] = {
         time: t,
         value: v,
-        color: c >= o ? 'rgba(0, 220, 130, 0.25)' : 'rgba(255, 71, 87, 0.25)',
+        color: c >= o ? 'rgba(127, 184, 122, 0.35)' : 'rgba(213, 106, 91, 0.35)',
       }
       w++
     }
