@@ -5,19 +5,19 @@ import NearMissesPanel from './trades/NearMissesPanel'
 
 // / fills + observation log
 
-export default function TradesTab({ trades, loading }) {
+export default function TradesTab({ trades, loading, navigate }) {
   return (
     <>
       <SectionH
         num="08"
         title="fills"
         em="trade ledger"
-        meta={<><code>/api/trades</code> · click row → reasoning</>}
+        meta={<><code>/api/trades</code> · click row → reasoning · view → chain</>}
       >
         {loading ? (
           <div className="empty-state"><div className="empty-state-title">loading trades</div></div>
         ) : (
-          <TradeLedger trades={trades || []} />
+          <TradeLedger trades={trades || []} navigate={navigate} />
         )}
       </SectionH>
 

@@ -134,7 +134,7 @@ class TestMutateKilledRow:
         mock_pool = MagicMock()
         captured_tokens: list[int] = []
 
-        async def _fake_store(pool, generation, parent_strategy_id, wiki_guided, wiki_context_tokens):
+        async def _fake_store(pool, generation, parent_strategy_id, wiki_guided, wiki_context_tokens, retrieval_cycle_id=None):
             captured_tokens.append(wiki_context_tokens)
             return 99
 
@@ -175,7 +175,7 @@ class TestMutateKilledRow:
         mock_pool = MagicMock()
         captured: list[tuple[bool, int]] = []
 
-        async def _fake_store(pool, generation, parent_strategy_id, wiki_guided, wiki_context_tokens):
+        async def _fake_store(pool, generation, parent_strategy_id, wiki_guided, wiki_context_tokens, retrieval_cycle_id=None):
             captured.append((wiki_guided, wiki_context_tokens))
             return 1
 

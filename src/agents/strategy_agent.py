@@ -23,6 +23,7 @@ from src.agents.market_tools import (
     store_ict_indicators,
 )
 from src.agents.position_tools import get_strategy_positions, mark_partial_exit_fired
+from src.agents.decision_id import new_decision_id
 from src.agents.trade_tools import store_trade_signal
 from src.data.strategy_metrics import store_strategy_evaluation
 from src.indicators.mean_reversion import hurst_exponent
@@ -272,6 +273,7 @@ class StrategyAgent:
                 "smoothed_strength": smoothed_strength,
                 "reasons": entry_signal.reasons,
             },
+            decision_id=new_decision_id(),
         )
         if stats is not None:
             stats["signals"] += 1
@@ -753,6 +755,7 @@ class StrategyAgent:
                         "partial_exit": True,
                         "exit_fraction": partial_sig["fraction"],
                     },
+                    decision_id=new_decision_id(),
                 )
                 try:
                     await mark_partial_exit_fired(
@@ -793,6 +796,7 @@ class StrategyAgent:
                         "exit_reason": exit_signal.reason,
                         "qty": sp["qty"],
                     },
+                    decision_id=new_decision_id(),
                 )
                 return {
                     "signal_id": signal_id,

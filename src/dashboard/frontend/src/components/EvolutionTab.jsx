@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import SectionH from './ui/SectionH'
 import MutationLogPanel from './evolution/MutationLogPanel'
 import WikiRetrievalPanel from './evolution/WikiRetrievalPanel'
@@ -30,6 +31,7 @@ export default function EvolutionTab({ evolution, loading }) {
   const { data: loops } = useApi('/api/loops', 60000)
   const evoLoop = loops?.loops?.find((l) => l.name === 'evolution')
   const lastTs = lastEventTs(evolution)
+  const [selectedCycleId, setSelectedCycleId] = useState(null)
 
   return (
     <>
@@ -45,8 +47,13 @@ export default function EvolutionTab({ evolution, loading }) {
         }
       >
         <div className="grid c12-8-4">
-          <MutationLogPanel events={evolution || []} loading={loading} />
-          <WikiRetrievalPanel />
+          <MutationLogPanel
+            events={evolution || []}
+            loading={loading}
+            onSelectCycle={setSelectedCycleId}
+            selectedCycleId={selectedCycleId}
+          />
+          <WikiRetrievalPanel cycleId={selectedCycleId} />
         </div>
       </SectionH>
 

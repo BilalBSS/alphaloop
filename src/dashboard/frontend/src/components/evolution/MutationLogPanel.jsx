@@ -28,7 +28,7 @@ function highlightStrategies(text) {
   )
 }
 
-export default function MutationLogPanel({ events, loading }) {
+export default function MutationLogPanel({ events, loading, onSelectCycle, selectedCycleId }) {
   if (loading) {
     return (
       <Card title={<><b>mutation</b> log</>} meta="evolution_log" p0>
@@ -48,16 +48,24 @@ export default function MutationLogPanel({ events, loading }) {
   }
 
   return (
-    <Card title={<><b>mutation</b> log</>} meta="deepseek-v3 mutator" p0>
+    <Card title={<><b>mutation</b> log</>} meta="deepseek-v3 mutator · click wiki to load retrieval" p0>
       <div className="muts">
         {events.slice(0, 30).map((e, i) => {
           const kind = statusKind(e.action)
           const meta = e.metadata || e.details || {}
-          const wiki = meta.wiki_guided === true
+          const wiki = meta.wiki_guided === true || e.wiki_guided === true
+          const cycleId = e.retrieval_cycle_id || meta.retrieval_cycle_id || null
           const wfSharpe = meta.wf_sharpe ?? meta.walk_forward_sharpe ?? meta.sharpe ?? null
           const desc = e.reason || `${e.action} ${e.strategy_id}${e.parent_id ? ` (← ${e.parent_id})` : ''}`
+          const clickable = onSelectCycle && cycleId
+          const sel = selectedCycleId && cycleId && selectedCycleId === cycleId
+          const onClick = clickable ? () => onSelectCycle(cycleId) : undefined
           return (
-            <div key={i} className="row">
+            <div
+              key={i}
+              className={`row${clickable ? ' click' : ''}${sel ? ' sel' : ''}`}
+              onClick={onClick}
+            >
               <span className="ts">{fmtTs(e.created_at)}</span>
               <span className={`k ${kind}`}>{e.action || '—'}</span>
               <span className="txt">

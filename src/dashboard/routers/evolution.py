@@ -19,8 +19,14 @@ _VALID_WIKI_CATEGORIES = {
 @router.get("/api/evolution")
 async def get_evolution():
     rows = await db.query(
-        """SELECT * FROM evolution_log
-        ORDER BY generation DESC, created_at DESC LIMIT 50"""
+        """SELECT el.*, em.retrieval_cycle_id, em.wiki_guided
+        FROM evolution_log el
+        LEFT JOIN evolution_mutations em
+          ON em.generation = el.generation
+          AND em.parent_strategy_id = el.strategy_id
+          AND em.created_at >= el.created_at - INTERVAL '5 minutes'
+          AND em.created_at <= el.created_at + INTERVAL '5 minutes'
+        ORDER BY el.generation DESC, el.created_at DESC LIMIT 50"""
     )
     return serializers.serialize(rows)
 
@@ -34,7 +40,7 @@ async def get_evolution_mutations(limit: int = 100):
     rows = await db.query(
         """SELECT id, generation, parent_strategy_id, mutant_strategy_id,
                 wiki_guided, wiki_context_tokens, parent_sharpe, mutant_sharpe,
-                sharpe_delta, survived, created_at
+                sharpe_delta, survived, retrieval_cycle_id, created_at
         FROM evolution_mutations
         ORDER BY created_at DESC LIMIT $1""",
         limit,

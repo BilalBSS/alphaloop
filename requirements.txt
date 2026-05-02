@@ -19,6 +19,9 @@ exchange_calendars>=4.5.0
 
 # / LLM providers are accessed via httpx (see src/data/llm_client.py) — no SDKs required
 
+# / decision_id ulids
+python-ulid>=2.2
+
 # Dashboard
 fastapi>=0.100.0
 uvicorn>=0.22.0

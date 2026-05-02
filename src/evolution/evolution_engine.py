@@ -21,8 +21,10 @@ from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
+from src.agents.decision_id import new_decision_id
 from src.knowledge.db_helpers import (
     store_evolution_mutation,
+    store_retrieval_log,
     update_evolution_mutation_by_mutant,
     update_evolution_mutation_outcome,
 )
@@ -371,6 +373,24 @@ class EvolutionEngine:
 
             ctx_tokens = len(wiki_ctx or "") // 4
 
+            cycle_id: str | None = None
+            if wiki_guided and wiki_ctx:
+                cycle_id = new_decision_id()
+                try:
+                    await store_retrieval_log(
+                        pool,
+                        cycle_id=cycle_id,
+                        parent_id=sid,
+                        child_id=None,
+                        prompt_tokens=ctx_tokens,
+                        retrieved={"context": wiki_ctx},
+                    )
+                except Exception as exc:
+                    logger.info(
+                        "retrieval_log_write_failed",
+                        strategy_id=sid, error=str(exc)[:120],
+                    )
+
             row_id: int | None = None
             try:
                 row_id = await store_evolution_mutation(
@@ -379,6 +399,7 @@ class EvolutionEngine:
                     parent_strategy_id=sid,
                     wiki_guided=wiki_guided,
                     wiki_context_tokens=ctx_tokens,
+                    retrieval_cycle_id=cycle_id,
                 )
             except Exception as exc:
                 logger.info(

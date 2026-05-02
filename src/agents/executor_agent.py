@@ -296,6 +296,7 @@ class ExecutorAgent:
                 "order_status": order.status if not polled else "filled",
                 "order_type": order_type,
             },
+            decision_id=trade.get("decision_id"),
         )
         await update_trade_status(pool, "approved_trades", trade_id, "filled")
 

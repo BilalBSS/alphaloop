@@ -98,7 +98,7 @@ function TradeDetail({ tradeId }) {
   )
 }
 
-export default function TradeLedger({ trades }) {
+export default function TradeLedger({ trades, navigate }) {
   const [expandedId, setExpandedId] = useState(null)
 
   if (!trades || trades.length === 0) {
@@ -125,6 +125,7 @@ export default function TradeLedger({ trades }) {
             <th className="r">notional</th>
             <th>strategy</th>
             <th className="r">realized</th>
+            <th className="r">chain</th>
           </tr>
         </thead>
         <tbody>
@@ -137,6 +138,10 @@ export default function TradeLedger({ trades }) {
             const notional = price * Math.abs(qty)
             const sideTone = t.side === 'buy' ? 'pos' : t.side === 'sell' ? 'neg' : ''
             const pnlTone = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'dim'
+            const onChainClick = (e) => {
+              e.stopPropagation()
+              if (navigate && t.decision_id) navigate('decisions', { decision_id: t.decision_id })
+            }
             return (
               <Fragment key={key}>
                 <tr className="click" onClick={() => setExpandedId(open ? null : key)}>
@@ -148,10 +153,17 @@ export default function TradeLedger({ trades }) {
                   <td className="r">{fmtUsd(notional)}</td>
                   <td className="dim tiny">{t.strategy_id || '—'}</td>
                   <td className={`r ${pnlTone}`}>{pnl !== 0 ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}` : '—'}</td>
+                  <td className="r">
+                    {t.decision_id ? (
+                      <a href="#" onClick={onChainClick} style={{ color: 'var(--acc)', fontFamily: 'var(--mono)', fontSize: 10 }}>view →</a>
+                    ) : (
+                      <span className="dim tiny">—</span>
+                    )}
+                  </td>
                 </tr>
                 {open && (
                   <tr>
-                    <td colSpan={8} style={{ padding: 0 }}>
+                    <td colSpan={9} style={{ padding: 0 }}>
                       {t.id ?? t.trade_id ? (
                         <TradeDetail tradeId={t.id ?? t.trade_id} />
                       ) : (

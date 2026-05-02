@@ -3,7 +3,8 @@ import { useWebSocket } from '../hooks/useApi'
 
 // / context exposes { subscribe(eventType, callback), status }
 // / subscribers are called when backend broadcasts an event matching their type
-// / events: 'position_update', 'trade_executed', 'signal_generated', 'regime_shift', 'strategy_status_change'
+// / events: 'position_update', 'trade_executed', 'signal_generated', 'regime_shift',
+// / 'strategy_status_change', 'decision_made', 'gate_breach'
 const WebSocketContext = createContext(null)
 
 export function WebSocketProvider({ children }) {

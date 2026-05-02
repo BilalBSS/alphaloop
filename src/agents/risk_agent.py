@@ -31,6 +31,62 @@ from src.quant.copula_models import student_t_copula_fit, tail_dependence_coeffi
 logger = structlog.get_logger(__name__)
 
 
+async def _fetch_decision_id(pool, signal_id: int) -> str | None:
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT decision_id FROM trade_signals WHERE id = $1", signal_id,
+            )
+        if row is None:
+            return None
+        try:
+            return row["decision_id"]
+        except (KeyError, TypeError):
+            return None
+    except Exception as exc:
+        logger.debug("fetch_decision_id_failed", error=str(exc)[:100])
+        return None
+
+
+def _broadcast_decision_made(
+    decision_id: str | None, symbol: str, side: str, qty: int, strategy_id: str | None,
+) -> None:
+    if not decision_id:
+        return
+    try:
+        from src.agents.data_tools import fire_and_forget
+        from src.dashboard.app import _ws_clients, broadcast
+    except ImportError:
+        return
+    if not _ws_clients:
+        return
+    try:
+        fire_and_forget(broadcast("decision_made", {
+            "decision_id": decision_id, "symbol": symbol,
+            "side": side, "qty": int(qty), "strategy_id": strategy_id,
+        }))
+    except Exception as exc:
+        logger.debug("broadcast_decision_made_failed", error=str(exc)[:120])
+
+
+def _broadcast_gate_breach(
+    decision_id: str | None, signal_id: int, gate: str,
+) -> None:
+    try:
+        from src.agents.data_tools import fire_and_forget
+        from src.dashboard.app import _ws_clients, broadcast
+    except ImportError:
+        return
+    if not _ws_clients:
+        return
+    try:
+        fire_and_forget(broadcast("gate_breach", {
+            "decision_id": decision_id, "signal_id": signal_id, "gate": gate,
+        }))
+    except Exception as exc:
+        logger.debug("broadcast_gate_breach_failed", error=str(exc)[:120])
+
+
 class RiskAgent:
     def __init__(
         self,
@@ -101,7 +157,9 @@ class RiskAgent:
     async def _reject(
         self, pool, signal_id: int, label: str, response_reason: str | None = None,
     ) -> dict:
+        decision_id = await _fetch_decision_id(pool, signal_id)
         await update_trade_status(pool, "trade_signals", signal_id, "rejected", label)
+        _broadcast_gate_breach(decision_id, signal_id, label)
         return {"status": "rejected", "reason": response_reason or label}
 
     async def _process_signal_inner(
@@ -467,11 +525,15 @@ class RiskAgent:
         self, pool, signal_id: int, signal: dict, symbol: str, side: str, qty: int,
     ) -> dict:
         strategy_id = signal.get("strategy_id")
+        decision_id = signal.get("decision_id")
+        sizing_details = await self._build_sizing_details(pool, signal, side, qty)
         trade_id = await store_approved_trade(
             pool, signal_id=signal_id, symbol=symbol, side=side,
             qty=float(qty), order_type="market", strategy_id=strategy_id,
+            decision_id=decision_id, sizing_details=sizing_details,
         )
         await update_trade_status(pool, "trade_signals", signal_id, "processed")
+        _broadcast_decision_made(decision_id, symbol, side, qty, strategy_id)
         logger.info(
             "trade_approved",
             signal_id=signal_id, trade_id=trade_id,
@@ -483,7 +545,39 @@ class RiskAgent:
             "symbol": symbol,
             "qty": qty,
             "side": side,
+            "decision_id": decision_id,
         }
+
+    async def _build_sizing_details(
+        self, pool, signal: dict, side: str, qty: int,
+    ) -> dict:
+        # / sizing rationale snapshot
+        try:
+            strategy_id = signal.get("strategy_id") or ""
+            try:
+                kelly_fraction = await capital_allocator.get_allocation(
+                    pool, strategy_id, max_position_pct_default=self.max_position_pct,
+                )
+            except Exception:
+                kelly_fraction = float(self.max_position_pct)
+            try:
+                regime_label = await fetch_latest_regime(pool) or "insufficient_data"
+            except Exception:
+                regime_label = signal.get("regime") or "unknown"
+            if not isinstance(regime_label, str):
+                regime_label = "unknown"
+            regime_mult = self._regime_multipliers.get(regime_label, 1.0)
+            return {
+                "strength": float(signal.get("strength") or 0),
+                "kelly_fraction": float(kelly_fraction),
+                "regime": regime_label,
+                "regime_multiplier": float(regime_mult),
+                "side": side,
+                "final_qty": int(qty),
+            }
+        except Exception as exc:
+            logger.debug("sizing_details_build_failed", error=str(exc)[:100])
+            return {"side": side, "final_qty": int(qty)}
 
     def _infer_stop_distance(self, strategy_pool, strategy_id) -> float | None:
         if not strategy_id:

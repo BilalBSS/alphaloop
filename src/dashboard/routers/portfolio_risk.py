@@ -102,6 +102,149 @@ async def get_sizing_multipliers():
         return {"multipliers": {}}
 
 
+@router.get("/api/risk/gauges")
+async def get_risk_gauges():
+    # / 4-up + 8-gate snapshot
+    import json
+    from pathlib import Path
+    cfg_path = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+
+    gauges = {
+        "var_95": {"value": None, "limit": None, "label": "VaR (95%)"},
+        "tail_dep_lambda": {
+            "value": None,
+            "limit": float(cfg.get("tail_dependence_threshold", 0.30)),
+            "label": "tail dep λ",
+        },
+        "drawdown_pct": {
+            "value": None,
+            "limit": float(cfg.get("max_drawdown_hard_stop", -0.20)),
+            "label": "drawdown",
+        },
+        "gross_exposure_pct": {
+            "value": None,
+            "limit": 1.0 - float(cfg.get("min_cash_reserve_pct", 0.10)),
+            "label": "gross exposure",
+        },
+    }
+
+    try:
+        broker = STATE.get_broker()
+        positions = await broker.get_positions()
+        balance = await broker.get_account_balance()
+    except Exception as exc:
+        logger.debug("risk_gauges_broker_failed", error=str(exc))
+        return {"gauges": gauges, "gates": _gates(cfg, gauges, [], None)}
+
+    equity = float(getattr(balance, "equity", 0) or 0)
+    gross = sum(float(p.market_value or 0) for p in positions)
+    if equity > 0:
+        gauges["gross_exposure_pct"]["value"] = round(gross / equity, 4)
+
+    if STATE.pool is not None:
+        try:
+            from src.quant.risk_metrics import var_historical
+            import numpy as np
+            async with STATE.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT date, equity FROM portfolio_snapshots
+                    ORDER BY date DESC LIMIT 60""",
+                )
+            if rows and len(rows) >= 10:
+                eq = [float(r["equity"]) for r in reversed(rows)]
+                rets = np.diff(eq) / np.array(eq[:-1])
+                var = float(var_historical(rets, confidence=0.95))
+                gauges["var_95"]["value"] = round(var * equity, 2)
+                gauges["var_95"]["limit"] = round(equity * 0.03, 2)
+                peak = max(eq)
+                trough = eq[-1]
+                if peak > 0:
+                    gauges["drawdown_pct"]["value"] = round((trough - peak) / peak, 4)
+        except Exception as exc:
+            logger.debug("risk_gauges_compute_failed", error=str(exc))
+
+    try:
+        td = await get_portfolio_tail_dependence()
+        if isinstance(td, dict) and td.get("lambda_lower") is not None:
+            gauges["tail_dep_lambda"]["value"] = float(td["lambda_lower"])
+    except Exception as exc:
+        logger.debug("risk_gauges_tail_dep_failed", error=str(exc))
+
+    return {"gauges": gauges, "gates": _gates(cfg, gauges, positions, equity)}
+
+
+def _gates(cfg: dict, gauges: dict, positions: list, equity: float | None) -> list[dict]:
+    pos_count = len(positions)
+    max_open = int(cfg.get("max_open_positions", 30))
+    gates = [
+        {
+            "name": "position_count", "rule": f"positions ≤ {max_open}",
+            "value": pos_count, "limit": max_open,
+            "status": "pass" if pos_count <= max_open else "fail",
+        },
+        {
+            "name": "tail_dependence",
+            "rule": f"λ ≤ {cfg.get('tail_dependence_threshold', 0.30)}",
+            "value": gauges["tail_dep_lambda"]["value"],
+            "limit": gauges["tail_dep_lambda"]["limit"],
+            "status": _cmp_pass(gauges["tail_dep_lambda"]["value"], gauges["tail_dep_lambda"]["limit"]),
+        },
+        {
+            "name": "var_95",
+            "rule": f"VaR(95) ≤ ${gauges['var_95']['limit']}",
+            "value": gauges["var_95"]["value"],
+            "limit": gauges["var_95"]["limit"],
+            "status": _cmp_pass(gauges["var_95"]["value"], gauges["var_95"]["limit"]),
+        },
+        {
+            "name": "drawdown_kill",
+            "rule": f"DD > {cfg.get('max_drawdown_hard_stop', -0.20):.0%}",
+            "value": gauges["drawdown_pct"]["value"],
+            "limit": gauges["drawdown_pct"]["limit"],
+            "status": _dd_pass(gauges["drawdown_pct"]["value"], gauges["drawdown_pct"]["limit"]),
+        },
+        {
+            "name": "gross_exposure",
+            "rule": f"≤ {gauges['gross_exposure_pct']['limit']:.0%}",
+            "value": gauges["gross_exposure_pct"]["value"],
+            "limit": gauges["gross_exposure_pct"]["limit"],
+            "status": _cmp_pass(gauges["gross_exposure_pct"]["value"], gauges["gross_exposure_pct"]["limit"]),
+        },
+        {
+            "name": "strategy_exposure",
+            "rule": f"single strat ≤ {cfg.get('max_exposure_per_strategy_pct', 0.15):.0%}",
+            "value": None, "limit": float(cfg.get("max_exposure_per_strategy_pct", 0.15)),
+            "status": "pending",
+        },
+        {
+            "name": "min_liquidity",
+            "rule": f"≤ {cfg.get('max_liquidity_pct', 0.01):.0%} ADV",
+            "value": None, "limit": float(cfg.get("max_liquidity_pct", 0.01)),
+            "status": "pending",
+        },
+        {
+            "name": "correlation_cluster",
+            "rule": "sum |ρ| capped",
+            "value": None, "limit": 4.0,
+            "status": "pending",
+        },
+    ]
+    return gates
+
+
+def _cmp_pass(val, limit) -> str:
+    if val is None or limit is None:
+        return "pending"
+    return "pass" if float(val) <= float(limit) else "fail"
+
+
+def _dd_pass(val, limit) -> str:
+    if val is None or limit is None:
+        return "pending"
+    return "pass" if float(val) >= float(limit) else "fail"
+
+
 @router.get("/api/portfolio/tail-dependence")
 async def get_portfolio_tail_dependence():
     if STATE.pool is None:

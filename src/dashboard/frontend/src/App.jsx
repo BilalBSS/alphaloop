@@ -6,7 +6,6 @@ import { useAdminToken } from './hooks/useAdminToken'
 import Header from './components/Header'
 import HeadStrip from './components/HeadStrip'
 import ErrorBoundary from './components/ErrorBoundary'
-import PendingTab from './components/PendingTab'
 
 // / lazy-loaded tab chunks
 const TodayTab      = lazy(() => import('./components/TodayTab'))
@@ -18,6 +17,8 @@ const HealthTab     = lazy(() => import('./components/HealthTab'))
 const AnalysisTab   = lazy(() => import('./components/AnalysisTab'))
 const KnowledgeTab  = lazy(() => import('./components/KnowledgeTab'))
 const MacroTab      = lazy(() => import('./components/MacroTab'))
+const DecisionsTab  = lazy(() => import('./components/DecisionsTab'))
+const RiskTab       = lazy(() => import('./components/RiskTab'))
 
 // / v3 11-tab ia
 const TABS = [
@@ -44,10 +45,30 @@ function TabLoading() {
 
 function AppInner() {
   const [activeTab, setActiveTab] = useState(() => {
+    const url = new URL(window.location.href)
+    const target = url.searchParams.get('tab')
+    if (target && TABS.find(t => t.id === target)) return target
     const saved = localStorage.getItem('qts-tab-v3')
     if (saved && TABS.find(t => t.id === saved)) return saved
     return 'today'
   })
+  const [decisionParam, setDecisionParam] = useState(() => {
+    const url = new URL(window.location.href)
+    return url.searchParams.get('decision_id')
+  })
+
+  const navigate = useCallback((tab, params = {}) => {
+    setActiveTab(tab)
+    if (params.decision_id !== undefined) setDecisionParam(params.decision_id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', tab)
+    if (params.decision_id) {
+      url.searchParams.set('decision_id', params.decision_id)
+    } else {
+      url.searchParams.delete('decision_id')
+    }
+    window.history.replaceState({}, '', url.toString())
+  }, [])
   const { status: wsStatus } = useWebSocketContext()
   const adminToken = useAdminToken()
 
@@ -77,11 +98,11 @@ function AppInner() {
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return
       const idx = parseInt(e.key, 10) - 1
-      if (idx >= 0 && idx < TABS.length) setActiveTab(TABS[idx].id)
+      if (idx >= 0 && idx < TABS.length) navigate(TABS[idx].id)
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [])
+  }, [navigate])
 
   const onRunCycle = useCallback(async () => {
     const token = adminToken.ensure()
@@ -158,7 +179,7 @@ function AppInner() {
               key={tab.id}
               type="button"
               className={activeTab === tab.id ? 'on' : ''}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => navigate(tab.id)}
               aria-label={`${tab.label} (${tab.badge})`}
               aria-current={activeTab === tab.id ? 'page' : undefined}
             >
@@ -185,26 +206,14 @@ function AppInner() {
               )}
               {activeTab === 'analysis' && <AnalysisTab />}
               {activeTab === 'decisions' && (
-                <PendingTab
-                  title="decisions"
-                  sectionNum="05"
-                  phase="C5 pending"
-                  hint="decision chain + gate trace arrives in C5 with the decision_id schema migration."
-                />
+                <DecisionsTab initialDecisionId={decisionParam} />
               )}
-              {activeTab === 'risk' && (
-                <PendingTab
-                  title="risk & gates"
-                  sectionNum="06"
-                  phase="C5 pending"
-                  hint="four risk gauges + correlation cluster diagram + 8-gate trace arrives in C5."
-                />
-              )}
+              {activeTab === 'risk' && <RiskTab />}
               {activeTab === 'evolution' && (
                 <EvolutionTab evolution={evolution.data} loading={evolution.loading} />
               )}
               {activeTab === 'trades' && (
-                <TradesTab trades={trades.data} loading={trades.loading} />
+                <TradesTab trades={trades.data} loading={trades.loading} navigate={navigate} />
               )}
               {activeTab === 'knowledge' && <KnowledgeTab />}
               {activeTab === 'macro' && <MacroTab />}
