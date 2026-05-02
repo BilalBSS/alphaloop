@@ -79,42 +79,44 @@ export default function PositionsTable({ portfolio }) {
           <div className="empty-state-hint">first signal arrives after the next strategy evaluation cycle.</div>
         </div>
       ) : (
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>symbol</th>
-              <th>side</th>
-              <th className="r">qty</th>
-              <th className="r">entry</th>
-              <th className="r">last</th>
-              <th className="r">P/L</th>
-              <th className="r">P/L %</th>
-              <th>strategy</th>
-              <th>sector</th>
-              <th className="r">held</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => {
-              const plClass = r.pl >= 0 ? 'pos' : 'neg'
-              const sideVariant = r.side === 'long' || r.side === 'buy' ? 'long' : 'short'
-              return (
-                <tr key={`${r.symbol}-${i}`}>
-                  <td className="sym">{r.symbol}</td>
-                  <td><Pill variant={sideVariant}>{r.side || '—'}</Pill></td>
-                  <td className="r">{Number(r.qty).toLocaleString()}</td>
-                  <td className="r">{fmtUsd(r.entry)}</td>
-                  <td className="r">{fmtUsd(r.last)}</td>
-                  <td className={`r ${plClass}`}>{fmtUsd(r.pl)}</td>
-                  <td className={`r ${plClass}`}>{fmtPct(r.plPct)}</td>
-                  <td className="dim">{r.strategy}</td>
-                  <td className="dim">{r.sector}</td>
-                  <td className="r tiny">{r.held}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>symbol</th>
+                <th>side</th>
+                <th className="r">qty</th>
+                <th className="r">entry</th>
+                <th className="r">last</th>
+                <th className="r">P/L</th>
+                <th className="r">P/L %</th>
+                <th>strategy</th>
+                <th>sector</th>
+                <th className="r">held</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const plClass = r.pl >= 0 ? 'pos' : 'neg'
+                const sideVariant = r.side === 'long' || r.side === 'buy' ? 'long' : 'short'
+                return (
+                  <tr key={`${r.symbol}-${i}`}>
+                    <td className="sym">{r.symbol}</td>
+                    <td><Pill variant={sideVariant}>{r.side || '—'}</Pill></td>
+                    <td className="r">{Number(r.qty).toLocaleString()}</td>
+                    <td className="r">{fmtUsd(r.entry)}</td>
+                    <td className="r">{fmtUsd(r.last)}</td>
+                    <td className={`r ${plClass}`}>{fmtUsd(r.pl)}</td>
+                    <td className={`r ${plClass}`}>{fmtPct(r.plPct)}</td>
+                    <td className="dim">{r.strategy}</td>
+                    <td className="dim">{r.sector}</td>
+                    <td className="r tiny">{r.held}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   )

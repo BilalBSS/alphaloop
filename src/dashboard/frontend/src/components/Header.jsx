@@ -71,7 +71,7 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
           onClick={onRunCycle}
           title="trigger /api/admin/trigger/strategy"
         >
-          ⟳ run cycle
+          ⟳ <span className="label">run cycle</span>
         </button>
         <button
           type="button"
@@ -79,7 +79,7 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
           onClick={onPauseExec}
           title="trigger /api/admin/pause"
         >
-          {paused ? '▶ resume exec' : '‖ pause exec'}
+          {paused ? '▶' : '‖'} <span className="label">{paused ? 'resume exec' : 'pause exec'}</span>
         </button>
         <span title={`websocket: ${wsStatus}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
           <span className={`pulse ${wsTone === 'pos' ? '' : wsTone}`.trim()} />

@@ -1,0 +1,1 @@
+import{t as e}from"./tab-macro-BFDwsoQC.js";export{e as default};
