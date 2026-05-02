@@ -17,10 +17,9 @@ const EvolutionTab  = lazy(() => import('./components/EvolutionTab'))
 const HealthTab     = lazy(() => import('./components/HealthTab'))
 const AnalysisTab   = lazy(() => import('./components/AnalysisTab'))
 const KnowledgeTab  = lazy(() => import('./components/KnowledgeTab'))
-const SystemTab     = lazy(() => import('./components/SystemTab'))
 const MacroTab      = lazy(() => import('./components/MacroTab'))
 
-// / v3 11-tab ia + temp /12 system until c4 folds into health
+// / v3 11-tab ia
 const TABS = [
   { id: 'today',      label: 'today',      badge: '/01' },
   { id: 'positions',  label: 'positions',  badge: '/02' },
@@ -33,7 +32,6 @@ const TABS = [
   { id: 'knowledge',  label: 'knowledge',  badge: '/09' },
   { id: 'macro',      label: 'macro',      badge: '/10' },
   { id: 'health',     label: 'health',     badge: '/11' },
-  { id: 'system',     label: 'system',     badge: '/12' },
 ]
 
 function TabLoading() {
@@ -213,7 +211,6 @@ function AppInner() {
               {activeTab === 'health' && (
                 <HealthTab health={health.data} loading={health.loading} />
               )}
-              {activeTab === 'system' && <SystemTab />}
             </Suspense>
           </ErrorBoundary>
         </main>

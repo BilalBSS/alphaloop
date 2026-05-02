@@ -86,6 +86,22 @@ async def get_portfolio_sectors():
         return {"sectors": [], "total_value": 0.0}
 
 
+@router.get("/api/risk/sizing-multipliers")
+async def get_sizing_multipliers():
+    # / risk_limits.json passthrough
+    import json
+    from pathlib import Path
+    path = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
+    if not path.exists():
+        return {"multipliers": {}}
+    try:
+        data = json.loads(path.read_text())
+        return {"multipliers": data.get("regime_sizing_multipliers", {})}
+    except Exception as exc:
+        logger.debug("sizing_multipliers_load_failed", error=str(exc))
+        return {"multipliers": {}}
+
+
 @router.get("/api/portfolio/tail-dependence")
 async def get_portfolio_tail_dependence():
     if STATE.pool is None:

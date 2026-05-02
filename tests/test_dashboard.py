@@ -3408,6 +3408,30 @@ class TestPortfolioTailDependenceEndpoint:
         dashboard.STATE.pool = None
 
 
+class TestSizingMultipliersEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_multipliers(self):
+        async with await _client() as c:
+            resp = await c.get("/api/risk/sizing-multipliers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "multipliers" in data
+        m = data["multipliers"]
+        # / configs/risk_limits.json keys
+        assert "bull" in m and "bear" in m
+        assert m["bull"] == pytest.approx(1.0)
+        assert m["bear"] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_empty(self):
+        from pathlib import Path
+        with patch.object(Path, "exists", return_value=False):
+            async with await _client() as c:
+                resp = await c.get("/api/risk/sizing-multipliers")
+        assert resp.status_code == 200
+        assert resp.json() == {"multipliers": {}}
+
+
 class TestRegimeTimelineEndpoint:
     @pytest.mark.asyncio
     async def test_invalid_market_400(self):
