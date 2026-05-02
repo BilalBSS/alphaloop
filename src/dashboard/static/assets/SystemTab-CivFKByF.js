@@ -1,0 +1,1 @@
+import{t as e}from"./tab-system-CDMq3f-e.js";export{e as default};

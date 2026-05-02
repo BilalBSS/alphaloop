@@ -1,1 +1,0 @@
-import{g as e}from"./chart-ow-1ljHh.js";var t=e(),n=new Set([`live`,`paper`,`killed`,`long`,`short`,`bull`,`bear`,`sideways`,`regime`,`lesson`,`post`,`strat`,`bullish`,`bearish`,`neutral`,`up`,`warn-pill`,`new`]);function r({variant:e,children:r,className:i=``}){return(0,t.jsx)(`span`,{className:`pill ${n.has(e)?e:``} ${i}`.trim(),children:r})}export{r as t};

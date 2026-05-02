@@ -1,0 +1,1 @@
+import{t as e}from"./tab-knowledge-CdF4khCD.js";export{e as default};

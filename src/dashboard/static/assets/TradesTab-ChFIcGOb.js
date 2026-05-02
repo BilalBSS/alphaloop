@@ -1,0 +1,1 @@
+import{t as e}from"./tab-trades-Du552z-y.js";export{e as default};
