@@ -11,6 +11,7 @@ import numpy as np
 import structlog
 
 from src.agents.data_tools import fire_and_forget
+from src.agents.decision_id import new_decision_id
 from src.data.strategy_metrics import (
     fetch_strategy_scores,
     store_evolution_log,
@@ -21,7 +22,6 @@ from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.evolution.documentation import update_docs
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
-from src.agents.decision_id import new_decision_id
 from src.knowledge.db_helpers import (
     store_evolution_mutation,
     store_retrieval_log,

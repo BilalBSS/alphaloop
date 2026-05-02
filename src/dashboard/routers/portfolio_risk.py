@@ -144,8 +144,9 @@ async def get_risk_gauges():
 
     if STATE.pool is not None:
         try:
-            from src.quant.risk_metrics import var_historical
             import numpy as np
+
+            from src.quant.risk_metrics import var_historical
             async with STATE.pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT date, equity FROM portfolio_snapshots
@@ -225,7 +226,7 @@ def _gates(cfg: dict, gauges: dict, positions: list, equity: float | None) -> li
         },
         {
             "name": "correlation_cluster",
-            "rule": "sum |ρ| capped",
+            "rule": "sum |corr| capped",
             "value": None, "limit": 4.0,
             "status": "pending",
         },
