@@ -9,14 +9,16 @@ import ErrorBoundary from './components/ErrorBoundary'
 import PendingTab from './components/PendingTab'
 
 // / lazy-loaded tab chunks
-const PortfolioTab = lazy(() => import('./components/PortfolioTab'))
-const TradesTab    = lazy(() => import('./components/TradesTab'))
-const EvolutionTab = lazy(() => import('./components/EvolutionTab'))
-const HealthTab    = lazy(() => import('./components/HealthTab'))
-const AnalysisTab  = lazy(() => import('./components/AnalysisTab'))
-const KnowledgeTab = lazy(() => import('./components/KnowledgeTab'))
-const SystemTab    = lazy(() => import('./components/SystemTab'))
-const MacroTab     = lazy(() => import('./components/MacroTab'))
+const TodayTab      = lazy(() => import('./components/TodayTab'))
+const PositionsTab  = lazy(() => import('./components/PositionsTab'))
+const StrategiesTab = lazy(() => import('./components/StrategiesTab'))
+const TradesTab     = lazy(() => import('./components/TradesTab'))
+const EvolutionTab  = lazy(() => import('./components/EvolutionTab'))
+const HealthTab     = lazy(() => import('./components/HealthTab'))
+const AnalysisTab   = lazy(() => import('./components/AnalysisTab'))
+const KnowledgeTab  = lazy(() => import('./components/KnowledgeTab'))
+const SystemTab     = lazy(() => import('./components/SystemTab'))
+const MacroTab      = lazy(() => import('./components/MacroTab'))
 
 // / v3 11-tab ia + temp /12 system until c4 folds into health
 const TABS = [
@@ -172,32 +174,16 @@ function AppInner() {
           <ErrorBoundary label={activeTab}>
             <Suspense fallback={<TabLoading />}>
               {activeTab === 'today' && (
-                <PortfolioTab
+                <TodayTab
                   portfolio={portfolio.data}
                   trades={trades.data}
-                  strategies={strategies.data}
-                  loading={{
-                    portfolio: portfolio.loading,
-                    trades: trades.loading,
-                    strategies: strategies.loading,
-                  }}
                 />
               )}
               {activeTab === 'positions' && (
-                <PendingTab
-                  title="positions"
-                  sectionNum="02"
-                  phase="C2 pending"
-                  hint="full positions table + sector mix + correlation heatmap arrives in C2. for now, see today /01."
-                />
+                <PositionsTab portfolio={portfolio.data} />
               )}
               {activeTab === 'strategies' && (
-                <PendingTab
-                  title="strategies"
-                  sectionNum="03"
-                  phase="C2 pending"
-                  hint="composite-ranked strategy rows arrive in C2. for now, see today /01."
-                />
+                <StrategiesTab strategies={strategies.data} />
               )}
               {activeTab === 'analysis' && <AnalysisTab />}
               {activeTab === 'decisions' && (
