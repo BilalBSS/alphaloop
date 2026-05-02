@@ -43,7 +43,7 @@ export default function MacroTab() {
         num="10"
         title="macro"
         em="tape"
-        meta={<><code>/api/macro-context</code> · regime <span className="acc">{regime}</span></>}
+        meta={<><code>/api/macro-context</code> · tape regime <span className="acc">{regime}</span></>}
       >
         {loading && indicators.length === 0 ? (
           <div className="empty-state"><div className="empty-state-title">loading FRED indicators</div></div>
@@ -65,7 +65,7 @@ export default function MacroTab() {
         num="10b"
         title="macro regime"
         em="classifier + sizing"
-        meta={<>active <span className="acc">{active}</span></>}
+        meta={<>sizing regime <span className="acc">{active}</span></>}
       >
         <div className="grid c2">
           <ClassifierInputs />

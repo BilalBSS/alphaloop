@@ -114,6 +114,7 @@ export default function TradeLedger({ trades, navigate }) {
 
   return (
     <Card p0>
+      <div className="tbl-scroll">
       <table className="tbl">
         <thead>
           <tr>
@@ -177,6 +178,7 @@ export default function TradeLedger({ trades, navigate }) {
           })}
         </tbody>
       </table>
+      </div>
     </Card>
   )
 }

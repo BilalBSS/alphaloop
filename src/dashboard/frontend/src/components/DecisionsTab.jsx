@@ -74,7 +74,12 @@ export default function DecisionsTab({ initialDecisionId }) {
 function DecisionDrawer({ decisionId }) {
   const { data, loading, error } = useApi(`/api/decisions/${decisionId}`, null)
   if (loading) return <div className="empty-state"><div className="empty-state-title">loading chain…</div></div>
-  if (error) return <div className="empty-state"><div className="empty-state-title">no chain available — pre-migration</div></div>
+  if (error) return (
+    <div className="empty-state">
+      <div className="empty-state-title">decision not found</div>
+      <div className="empty-state-hint">id may be invalid or the row was removed.</div>
+    </div>
+  )
   if (!data) return null
 
   const sig = data.signal || {}

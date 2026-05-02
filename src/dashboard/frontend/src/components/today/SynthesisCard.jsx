@@ -28,7 +28,11 @@ function pickHint(item) {
 
 function ItemList({ items, tone }) {
   if (!items || items.length === 0) {
-    return <div className="dim" style={{ fontSize: 11 }}>no candidates</div>
+    return (
+      <div className="empty-state-hint" style={{ fontSize: 11.5, padding: '8px 0', color: 'var(--ink-3)', fontFamily: 'var(--mono)' }}>
+        no candidates yet
+      </div>
+    )
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -72,13 +76,13 @@ export default function SynthesisCard() {
         <>
           <div className="grid c2" style={{ gap: 14 }}>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--pos)', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--pos)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
                 top buy candidates
               </div>
               <ItemList items={buys} tone="pos" />
             </div>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--neg)', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--neg)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
                 top avoid candidates
               </div>
               <ItemList items={avoids} tone="neg" />

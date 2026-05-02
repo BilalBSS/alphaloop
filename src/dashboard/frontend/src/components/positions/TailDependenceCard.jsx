@@ -6,8 +6,9 @@ import { useApiLive } from '../../hooks/useApiLive'
 export default function TailDependenceCard() {
   const { data, loading, error } = useApiLive('/api/portfolio/tail-dependence', 60000, ['position_update'])
 
-  const lamRaw = data?.lambda_lower ?? data?.aggregated_lambda
-  const lam = lamRaw != null ? Number(lamRaw) : null
+  const lamRaw = data?.lambda_lower
+  const lamNum = lamRaw != null ? Number(lamRaw) : null
+  const lam = lamNum != null && lamNum >= 0 && lamNum <= 1 ? lamNum : null
   const threshold = Number(data?.threshold ?? 0.3)
   const perPos = Array.isArray(data?.per_position) ? data.per_position : []
 

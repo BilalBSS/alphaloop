@@ -1,1 +1,0 @@
-import{t as e}from"./tab-macro-DJN6I0Bp.js";export{e as default};
