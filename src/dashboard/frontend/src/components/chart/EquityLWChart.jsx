@@ -28,8 +28,8 @@ export default function EquityLWChart({ data, height = 200 }) {
     lineSeries.setData(normalized)
     lineSeries.applyOptions({
       lineColor: color,
-      topColor: color === darkTheme.up ? 'rgba(0, 220, 130, 0.28)' : 'rgba(255, 71, 87, 0.28)',
-      bottomColor: color === darkTheme.up ? 'rgba(0, 220, 130, 0)' : 'rgba(255, 71, 87, 0)',
+      topColor: color === darkTheme.up ? 'rgba(127, 184, 122, 0.28)' : 'rgba(213, 106, 91, 0.28)',
+      bottomColor: color === darkTheme.up ? 'rgba(127, 184, 122, 0)' : 'rgba(213, 106, 91, 0)',
       priceFormat: {
         type: 'custom',
         formatter: v => '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),

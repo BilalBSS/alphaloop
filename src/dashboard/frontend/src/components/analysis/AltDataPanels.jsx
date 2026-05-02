@@ -172,7 +172,7 @@ export function OptionsFlowCard({ symbol }) {
             data={data.history}
             timeKey="date"
             valueKey="iv_rank"
-            color="var(--warn)"
+            color="#c79a3a"
             height={70}
             valueFmt={v => `${v.toFixed(0)}%`}
             emptyText="—"
@@ -216,7 +216,7 @@ export function DarkPoolCard({ symbol }) {
             data={[...data.history].reverse()}
             timeKey="week_start"
             valueKey="dark_pool_ratio"
-            color="var(--acc)"
+            color="#d8b466"
             height={70}
             valueFmt={v => `${(v * 100).toFixed(1)}%`}
             emptyText="—"
@@ -316,7 +316,7 @@ export function ShortSqueezeCard({ symbol }) {
             data={[...data.history].reverse()}
             timeKey="date"
             valueKey="short_ratio"
-            color="var(--warn)"
+            color="#c79a3a"
             height={70}
             valueFmt={v => `${v.toFixed(2)}`}
             emptyText="—"
