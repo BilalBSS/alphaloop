@@ -13,6 +13,7 @@ _STATUS_TABLES = {"trade_signals", "approved_trades"}
 async def store_trade_signal(
     pool, strategy_id: str, symbol: str, signal_type: str,
     strength: float, regime: str | None, details: dict | None = None,
+    decision_id: str | None = None,
 ) -> int:
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -32,12 +33,13 @@ async def store_trade_signal(
                 )
             return existing["id"]
         row = await conn.fetchrow(
-            """INSERT INTO trade_signals (strategy_id, symbol, signal_type, strength, regime, details, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+            """INSERT INTO trade_signals (strategy_id, symbol, signal_type, strength, regime, details, status, decision_id)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
             RETURNING id""",
             strategy_id, symbol, signal_type,
             Decimal(str(strength)), regime,
             details if details else None,
+            decision_id,
         )
         return row["id"]
 
@@ -60,15 +62,17 @@ async def fetch_pending_signals(pool, limit: int = 50) -> list[dict]:
 async def store_approved_trade(
     pool, signal_id: int, symbol: str, side: str, qty: float,
     order_type: str = "market", strategy_id: str | None = None,
+    decision_id: str | None = None, sizing_details: dict | None = None,
 ) -> int:
     # / insert approved trade
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO approved_trades (signal_id, symbol, side, qty, order_type, status, strategy_id)
-            VALUES ($1, $2, $3, $4, $5, 'pending', $6)
+            """INSERT INTO approved_trades (signal_id, symbol, side, qty, order_type, status, strategy_id, decision_id, sizing_details)
+            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8)
             RETURNING id""",
             signal_id, symbol, side,
             Decimal(str(qty)), order_type, strategy_id,
+            decision_id, sizing_details if sizing_details else None,
         )
         return row["id"]
 
@@ -144,12 +148,13 @@ async def store_trade_log(
     price: float, order_id: str | None, broker: str | None,
     regime: str | None, pnl: float | None,
     strategy_id: str | None = None, details: dict | None = None,
+    decision_id: str | None = None,
 ) -> int:
     # / log executed trade
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO trade_log (trade_id, symbol, side, qty, price, order_id, broker, regime, pnl, strategy_id, details)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """INSERT INTO trade_log (trade_id, symbol, side, qty, price, order_id, broker, regime, pnl, strategy_id, details, decision_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id""",
             trade_id, symbol, side,
             Decimal(str(qty)), Decimal(str(price)),
@@ -157,6 +162,7 @@ async def store_trade_log(
             Decimal(str(pnl)) if pnl is not None else None,
             strategy_id,
             details if details else None,
+            decision_id,
         )
         return row["id"]
 

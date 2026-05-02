@@ -3408,6 +3408,30 @@ class TestPortfolioTailDependenceEndpoint:
         dashboard.STATE.pool = None
 
 
+class TestSizingMultipliersEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_multipliers(self):
+        async with await _client() as c:
+            resp = await c.get("/api/risk/sizing-multipliers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "multipliers" in data
+        m = data["multipliers"]
+        # / configs/risk_limits.json keys
+        assert "bull" in m and "bear" in m
+        assert m["bull"] == pytest.approx(1.0)
+        assert m["bear"] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_empty(self):
+        from pathlib import Path
+        with patch.object(Path, "exists", return_value=False):
+            async with await _client() as c:
+                resp = await c.get("/api/risk/sizing-multipliers")
+        assert resp.status_code == 200
+        assert resp.json() == {"multipliers": {}}
+
+
 class TestRegimeTimelineEndpoint:
     @pytest.mark.asyncio
     async def test_invalid_market_400(self):
@@ -3472,3 +3496,128 @@ class TestRegimeTimelineEndpoint:
         # / should not crash; day cap lives in the handler
         assert resp.status_code == 200
         dashboard.STATE.pool = None
+
+
+class TestDecisionsEndpoint:
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        pq, pqo = _patch_query(query_results=[])
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/decisions")
+        assert resp.status_code == 200
+        assert resp.json() == {"decisions": []}
+
+    @pytest.mark.asyncio
+    async def test_list_returns_rows(self):
+        rows = [
+            {"decision_id": "01HZ" + "X" * 22, "signal_id": 1, "strategy_id": "s1",
+             "symbol": "NVDA", "signal_type": "buy", "strength": Decimal("0.78"),
+             "regime": "bull", "status": "processed", "rejection_reason": None,
+             "created_at": datetime(2026, 4, 27, 14, 32),
+             "approved_id": 10, "qty": Decimal("1"), "order_type": "market",
+             "approved_status": "filled", "log_id": 5,
+             "price": Decimal("891.05"), "pnl": None},
+        ]
+        pq, pqo = _patch_query(query_results=rows)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/decisions?limit=10")
+        data = resp.json()
+        assert len(data["decisions"]) == 1
+        assert data["decisions"][0]["symbol"] == "NVDA"
+
+    @pytest.mark.asyncio
+    async def test_chain_404(self):
+        pq, pqo = _patch_query(query_one_result=None)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/decisions/01HZNOTFOUND00000000000000")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_chain_returns_signal_only(self):
+        signal = {"id": 1, "decision_id": "01HZX" * 5 + "X",
+                  "symbol": "NVDA", "signal_type": "buy", "strength": Decimal("0.78"),
+                  "regime": "bull", "status": "processed", "rejection_reason": None,
+                  "strategy_id": "s1", "created_at": datetime(2026, 4, 27, 14, 32),
+                  "details": None}
+        call_count = {"n": 0}
+
+        async def query_one(sql, *args):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return signal
+            return None
+
+        pq, pqo = _patch_query(query_one_result=query_one)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get(f"/api/decisions/{signal['decision_id']}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["decision_id"] == signal["decision_id"]
+        assert data["signal"]["symbol"] == "NVDA"
+        assert data["approved"] is None
+        assert data["fill"] is None
+        assert len(data["gates"]) == 8
+
+
+class TestWikiRetrievalEndpoint:
+    @pytest.mark.asyncio
+    async def test_latest_when_empty(self):
+        pq, pqo = _patch_query(query_one_result=None)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/wiki/retrieval/latest")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cycle_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_specific_cycle_404(self):
+        pq, pqo = _patch_query(query_one_result=None)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/wiki/retrieval/01HZNOTFOUND")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_specific_cycle_returns_row(self):
+        row = {"cycle_id": "01HZX" * 5 + "X", "parent_id": "s1",
+               "child_id": None, "prompt_tokens": 250,
+               "retrieved": {"context": "wiki text"},
+               "ts": datetime(2026, 4, 27, 14, 32)}
+        pq, pqo = _patch_query(query_one_result=row)
+        with pq, pqo:
+            async with await _client() as c:
+                resp = await c.get(f"/api/wiki/retrieval/{row['cycle_id']}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["prompt_tokens"] == 250
+        assert data["retrieved"]["context"] == "wiki text"
+
+
+class TestRiskGaugesEndpoint:
+    @pytest.mark.asyncio
+    async def test_no_broker_returns_shape(self):
+        from src.dashboard import app as dashboard
+        dashboard.STATE.pool = None
+        with _mock_broker(error=RuntimeError("no broker")):
+            async with await _client() as c:
+                resp = await c.get("/api/risk/gauges")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data["gauges"].keys()) == {"var_95", "tail_dep_lambda", "drawdown_pct", "gross_exposure_pct"}
+        assert len(data["gates"]) == 8
+
+    @pytest.mark.asyncio
+    async def test_with_positions_computes_exposure(self):
+        from src.dashboard import app as dashboard
+        dashboard.STATE.pool = None
+        positions = [_make_position(mv=5000.0), _make_position(symbol="MSFT", mv=3000.0)]
+        with _mock_broker(balance=_make_balance(equity=10000.0), positions=positions):
+            async with await _client() as c:
+                resp = await c.get("/api/risk/gauges")
+        data = resp.json()
+        assert data["gauges"]["gross_exposure_pct"]["value"] == pytest.approx(0.8, abs=0.01)

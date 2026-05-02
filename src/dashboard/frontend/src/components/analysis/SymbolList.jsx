@@ -1,282 +1,9 @@
 import { useState, useMemo } from 'react'
 import { useApi } from '../../hooks/useApi'
 import { SkeletonTable } from '../Skeleton'
-import EmptyState from '../EmptyState'
 import { scoreColor, consensusBadge, regimeBadge } from './formatters'
 
-// / daily synthesis panel for list view
-export function SynthesisPanel({ onSelect }) {
-  const { data, loading } = useApi('/api/synthesis', 120000)
-
-  if (loading && !data) return <SkeletonTable rows={3} cols={2} />
-
-  if (!data || !data.date) {
-    return (
-      <EmptyState
-        title="No synthesis yet today"
-        hint="Synthesis runs after the first analyst cycle completes. Manual schedule: 5:00 PM ET after market close."
-      />
-    )
-  }
-
-  const buys = data.top_buys || []
-  const avoids = data.top_avoids || []
-  const dateStr = data.date?.split('T')[0] || data.date
-
-  // / stale badge: flag when the latest synthesis isn't from today (the 5PM
-  // / reasoner cron didn't fire — usually means the orchestrator was down at
-  // / market close). without this the date silently lied about freshness.
-  const todayISO = new Date().toISOString().slice(0, 10)
-  const isStale = dateStr !== todayISO
-
-  return (
-    <div className="space-y-3">
-      <div className="type-metric-label flex items-center gap-2">
-        <span>Daily Synthesis — {dateStr} (5:00 PM ET)</span>
-        {isStale && (
-          <span className="chip chip-warning" title="This synthesis is from a previous session. 5PM reasoner has not run today.">stale</span>
-        )}
-      </div>
-      <div className="text-[10px] text-text-muted">
-        Candidates screened from the full watchlist — not positions held. Holdings are listed on the Portfolio tab.
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <div className="type-metric-label pnl-positive mb-2">Top Buy Candidates</div>
-          {buys.length > 0 ? buys.map((b, i) => (
-            <div key={i}
-              onClick={() => onSelect(b.symbol || b)}
-              className="flex justify-between text-xs py-0.5 cursor-pointer hover:text-accent"
-            >
-              <span className="font-mono">{i + 1}. {b.symbol || b}</span>
-              {b.score != null && <span className="pnl-positive font-mono">+{parseFloat(b.score).toFixed(1)}</span>}
-            </div>
-          )) : <div className="text-text-muted text-xs">Awaiting first synthesis pass</div>}
-        </div>
-        <div>
-          <div className="type-metric-label pnl-negative mb-2">Top Avoid Candidates</div>
-          {avoids.length > 0 ? avoids.map((a, i) => (
-            <div key={i}
-              onClick={() => onSelect(a.symbol || a)}
-              className="flex justify-between text-xs py-0.5 cursor-pointer hover:text-accent"
-            >
-              <span className="font-mono">{i + 1}. {a.symbol || a}</span>
-              {a.score != null && <span className="pnl-negative font-mono">{parseFloat(a.score).toFixed(1)}</span>}
-            </div>
-          )) : <div className="text-text-muted text-xs">Awaiting first synthesis pass</div>}
-        </div>
-      </div>
-      {data.portfolio_risk && (
-        <div className="text-xs text-warning">
-          <span className="font-semibold">Portfolio risk note (LLM commentary):</span> {data.portfolio_risk}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// / observation log panel: shows strategies that are "close to firing" (N-1 of N
-// / AND conditions passed, or only the fundamental gate blocked them). this
-// / makes the dashboard "light up" with honest activity without polluting
-// / trade_log — strategist brief's observed_only tier.
-export function ObservationLogPanel({ onSelect }) {
-  const { data } = useApi('/api/observation-log?hours=24&limit=30', 60000)
-  if (!data) return null
-  const rows = Array.isArray(data.by_strategy) ? data.by_strategy : []
-  const recent = Array.isArray(data.recent) ? data.recent : []
-  if (rows.length === 0 && recent.length === 0) {
-    return (
-      <div className="text-xs text-text-muted py-2">
-        No near-misses in the last 24h. Once a strategy passes N-1 of N entry clauses (or the fundamental gate is the only blocker) it appears here.
-      </div>
-    )
-  }
-  return (
-    <div className="space-y-3">
-      {rows.length > 0 && (
-        <div>
-          <div className="type-metric-label mb-2">Close-to-firing strategies (24h)</div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-text-secondary text-[11px] uppercase">
-                <th className="text-left px-2 py-1">Strategy</th>
-                <th className="text-right px-2 py-1">Near-misses</th>
-                <th className="text-right px-2 py-1">N-1 technical</th>
-                <th className="text-right px-2 py-1">Fund gate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 15).map((r, i) => (
-                <tr key={i} className="border-t border-border" style={{ height: 28 }}>
-                  <td className="px-2 py-1 font-mono text-text-primary">{r.strategy_id}</td>
-                  <td className="px-2 py-1 text-right font-mono">{r.total}</td>
-                  <td className="px-2 py-1 text-right font-mono text-warning">{r.n_minus_1}</td>
-                  <td className="px-2 py-1 text-right font-mono text-text-muted">{r.fundamental_gate}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {recent.length > 0 && (
-        <div>
-          <div className="type-metric-label mb-2">Recent near-misses</div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-text-secondary text-[11px] uppercase">
-                <th className="text-left px-2 py-1">Time</th>
-                <th className="text-left px-2 py-1">Strategy</th>
-                <th className="text-left px-2 py-1">Symbol</th>
-                <th className="text-left px-2 py-1">Passed</th>
-                <th className="text-left px-2 py-1">Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.slice(0, 15).map((r, i) => {
-                const ts = r.created_at?.split('T')[1]?.slice(0, 5) || ''
-                const frac = r.total_count > 0 ? `${r.passed_count}/${r.total_count}` : '—'
-                return (
-                  <tr
-                    key={i}
-                    onClick={() => onSelect && onSelect(r.symbol)}
-                    className="border-t border-border hover:bg-bg-hover cursor-pointer"
-                    style={{ height: 28 }}
-                  >
-                    <td className="px-2 py-1 text-text-muted font-mono">{ts}</td>
-                    <td className="px-2 py-1 font-mono text-text-primary truncate max-w-[110px]" title={r.strategy_id}>{r.strategy_id}</td>
-                    <td className="px-2 py-1 font-mono">{r.symbol}</td>
-                    <td className="px-2 py-1 font-mono text-text-muted">{frac}</td>
-                    <td className="px-2 py-1 text-text-secondary truncate max-w-[280px]" title={r.failed_reason}>{r.failed_reason}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// / signal funnel panel: signals → approved → filled, with rejection reasons
-// / answers "why aren't signals turning into trades" by showing where they die.
-export function SignalFunnelPanel() {
-  const { data } = useApi('/api/signal-funnel?hours=24', 60000)
-  if (!data) return null
-  const byStatus = data.by_status || {}
-  const totalSignals = Object.values(byStatus).reduce((a, b) => a + b, 0)
-  const approved = data.approved_trades || 0
-  const filled = data.filled_trades || 0
-  const reasons = Array.isArray(data.by_rejection_reason) ? data.by_rejection_reason : []
-
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-4 text-xs font-mono">
-        <span>{totalSignals} signals <span className="text-text-muted">(24h)</span></span>
-        <span className="text-text-muted">→</span>
-        <span className="pnl-positive">{approved} approved</span>
-        <span className="text-text-muted">→</span>
-        <span className="pnl-positive font-bold">{filled} filled</span>
-        {totalSignals > 0 && approved === 0 && (
-          <span className="chip chip-warning" title="signals generated but risk agent approved none">all blocked</span>
-        )}
-      </div>
-      {reasons.length > 0 && (
-        <div>
-          <div className="type-metric-label pnl-negative mb-2">Rejection reasons (24h)</div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-text-secondary text-[11px] uppercase">
-                <th className="text-left px-2 py-1">Reason</th>
-                <th className="text-right px-2 py-1">Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {reasons.map((r, i) => (
-                <tr key={i} className="border-t border-border" style={{ height: 28 }}>
-                  <td className="px-2 py-1 font-mono text-text-primary">{r.reason}</td>
-                  <td className="px-2 py-1 text-right font-mono">{r.count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// / strategy evaluation cycle panel
-export function StrategyEvalPanel({ onSelect }) {
-  const { data, loading } = useApi('/api/strategy-evaluations?limit=1', 120000)
-
-  if (loading && !data) return <div className="text-text-muted text-sm py-2">Loading...</div>
-
-  const latest = Array.isArray(data) && data.length > 0 ? data[0] : null
-  if (!latest) {
-    return (
-      <EmptyState
-        title="No evaluation cycles yet"
-        hint="Strategy agent runs every 15 minutes during market hours and logs a cycle row here each pass."
-      />
-    )
-  }
-
-  const nearMisses = latest.near_misses || []
-  const ts = latest.created_at?.split('T')[1]?.slice(0, 5) || ''
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-4 text-xs font-mono">
-        <span>{latest.total_pairs} pairs</span>
-        <span className="pnl-positive">{latest.entry_hits} hits</span>
-        <span className="pnl-negative">{latest.blocked_consensus} consensus</span>
-        <span className="text-warning">{latest.blocked_threshold} threshold</span>
-        <span className={latest.signals_generated > 0 ? 'pnl-positive font-bold' : ''}>{latest.signals_generated} signals</span>
-        {ts && <span className="text-text-muted">{ts} UTC</span>}
-      </div>
-      {nearMisses.length > 0 && (
-        <div>
-          <div className="type-metric-label mb-2">Near-Misses</div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-text-secondary text-[11px] uppercase">
-                <th className="text-left px-2 py-1">Symbol</th>
-                <th className="text-right px-2 py-1">Strength</th>
-                <th className="text-left px-2 py-1">Block</th>
-              </tr>
-            </thead>
-            <tbody>
-              {nearMisses.map((nm, i) => {
-                const isConsensus = (nm.block_reason || '').includes('consensus')
-                return (
-                  <tr
-                    key={i}
-                    onClick={() => onSelect(nm.symbol)}
-                    className={`border-t border-border hover:bg-bg-hover cursor-pointer border-l-2 ${isConsensus ? 'border-l-loss' : 'border-l-warning'}`}
-                    style={{ height: 32 }}
-                  >
-                    <td className="px-2 py-1 font-mono font-semibold">{nm.symbol}</td>
-                    <td className={`px-2 py-1 text-right font-mono ${scoreColor(nm.raw_strength * 100)}`}>
-                      {parseFloat(nm.raw_strength || 0).toFixed(2)}
-                    </td>
-                    <td className="px-2 py-1">
-                      <span className={`chip ${isConsensus ? 'chip-negative' : 'chip-warning'}`}>
-                        {isConsensus ? 'consensus' : 'threshold'}
-                      </span>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// / symbol list view with filters + sort + sticky header
+// / symbol list view
 const SORT_OPTIONS = [
   { key: 'composite_desc', label: 'Composite ↓' },
   { key: 'composite_asc', label: 'Composite ↑' },
@@ -288,7 +15,7 @@ export default function SymbolList({ symbols, loading, onSelect, positionSymbols
   const [sort, setSort] = useState('composite_desc')
   const [onlyPositions, setOnlyPositions] = useState(false)
 
-  // / resolve positions set — accept either a prop or fall back to /api/portfolio
+  // / resolve held-symbols set
   const { data: portfolio } = useApi('/api/portfolio', 60000)
   const heldSet = useMemo(() => {
     if (positionSymbols) return new Set(positionSymbols)
@@ -303,7 +30,6 @@ export default function SymbolList({ symbols, loading, onSelect, positionSymbols
     if (onlyPositions) {
       list = list.filter(s => heldSet.has(s.symbol))
     }
-    // / sort
     if (sort === 'composite_desc') {
       list = [...list].sort((a, b) => (parseFloat(b.composite_score) || -Infinity) - (parseFloat(a.composite_score) || -Infinity))
     } else if (sort === 'composite_asc') {
@@ -320,7 +46,6 @@ export default function SymbolList({ symbols, loading, onSelect, positionSymbols
 
   return (
     <div className="space-y-3">
-      {/* filter row */}
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="text"

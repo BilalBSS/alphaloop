@@ -15,19 +15,40 @@ async def store_evolution_mutation(
     parent_strategy_id: str,
     wiki_guided: bool,
     wiki_context_tokens: int,
+    retrieval_cycle_id: str | None = None,
 ) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO evolution_mutations
-                (generation, parent_strategy_id, wiki_guided, wiki_context_tokens)
-            VALUES ($1, $2, $3, $4)
+                (generation, parent_strategy_id, wiki_guided, wiki_context_tokens, retrieval_cycle_id)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id
             """,
             int(generation), parent_strategy_id,
             bool(wiki_guided), int(wiki_context_tokens),
+            retrieval_cycle_id,
         )
     return int(row["id"])
+
+
+async def store_retrieval_log(
+    pool,
+    cycle_id: str,
+    parent_id: str,
+    child_id: str | None,
+    prompt_tokens: int,
+    retrieved: list | dict,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO retrieval_logs (cycle_id, parent_id, child_id, prompt_tokens, retrieved)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (cycle_id) DO NOTHING
+            """,
+            cycle_id, parent_id, child_id, int(prompt_tokens), retrieved,
+        )
 
 
 async def update_evolution_mutation_outcome(

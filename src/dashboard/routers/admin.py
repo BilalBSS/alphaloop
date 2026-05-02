@@ -39,6 +39,35 @@ async def admin_trigger(service: str, request: Request):
     return JSONResponse({"trigger_id": row_id, "service": service, "status": "queued"}, status_code=202)
 
 
+@router.get("/api/admin/pause")
+async def admin_pause_status():
+    from src.agents.system_flags import is_executor_paused
+    paused = await is_executor_paused(STATE.pool)
+    return {"paused": bool(paused)}
+
+
+@router.post("/api/admin/pause")
+async def admin_pause_set(request: Request):
+    from src.agents.system_flags import set_executor_paused
+    if not STATE.admin_token:
+        return JSONResponse(
+            {"error": "admin_token_not_configured",
+             "hint": "set ADMIN_TOKEN in .env (>=32 chars) to enable this endpoint"},
+            status_code=503,
+        )
+    supplied = extract_bearer(request)
+    if not check_admin_token(supplied):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = {}
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        body = {}
+    paused = bool(body.get("paused")) if isinstance(body, dict) else False
+    await set_executor_paused(STATE.pool, paused)
+    return {"paused": paused}
+
+
 @router.get("/api/env-health")
 async def get_env_health():
     required = [

@@ -16,6 +16,7 @@ from src.agents.data_tools import (
     log_event,
     log_observation,
 )
+from src.agents.decision_id import new_decision_id
 from src.agents.market_tools import (
     fetch_daily_ohlcv,
     fetch_intraday_ohlcv,
@@ -272,6 +273,7 @@ class StrategyAgent:
                 "smoothed_strength": smoothed_strength,
                 "reasons": entry_signal.reasons,
             },
+            decision_id=new_decision_id(),
         )
         if stats is not None:
             stats["signals"] += 1
@@ -753,6 +755,7 @@ class StrategyAgent:
                         "partial_exit": True,
                         "exit_fraction": partial_sig["fraction"],
                     },
+                    decision_id=new_decision_id(),
                 )
                 try:
                     await mark_partial_exit_fired(
@@ -793,6 +796,7 @@ class StrategyAgent:
                         "exit_reason": exit_signal.reason,
                         "qty": sp["qty"],
                     },
+                    decision_id=new_decision_id(),
                 )
                 return {
                     "signal_id": signal_id,

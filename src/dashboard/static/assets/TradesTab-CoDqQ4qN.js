@@ -1,0 +1,1 @@
+import{t as e}from"./tab-trades-DpV7A6w6.js";export{e as default};

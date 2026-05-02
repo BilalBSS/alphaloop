@@ -23,6 +23,7 @@ from src.dashboard.routers import (
     alerts,
     charts,
     compare,
+    decisions,
     drawings,
     evolution,
     health,
@@ -36,6 +37,7 @@ from src.dashboard.routers import (
     system_metrics,
     volume_profile,
     websocket,
+    wiki_retrieval,
 )
 from src.dashboard.routers.charts import _intraday_cache_key
 from src.dashboard.routers.portfolio import STRATEGY_CONFIGS_DIR
@@ -197,6 +199,8 @@ app.include_router(compare.router)
 app.include_router(volume_profile.router)
 app.include_router(evolution.router)
 app.include_router(portfolio_risk.router)
+app.include_router(decisions.router)
+app.include_router(wiki_retrieval.router)
 app.include_router(admin.router)
 app.include_router(websocket.router)
 
