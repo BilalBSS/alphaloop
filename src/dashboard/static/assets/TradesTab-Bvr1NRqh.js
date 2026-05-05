@@ -1,0 +1,1 @@
+import{t as e}from"./tab-trades-CNGDepEv.js";export{e as default};
