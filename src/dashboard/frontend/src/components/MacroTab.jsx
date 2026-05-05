@@ -6,7 +6,7 @@ import SizingMultipliers from './macro/SizingMultipliers'
 import { useApi } from '../hooks/useApi'
 
 // / fred tape series
-const TAPE_SERIES = ['DGS10', 'DGS2', 'FEDFUNDS', 'CPIAUCSL', 'UNRATE', 'VIXCLS', 'DXY', 'WTI']
+const TAPE_SERIES = ['DGS10', 'DGS2', 'FEDFUNDS', 'CPIAUCSL', 'UNRATE', 'VIXCLS', 'DTWEXBGS', 'DCOILWTICO']
 
 function regimeLabel(indicators, spread) {
   const ff = indicators.find((r) => r.series_id === 'FEDFUNDS')
