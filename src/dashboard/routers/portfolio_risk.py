@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import structlog
@@ -105,10 +106,9 @@ async def get_sizing_multipliers():
 @router.get("/api/risk/gauges")
 async def get_risk_gauges():
     # / 4-up + 8-gate snapshot
-    import json
     from pathlib import Path
     cfg_path = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
-    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
 
     gauges = {
         "var_95": {"value": None, "limit": None, "label": "VaR (95%)"},
@@ -172,12 +172,61 @@ async def get_risk_gauges():
     except Exception as exc:
         logger.debug("risk_gauges_tail_dep_failed", error=str(exc))
 
-    return {"gauges": gauges, "gates": _gates(cfg, gauges, positions, equity)}
+    latest_per_signal = await _fetch_latest_per_signal_gates()
+    return {"gauges": gauges, "gates": _gates(cfg, gauges, positions, equity, latest_per_signal)}
 
 
-def _gates(cfg: dict, gauges: dict, positions: list, equity: float | None) -> list[dict]:
+_PER_SIGNAL_GATES = ("strategy_exposure", "min_liquidity", "correlation_cluster")
+
+
+async def _fetch_latest_per_signal_gates() -> dict[str, dict]:
+    if STATE.pool is None:
+        return {}
+    try:
+        async with STATE.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT sizing_details, created_at
+                FROM approved_trades
+                WHERE sizing_details ? 'gates'
+                ORDER BY created_at DESC LIMIT 1"""
+            )
+    except Exception as exc:
+        logger.debug("per_signal_gates_query_failed", error=str(exc))
+        return {}
+    if not row:
+        return {}
+    sizing = row["sizing_details"]
+    if isinstance(sizing, str):
+        try:
+            sizing = json.loads(sizing)
+        except (TypeError, ValueError):
+            return {}
+    gates = sizing.get("gates") if isinstance(sizing, dict) else None
+    if not isinstance(gates, list):
+        return {}
+    out: dict[str, dict] = {}
+    ts = row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else None
+    for g in gates:
+        name = g.get("name") if isinstance(g, dict) else None
+        if name in _PER_SIGNAL_GATES:
+            out[name] = {
+                "value": g.get("value"),
+                "status": g.get("status", "pass"),
+                "evaluated_at": ts,
+            }
+    return out
+
+
+def _gates(
+    cfg: dict, gauges: dict, positions: list, equity: float | None,
+    latest_per_signal: dict[str, dict] | None = None,
+) -> list[dict]:
     pos_count = len(positions)
     max_open = int(cfg.get("max_open_positions", 30))
+    per_sig = latest_per_signal or {}
+    strat_exp = per_sig.get("strategy_exposure", {})
+    min_liq = per_sig.get("min_liquidity", {})
+    corr_cl = per_sig.get("correlation_cluster", {})
     gates = [
         {
             "name": "position_count", "rule": f"positions ≤ {max_open}",
@@ -215,20 +264,26 @@ def _gates(cfg: dict, gauges: dict, positions: list, equity: float | None) -> li
         {
             "name": "strategy_exposure",
             "rule": f"single strat ≤ {cfg.get('max_exposure_per_strategy_pct', 0.15):.0%}",
-            "value": None, "limit": float(cfg.get("max_exposure_per_strategy_pct", 0.15)),
-            "status": "pending",
+            "value": strat_exp.get("value"),
+            "limit": float(cfg.get("max_exposure_per_strategy_pct", 0.15)),
+            "status": strat_exp.get("status", "pending"),
+            "evaluated_at": strat_exp.get("evaluated_at"),
         },
         {
             "name": "min_liquidity",
             "rule": f"≤ {cfg.get('max_liquidity_pct', 0.01):.0%} ADV",
-            "value": None, "limit": float(cfg.get("max_liquidity_pct", 0.01)),
-            "status": "pending",
+            "value": min_liq.get("value"),
+            "limit": float(cfg.get("max_liquidity_pct", 0.01)),
+            "status": min_liq.get("status", "pending"),
+            "evaluated_at": min_liq.get("evaluated_at"),
         },
         {
             "name": "correlation_cluster",
             "rule": "sum |corr| capped",
-            "value": None, "limit": 4.0,
-            "status": "pending",
+            "value": corr_cl.get("value"),
+            "limit": 4.0,
+            "status": corr_cl.get("status", "pending"),
+            "evaluated_at": corr_cl.get("evaluated_at"),
         },
     ]
     return gates
@@ -292,6 +347,27 @@ async def get_portfolio_tail_dependence():
         nu, corr = student_t_copula_fit(u_data)
         td = tail_dependence_coefficient("student_t", (nu, corr))
         lam = td.get("lambda_lower", 0.0)
+
+        # / per-position vs rest-of-portfolio
+        per_position: list[dict] = []
+        n_obs = returns.shape[0]
+        for col in returns.columns:
+            rest = returns.drop(columns=[col]).mean(axis=1)
+            u_pair = np.column_stack([
+                rankdata(returns[col].values) / (n_obs + 1),
+                rankdata(rest.values) / (n_obs + 1),
+            ])
+            try:
+                nu_p, corr_p = student_t_copula_fit(u_pair)
+                td_p = tail_dependence_coefficient("student_t", (nu_p, corr_p))
+                per_position.append({
+                    "symbol": str(col),
+                    "lambda": round(float(td_p.get("lambda_lower", 0.0)), 4),
+                })
+            except (ValueError, RuntimeError) as exc:
+                logger.debug("per_position_lambda_failed", symbol=str(col), error=str(exc))
+        per_position.sort(key=lambda x: x["lambda"], reverse=True)
+
         result = {
             "lambda_lower": round(float(lam), 4),
             "positions_count": len(positions),
@@ -299,6 +375,7 @@ async def get_portfolio_tail_dependence():
             "nu": round(float(nu), 2),
             "threshold": 0.30,
             "is_concentrated": lam > 0.30,
+            "per_position": per_position,
         }
         STATE.tail_dep_cache.put(cache_key, result)
         return result

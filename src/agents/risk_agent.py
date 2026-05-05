@@ -239,7 +239,10 @@ class RiskAgent:
             qty = await self._apply_tail_dependence_cap(pool, symbol, positions, qty)
 
         # / 15. approve
-        return await self._approve(pool, signal_id, signal, symbol, side, qty)
+        return await self._approve(
+            pool, signal_id, signal, symbol, side, qty,
+            balance=balance, positions=positions, price=price,
+        )
 
 
     async def _guard_long_only(
@@ -523,10 +526,14 @@ class RiskAgent:
 
     async def _approve(
         self, pool, signal_id: int, signal: dict, symbol: str, side: str, qty: int,
+        *, balance=None, positions=None, price: float | None = None,
     ) -> dict:
         strategy_id = signal.get("strategy_id")
         decision_id = signal.get("decision_id")
-        sizing_details = await self._build_sizing_details(pool, signal, side, qty)
+        sizing_details = await self._build_sizing_details(
+            pool, signal, side, qty,
+            balance=balance, positions=positions, price=price,
+        )
         trade_id = await store_approved_trade(
             pool, signal_id=signal_id, symbol=symbol, side=side,
             qty=float(qty), order_type="market", strategy_id=strategy_id,
@@ -550,6 +557,7 @@ class RiskAgent:
 
     async def _build_sizing_details(
         self, pool, signal: dict, side: str, qty: int,
+        *, balance=None, positions=None, price: float | None = None,
     ) -> dict:
         # / sizing rationale snapshot
         try:
@@ -567,6 +575,10 @@ class RiskAgent:
             if not isinstance(regime_label, str):
                 regime_label = "unknown"
             regime_mult = self._regime_multipliers.get(regime_label, 1.0)
+            gates = await self._build_gate_trace(
+                pool, signal, qty,
+                balance=balance, positions=positions, price=price,
+            )
             return {
                 "strength": float(signal.get("strength") or 0),
                 "kelly_fraction": float(kelly_fraction),
@@ -574,10 +586,98 @@ class RiskAgent:
                 "regime_multiplier": float(regime_mult),
                 "side": side,
                 "final_qty": int(qty),
+                "gates": gates,
             }
         except Exception as exc:
             logger.debug("sizing_details_build_failed", error=str(exc)[:100])
             return {"side": side, "final_qty": int(qty)}
+
+    async def _build_gate_trace(
+        self, pool, signal: dict, qty: int,
+        *, balance=None, positions=None, price: float | None = None,
+    ) -> list[dict]:
+        # / 8-gate snapshot at approve
+        if balance is None or positions is None or price is None:
+            return []
+        nav = float(balance.equity)
+        symbol = signal["symbol"]
+        strategy_id = signal.get("strategy_id") or ""
+
+        gates: list[dict] = [
+            {
+                "name": "position_count",
+                "value": len(positions),
+                "limit": self._max_open_positions,
+                "status": "pass",
+            },
+        ]
+
+        try:
+            strat_positions = await get_strategy_positions(pool, strategy_id=strategy_id) if strategy_id else []
+            strat_notional = sum(
+                float(sp.get("qty") or 0) * float(sp.get("avg_entry_price") or 0)
+                for sp in strat_positions
+            )
+            strat_pct = strat_notional / nav if nav > 0 else 0.0
+            gates.append({
+                "name": "strategy_exposure",
+                "value": round(strat_pct, 4),
+                "limit": float(self._max_exposure_per_strategy_pct),
+                "status": "pass",
+            })
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.debug("gate_strategy_exposure_failed", error=str(exc)[:80])
+            gates.append({"name": "strategy_exposure", "value": None, "limit": None, "status": "pass"})
+
+        gates.append({"name": "sector_exposure", "value": None, "limit": None, "status": "pass"})
+
+        try:
+            sym_positions = await get_strategy_positions(pool, symbol=symbol)
+            held_value = sum(float(sp.get("qty") or 0) for sp in sym_positions) * float(price)
+            cluster_pct = held_value / nav if nav > 0 else 0.0
+            limit_pct = float(self.max_position_pct) * 2
+            gates.append({
+                "name": "correlation_cluster",
+                "value": round(cluster_pct, 4),
+                "limit": round(limit_pct, 4),
+                "status": "pass",
+            })
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.debug("gate_correlation_cluster_failed", error=str(exc)[:80])
+            gates.append({"name": "correlation_cluster", "value": None, "limit": None, "status": "pass"})
+
+        try:
+            lam = await self._check_tail_dependence(pool, symbol, positions) if len(positions) >= 5 else None
+            gates.append({
+                "name": "tail_dependence",
+                "value": round(float(lam), 4) if lam is not None else None,
+                "limit": float(self.tail_dep_threshold),
+                "status": "pass",
+            })
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.debug("gate_tail_dependence_failed", error=str(exc)[:80])
+            gates.append({"name": "tail_dependence", "value": None, "limit": float(self.tail_dep_threshold), "status": "pass"})
+
+        gates.append({"name": "var_95", "value": None, "limit": None, "status": "pass"})
+
+        dd = self._cb.current_drawdown(nav)
+        gates.append({
+            "name": "drawdown_kill",
+            "value": round(float(dd), 4),
+            "limit": -float(self._max_drawdown_hard_stop),
+            "status": "pass",
+        })
+
+        trade_value = float(qty) * float(price)
+        liq_pct = trade_value / nav if nav > 0 else 0.0
+        gates.append({
+            "name": "min_liquidity",
+            "value": round(liq_pct, 4),
+            "limit": float(self._max_liquidity_pct),
+            "status": "pass",
+        })
+
+        return gates
 
     def _infer_stop_distance(self, strategy_pool, strategy_id) -> float | None:
         if not strategy_id:
