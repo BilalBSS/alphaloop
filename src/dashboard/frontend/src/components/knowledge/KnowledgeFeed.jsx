@@ -87,7 +87,7 @@ function ExpandedDetail({ item }) {
       </div>
     )
   }
-  if (t === 'wiki') {
+  if (t === 'wiki' || t === 'strat' || t === 'lesson') {
     return (
       <div style={{ padding: '12px 16px', background: 'var(--bg-3)', borderTop: '1px solid var(--line)' }}>
         <div className="dim" style={{ fontFamily: 'var(--mono)', fontSize: 10, marginBottom: 8 }}>

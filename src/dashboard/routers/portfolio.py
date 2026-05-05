@@ -161,7 +161,7 @@ async def get_strategies():
     strategies_by_id: dict = {}
     for config_path in sorted(STRATEGY_CONFIGS_DIR.glob("*.json")):
         try:
-            cfg = json.loads(config_path.read_text())
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
             sid = cfg.get("id", config_path.stem)
             entry_signals = cfg.get("entry_conditions", {}).get("signals", [])
             exit_conds = cfg.get("exit_conditions", {})

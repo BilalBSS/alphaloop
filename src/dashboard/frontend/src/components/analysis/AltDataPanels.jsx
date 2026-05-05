@@ -1,17 +1,6 @@
 import { useApi } from '../../hooks/useApi'
 import TimeSeriesLineChart from '../chart/TimeSeriesLineChart'
 
-// / directional arrow vs prior
-function DirArrow({ current, prior }) {
-  if (current == null || prior == null) return null
-  const c = parseFloat(current)
-  const p = parseFloat(prior)
-  if (!Number.isFinite(c) || !Number.isFinite(p)) return null
-  if (c > p) return <span className="pos" style={{ marginLeft: 4 }}>▲</span>
-  if (c < p) return <span className="neg" style={{ marginLeft: 4 }}>▼</span>
-  return <span className="dim" style={{ marginLeft: 4 }}>━</span>
-}
-
 // / macro regime tiles
 export function MacroRegimeCard() {
   const { data, loading, error } = useApi('/api/macro-context', 300000)
@@ -20,42 +9,46 @@ export function MacroRegimeCard() {
   if (error) return <div className="neg" style={{ padding: 14, fontSize: 12 }}>Failed to load macro: {error}</div>
   if (!data) return <div className="dim" style={{ padding: 14, fontSize: 12 }}>No macro data</div>
 
-  const prior = data.prior || {}
+  const bySeries = {}
+  for (const r of data.indicators || []) bySeries[r.series_id] = r
+  const spread = data.yield_curve_spread
+
   const rows = [
-    { key: 'dff', label: 'fed funds', fmt: v => `${parseFloat(v).toFixed(2)}%` },
-    { key: 'cpi', label: 'cpi YoY', fmt: v => `${parseFloat(v).toFixed(2)}%` },
-    { key: 'unrate', label: 'unemployment', fmt: v => `${parseFloat(v).toFixed(1)}%` },
-    { key: 'yield_spread', label: '10Y-2Y spread', fmt: v => `${parseFloat(v).toFixed(2)}%` },
+    { value: bySeries.FEDFUNDS?.value, label: 'fed funds', fmt: v => `${parseFloat(v).toFixed(2)}%` },
+    { value: bySeries.CPIAUCSL?.value, label: 'cpi YoY', fmt: v => parseFloat(v).toFixed(2) },
+    { value: bySeries.UNRATE?.value, label: 'unemployment', fmt: v => `${parseFloat(v).toFixed(1)}%` },
+    { value: spread?.value, label: '10Y-2Y spread', fmt: v => `${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(2)}` },
   ]
+
+  const latestUpdate = (data.indicators || [])
+    .map(r => r.date)
+    .filter(Boolean)
+    .sort()
+    .pop()
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="grid c2" style={{ gap: 8 }}>
         {rows.map(r => {
-          const v = data[r.key]
-          const p = prior[r.key]
-          if (v == null) {
+          if (r.value == null) {
             return (
-              <div className="tile" key={r.key}>
+              <div className="tile" key={r.label}>
                 <div className="lab">{r.label}</div>
                 <div className="v dim">—</div>
               </div>
             )
           }
           return (
-            <div className="tile" key={r.key}>
+            <div className="tile" key={r.label}>
               <div className="lab">{r.label}</div>
-              <div className="v">
-                {r.fmt(v)}
-                <DirArrow current={v} prior={p} />
-              </div>
+              <div className="v">{r.fmt(r.value)}</div>
             </div>
           )
         })}
       </div>
-      {data.updated_at && (
+      {latestUpdate && (
         <div className="dim" style={{ fontSize: 10, fontFamily: 'var(--mono)' }}>
-          updated {data.updated_at.replace('T', ' ').slice(0, 16)}
+          updated {latestUpdate}
         </div>
       )}
     </div>

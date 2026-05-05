@@ -8,9 +8,9 @@ const SERIES_META = {
   CPIAUCSL: { label: 'CPI',           unit: '',   higherIs: 'bearish', tone: 'warn' },
   FEDFUNDS: { label: 'Fed funds',     unit: '%',  higherIs: 'bearish', tone: 'acc2' },
   UNRATE:   { label: 'Unemployment',  unit: '%',  higherIs: 'bearish', tone: 'warn' },
-  VIXCLS:   { label: 'VIX',           unit: '',   higherIs: 'bearish', tone: 'pos' },
-  DXY:      { label: 'DXY',           unit: '',   higherIs: 'neutral', tone: 'acc2' },
-  WTI:      { label: 'WTI',           unit: '$',  higherIs: 'neutral', tone: 'warn' },
+  VIXCLS:     { label: 'VIX', unit: '',  higherIs: 'bearish', tone: 'pos' },
+  DTWEXBGS:   { label: 'DXY', unit: '',  higherIs: 'neutral', tone: 'acc2' },
+  DCOILWTICO: { label: 'WTI', unit: '$', higherIs: 'neutral', tone: 'warn' },
 }
 
 function formatValue(v, unit) {

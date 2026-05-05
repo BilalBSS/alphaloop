@@ -21,6 +21,9 @@ SERIES_CONFIG: dict[str, dict[str, float]] = {
     "CPIAUCSL": {"neutral": 2.5, "range": 3.0},
     "FEDFUNDS": {"neutral": 3.0, "range": 3.0},
     "UNRATE": {"neutral": 4.5, "range": 3.0},
+    "VIXCLS": {"neutral": 18.0, "range": 15.0},
+    "DTWEXBGS": {"neutral": 100.0, "range": 15.0},
+    "DCOILWTICO": {"neutral": 70.0, "range": 30.0},
 }
 
 
@@ -42,8 +45,8 @@ def _normalize(series_id: str, value: float) -> float:
     if not cfg:
         return 0.0
     delta = value - cfg["neutral"]
-    # / higher unemployment/cpi = bearish
-    if series_id in ("UNRATE", "CPIAUCSL"):
+    # / higher = bearish
+    if series_id in ("UNRATE", "CPIAUCSL", "VIXCLS"):
         delta = -delta
     normalized = delta / cfg["range"]
     return max(-1.0, min(1.0, normalized))

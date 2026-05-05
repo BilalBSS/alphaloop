@@ -1,0 +1,1 @@
+import{t as e}from"./tab-knowledge-DZl91Dpu.js";export{e as default};

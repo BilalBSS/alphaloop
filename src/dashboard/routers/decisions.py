@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import structlog
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -63,17 +65,39 @@ async def get_decision_chain(decision_id: str):
     }
 
 
+_GATE_NAMES = (
+    "position_count", "strategy_exposure", "sector_exposure",
+    "correlation_cluster", "tail_dependence", "var_95",
+    "drawdown_kill", "min_liquidity",
+)
+
+
+def _persisted_gates(approved: dict | None) -> list[dict] | None:
+    if not approved:
+        return None
+    sizing = approved.get("sizing_details")
+    if isinstance(sizing, str):
+        try:
+            sizing = json.loads(sizing)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(sizing, dict):
+        return None
+    gates = sizing.get("gates")
+    if isinstance(gates, list) and gates:
+        return gates
+    return None
+
+
 def _gate_trace(signal: dict, approved: dict | None) -> list[dict]:
-    # / synthesize 8-gate snapshot
+    persisted = _persisted_gates(approved)
+    if persisted is not None:
+        return persisted
+    # / fallback for legacy decisions
     rejected = signal.get("status") == "rejected"
     reason = signal.get("rejection_reason") or ""
-    gate_names = [
-        "position_count", "strategy_exposure", "sector_exposure",
-        "correlation_cluster", "tail_dependence", "var_95",
-        "drawdown_kill", "min_liquidity",
-    ]
     gates = []
-    for name in gate_names:
+    for name in _GATE_NAMES:
         if rejected and name in reason:
             status = "fail"
         elif approved is not None:
