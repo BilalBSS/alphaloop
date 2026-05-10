@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import Card from '../ui/Card'
 import Pill from '../ui/Pill'
+import { renderMarkdown } from '../ui/markdown'
 import { useApi } from '../../hooks/useApi'
 
 // / unified .know feed
@@ -33,101 +34,6 @@ function fmtWhen(ts) {
 
 function WikiBody({ path }) {
   return <WikiBodyInner key={path} path={path} />
-}
-
-function renderInline(text, keyPrefix = '') {
-  // / bold + inline code + italic
-  const parts = []
-  let i = 0
-  let buf = ''
-  let n = 0
-  const push = (node) => {
-    if (buf) { parts.push(buf); buf = '' }
-    parts.push(node)
-  }
-  while (i < text.length) {
-    if (text.startsWith('**', i)) {
-      const end = text.indexOf('**', i + 2)
-      if (end > i) {
-        push(<b key={`${keyPrefix}b${n++}`}>{text.slice(i + 2, end)}</b>)
-        i = end + 2
-        continue
-      }
-    }
-    if (text[i] === '`') {
-      const end = text.indexOf('`', i + 1)
-      if (end > i) {
-        push(<code key={`${keyPrefix}c${n++}`} className="ic">{text.slice(i + 1, end)}</code>)
-        i = end + 1
-        continue
-      }
-    }
-    buf += text[i]
-    i++
-  }
-  if (buf) parts.push(buf)
-  return parts
-}
-
-function renderMarkdown(src) {
-  if (!src) return null
-  const lines = src.split('\n')
-  const blocks = []
-  let bullets = null
-  let i = 0
-  const flush = () => {
-    if (bullets) { blocks.push({ kind: 'ul', items: bullets }); bullets = null }
-  }
-  while (i < lines.length) {
-    const raw = lines[i]
-    const line = raw.replace(/\s+$/, '')
-    if (!line.trim()) { flush(); i++; continue }
-    const h = /^(#{1,6})\s+(.*)$/.exec(line)
-    if (h) {
-      flush()
-      blocks.push({ kind: 'h', level: h[1].length, text: h[2] })
-      i++; continue
-    }
-    const bul = /^[\-\*]\s+(.*)$/.exec(line)
-    if (bul) {
-      bullets = bullets || []
-      bullets.push(bul[1])
-      i++; continue
-    }
-    flush()
-    blocks.push({ kind: 'p', text: line.trim() })
-    i++
-  }
-  flush()
-  return blocks.map((b, k) => {
-    if (b.kind === 'h') {
-      const sz = b.level === 1 ? 18 : b.level === 2 ? 15 : 13
-      return (
-        <div
-          key={k}
-          style={{
-            fontSize: sz, fontWeight: 600, color: 'var(--ink)',
-            margin: k === 0 ? '0 0 8px' : '14px 0 6px',
-            letterSpacing: b.level <= 2 ? '-0.01em' : '0',
-          }}
-        >
-          {renderInline(b.text, `${k}-`)}
-        </div>
-      )
-    }
-    if (b.kind === 'ul') {
-      return (
-        <ul key={k} style={{ margin: '4px 0 8px 18px', padding: 0, color: 'var(--ink)', fontSize: 13, lineHeight: 1.6 }}>
-          {b.items.map((it, j) => <li key={j}>{renderInline(it, `${k}-${j}-`)}</li>)}
-        </ul>
-      )
-    }
-    return (
-      <p key={k} style={{ margin: '0 0 8px', color: 'var(--ink)', fontSize: 13, lineHeight: 1.65 }}>
-        {renderInline(b.text, `${k}-`)}
-      </p>
-    )
-  })
 }
 
 function WikiBodyInner({ path }) {
@@ -177,6 +83,29 @@ function ExpandedDetail({ item }) {
       </div>
     )
   }
+  if (t === 'lesson' && item._kind === 'distilled') {
+    let ctx = null
+    if (item.context) {
+      try { ctx = typeof item.context === 'string' ? JSON.parse(item.context) : item.context } catch { ctx = null }
+    }
+    return (
+      <div style={{ padding: '14px 16px', background: 'var(--bg-3)', fontSize: 12, borderTop: '1px solid var(--line)', lineHeight: 1.6 }}>
+        <div className="dim" style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>
+          {item.strategy_id} · {item.lesson_type} · confidence {item.confidence}
+          {item.trade_count != null && <> · {item.trade_count} trades</>}
+        </div>
+        <div style={{ color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{item.content}</div>
+        {ctx && (
+          <div style={{ marginTop: 10 }}>
+            <div className="dim" style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 4 }}>context</div>
+            <pre style={{ margin: 0, fontSize: 10.5, whiteSpace: 'pre-wrap', color: 'var(--ink-2)', fontFamily: 'var(--mono)' }}>
+              {JSON.stringify(ctx, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
+    )
+  }
   if (t === 'wiki' || t === 'strat' || t === 'lesson') {
     return (
       <div className="wiki-body">
@@ -196,6 +125,7 @@ export default function KnowledgeFeed() {
   const { data: wiki, loading: lwiki } = useApi('/api/wiki/documents?limit=300', 120000)
   const { data: posts, loading: lposts } = useApi('/api/post-mortems?limit=100', 60000)
   const { data: regimes, loading: lregs } = useApi('/api/regime-shifts?limit=100', 60000)
+  const { data: lessonData, loading: llessons } = useApi('/api/strategy-lessons?limit=200', 60000)
 
   const items = useMemo(() => {
     const out = []
@@ -221,6 +151,17 @@ export default function KnowledgeFeed() {
         ...p,
       })
     }
+    for (const lesson of (lessonData?.lessons || [])) {
+      out.push({
+        _type: 'lesson',
+        _kind: 'distilled',
+        _id: `l-${lesson.id}`,
+        title: `${lesson.lesson_type} · ${lesson.strategy_id}`,
+        sub: `${lesson.confidence}${lesson.trade_count != null ? ` · ${lesson.trade_count} trades` : ''}`,
+        when: tsOf(lesson),
+        ...lesson,
+      })
+    }
     for (const r of regimes || []) {
       out.push({
         _type: 'regime',
@@ -233,10 +174,10 @@ export default function KnowledgeFeed() {
     }
     out.sort((a, b) => b.when - a.when)
     return out
-  }, [wiki, posts, regimes])
+  }, [wiki, posts, regimes, lessonData])
 
   const filtered = type === 'all' ? items : items.filter((i) => i._type === type)
-  const loading = lwiki || lposts || lregs
+  const loading = lwiki || lposts || lregs || llessons
 
   return (
     <Card
