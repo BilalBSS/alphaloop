@@ -2,6 +2,33 @@ import { useApi } from '../../hooks/useApi'
 import TimeSeriesLineChart from '../chart/TimeSeriesLineChart'
 
 // / macro regime tiles
+const MACRO_REF = {
+  fedFunds: { low: 2.0,  high: 4.5,  lowTag: 'easy',     highTag: 'tight',  midTag: 'neutral', higherIs: 'bearish',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
+  cpi:      { low: 2.0,  high: 3.0,  lowTag: 'target',   highTag: 'hot',    midTag: 'above',   higherIs: 'bearish',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
+  unrate:   { low: 4.0,  high: 5.0,  lowTag: 'tight',    highTag: 'slack',  midTag: 'neutral', higherIs: 'bearish',
+              signals: { low: 'neutral', mid: 'bullish', high: 'bearish' } },
+  spread:   { low: 0.0,  high: 1.0,  lowTag: 'inverted', highTag: 'normal', midTag: 'flat',    higherIs: 'bullish',
+              signals: { low: 'bearish', mid: 'neutral', high: 'bullish' } },
+}
+
+const SIGNAL_TONE = { bullish: 'pos', bearish: 'neg', neutral: 'dim' }
+
+function macroZone(value, ref) {
+  if (value == null || !Number.isFinite(value) || !ref) return null
+  if (value < ref.low) return { tag: ref.lowTag, pos: 'low' }
+  if (value > ref.high) return { tag: ref.highTag, pos: 'high' }
+  return { tag: ref.midTag, pos: 'mid' }
+}
+
+function macroTone(zone, higherIs) {
+  if (!zone) return 'dim'
+  if (higherIs === 'bearish') return zone.pos === 'high' ? 'neg' : zone.pos === 'low' ? 'pos' : 'warn'
+  if (higherIs === 'bullish') return zone.pos === 'low' ? 'neg' : zone.pos === 'high' ? 'pos' : 'warn'
+  return zone.pos === 'mid' ? 'pos' : 'warn'
+}
+
 export function MacroRegimeCard() {
   const { data, loading, error } = useApi('/api/macro-context', 300000)
 
@@ -14,10 +41,10 @@ export function MacroRegimeCard() {
   const spread = data.yield_curve_spread
 
   const rows = [
-    { value: bySeries.FEDFUNDS?.value, label: 'fed funds', fmt: v => `${parseFloat(v).toFixed(2)}%` },
-    { value: bySeries.CPIAUCSL?.value, label: 'cpi YoY', fmt: v => parseFloat(v).toFixed(2) },
-    { value: bySeries.UNRATE?.value, label: 'unemployment', fmt: v => `${parseFloat(v).toFixed(1)}%` },
-    { value: spread?.value, label: '10Y-2Y spread', fmt: v => `${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(2)}` },
+    { value: bySeries.FEDFUNDS?.value, label: 'fed funds', fmt: v => `${parseFloat(v).toFixed(2)}%`, refKey: 'fedFunds', unit: '%' },
+    { value: bySeries.CPIAUCSL?.value, label: 'cpi YoY', fmt: v => parseFloat(v).toFixed(2), refKey: 'cpi', unit: '' },
+    { value: bySeries.UNRATE?.value, label: 'unemployment', fmt: v => `${parseFloat(v).toFixed(1)}%`, refKey: 'unrate', unit: '%' },
+    { value: spread?.value, label: '10Y-2Y spread', fmt: v => `${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(2)}`, refKey: 'spread', unit: '' },
   ]
 
   const latestUpdate = (data.indicators || [])
@@ -30,6 +57,12 @@ export function MacroRegimeCard() {
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="grid c2" style={{ gap: 8 }}>
         {rows.map(r => {
+          const ref = MACRO_REF[r.refKey]
+          const numericValue = r.value != null ? parseFloat(r.value) : null
+          const zone = macroZone(numericValue, ref)
+          const tone = macroTone(zone, ref?.higherIs)
+          const signal = (zone && ref?.signals) ? ref.signals[zone.pos] : null
+          const signalTone = signal ? SIGNAL_TONE[signal] : 'dim'
           if (r.value == null) {
             return (
               <div className="tile" key={r.label}>
@@ -42,6 +75,23 @@ export function MacroRegimeCard() {
             <div className="tile" key={r.label}>
               <div className="lab">{r.label}</div>
               <div className="v">{r.fmt(r.value)}</div>
+              {zone && (
+                <div style={{ marginTop: 2, display: 'flex', alignItems: 'baseline', gap: 4, flexWrap: 'wrap' }}>
+                  <span className={tone} style={{ fontSize: 9, fontFamily: 'var(--mono)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                    {zone.tag}
+                  </span>
+                  {signal && (
+                    <span className={signalTone} style={{ fontSize: 8.5, fontFamily: 'var(--mono)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                      · {signal}
+                    </span>
+                  )}
+                </div>
+              )}
+              {ref && (
+                <div className="dim" style={{ fontSize: 9, fontFamily: 'var(--mono)', marginTop: 2 }}>
+                  {`${ref.lowTag}<${ref.low}${r.unit} · ${ref.highTag}>${ref.high}${r.unit}`}
+                </div>
+              )}
             </div>
           )
         })}
