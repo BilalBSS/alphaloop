@@ -8,7 +8,7 @@ from src.knowledge.wiki_writer import WikiWriter
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_CONTEXT_BUDGET = 750
+DEFAULT_CONTEXT_BUDGET = 1500
 CHARS_PER_TOKEN = 4
 
 
@@ -51,20 +51,20 @@ class WikiContext:
 
         playbook = await self._fetch_latest(category="strategies", strategy_id=strategy_id)
         if playbook:
-            sections.append(("STRATEGY PLAYBOOK", playbook, 300))
+            sections.append(("STRATEGY PLAYBOOK", playbook, 600))
 
         evolution_doc = await self._fetch_latest(category="evolution", strategy_id=strategy_id)
         if evolution_doc:
-            sections.append(("LAST EVOLUTION CYCLE", evolution_doc, 200))
+            sections.append(("LAST EVOLUTION CYCLE", evolution_doc, 400))
 
         if regime:
             regime_doc = await self._fetch_regime(regime)
             if regime_doc:
-                sections.append((f"CURRENT REGIME: {regime.upper()}", regime_doc, 150))
+                sections.append((f"CURRENT REGIME: {regime.upper()}", regime_doc, 300))
 
         meta_issues = await self._fetch_meta_known_issues()
         if meta_issues:
-            sections.append(("KNOWN SYSTEM BIASES", meta_issues, 100))
+            sections.append(("KNOWN SYSTEM BIASES", meta_issues, 200))
 
         return self._assemble(sections, budget)
 
