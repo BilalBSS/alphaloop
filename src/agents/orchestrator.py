@@ -1357,12 +1357,12 @@ class AgentOrchestrator:
         while not self._stop_event.is_set():
             try:
                 async with loop_registry.track(self._pool, "capital_allocator"):
-                    from src.agents.capital_allocator import compute_allocations
-                    mpp = float(self._risk_limits.get("max_position_pct", 0.04))
-                    allocs = await compute_allocations(self._pool, max_position_pct=mpp)
+                    from src.agents.capital_allocator import compute_allocations, get_dynamic_caps
+                    caps = get_dynamic_caps(self._risk_limits)
+                    allocs = await compute_allocations(self._pool, max_position_pct=caps.per_position_pct)
                     await log_event(
                         self._pool, "info", "capital_allocator",
-                        f"strategies={len(allocs)} max_pct={mpp}",
+                        f"strategies={len(allocs)} active={caps.active_count} max_pct={caps.per_position_pct}",
                     )
             except Exception as exc:
                 logger.error("capital_allocator_error", exc_info=True)
@@ -1501,5 +1501,6 @@ class AgentOrchestrator:
         await flush_to_db(self._pool)
 
     async def _svc_capital_allocator(self) -> None:
-        mpp = float(self._risk_limits.get("max_position_pct", 0.04))
-        await compute_allocations(self._pool, max_position_pct=mpp)
+        from src.agents.capital_allocator import get_dynamic_caps
+        caps = get_dynamic_caps(self._risk_limits)
+        await compute_allocations(self._pool, max_position_pct=caps.per_position_pct)

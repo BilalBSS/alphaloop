@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 import pandas as pd
 import structlog
 
 from src.agents import capital_allocator
+from src.agents.capital_allocator import DynamicCaps, get_dynamic_caps
 from src.agents.circuit_breaker import CircuitBreakerState
 from src.agents.market_tools import (
     fetch_avg_volume,
@@ -96,11 +98,8 @@ class RiskAgent:
         risk_limits: dict | None = None,
     ):
         rl = risk_limits or self._load_risk_limits()
-        self.max_position_pct = (
-            max_position_pct
-            if max_position_pct is not None
-            else float(os.environ.get("MAX_POSITION_PCT", str(rl.get("max_position_pct", 0.08))))
-        )
+        self._rl = rl
+        self._explicit_max_position_pct = max_position_pct
         self.max_portfolio_risk = (
             max_portfolio_risk
             if max_portfolio_risk is not None
@@ -112,8 +111,9 @@ class RiskAgent:
         self._max_daily_trades = rl.get("max_daily_trades", 20)
         self._max_daily_trades_per_strategy = rl.get("max_daily_trades_per_strategy", 6)
         self._max_positions_per_strategy = rl.get("max_positions_per_strategy", 4)
-        self._max_exposure_per_strategy_pct = float(rl.get("max_exposure_per_strategy_pct", 0.08))
         self._activity_scaling_enabled = bool(rl.get("activity_scaling_enabled", True))
+        self._caps_cache: tuple[float, DynamicCaps] | None = None
+        self._caps_ttl_s = 60.0
         self._max_open_positions = rl.get("max_open_positions", 15)
         self._max_drawdown_hard_stop = rl.get("max_drawdown_hard_stop", -0.20)
         self._consecutive_loss_pause = rl.get("consecutive_loss_pause_count", 3)
@@ -136,6 +136,37 @@ class RiskAgent:
         if path.exists():
             return json.loads(path.read_text())
         return {}
+
+    def _caps(self) -> DynamicCaps:
+        if self._explicit_max_position_pct is not None:
+            slots = max(1, int(self._max_positions_per_strategy))
+            per_pos = float(self._explicit_max_position_pct)
+            per_strat = float(self._rl.get("max_exposure_per_strategy_pct", 0.30))
+            return DynamicCaps(
+                active_count=0,
+                per_position_pct=per_pos,
+                per_strategy_pct=max(per_strat, per_pos * slots),
+            )
+        now = time.monotonic()
+        if self._caps_cache and (now - self._caps_cache[0]) < self._caps_ttl_s:
+            return self._caps_cache[1]
+        caps = get_dynamic_caps(self._rl)
+        self._caps_cache = (now, caps)
+        logger.info(
+            "dynamic_caps_refreshed",
+            active=caps.active_count,
+            per_position_pct=caps.per_position_pct,
+            per_strategy_pct=caps.per_strategy_pct,
+        )
+        return caps
+
+    @property
+    def max_position_pct(self) -> float:
+        return self._caps().per_position_pct
+
+    @property
+    def _max_exposure_per_strategy_pct(self) -> float:
+        return self._caps().per_strategy_pct
 
     async def process_signal(
         self, pool, signal_id: int, broker: BrokerInterface,
