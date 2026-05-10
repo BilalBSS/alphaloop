@@ -78,6 +78,8 @@ class EvolutionEngine:
         self._spawn_min_composite = float(evo.get("spawn_min_composite", 2.0))
         self._tier2_max_per_cycle = int(evo.get("tier2_max_per_cycle", 0))
         self._pool_target_size = int(evo.get("pool_target_size", 0))
+        self._min_trades_before_kill = int(evo.get("min_trades_before_kill", 3))
+        self._min_days_before_kill = int(evo.get("min_days_before_kill", 0))
         self._paper_trade_min_days = int(rl.get("paper_trade_min_days", 14))
         self._promotion_min_sharpe = float(rl.get("promotion_min_sharpe", 0.8))
         self._promotion_min_win_rate = float(rl.get("promotion_min_win_rate", 0.45))
@@ -210,19 +212,26 @@ class EvolutionEngine:
     async def _kill_bottom_quartile(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
     ) -> list[dict]:
+        min_trades = self._min_trades_before_kill
+        min_days = self._min_days_before_kill
+        now = datetime.now(timezone.utc)
         scored_count = sum(
             1 for e in strategy_pool.ranked()
-            if e.score and e.score.total_trades >= 3
+            if e.score and e.score.total_trades >= min_trades
         )
         if scored_count < 3:
             logger.info(
                 "evolution_skip_quartile_kill",
-                reason="not enough strategies with >=3 trades",
+                reason=f"not enough strategies with >={min_trades} trades",
                 scored=scored_count, pool_size=strategy_pool.size,
             )
             bottom = []
         else:
-            bottom = strategy_pool.bottom_quartile()
+            bottom = [
+                e for e in strategy_pool.bottom_quartile()
+                if e.score and e.score.total_trades >= min_trades
+                and (now - e.status_changed_at).days >= min_days
+            ]
 
         bottom_ids = {e.strategy.strategy_id for e in bottom}
         dormant: list = []
