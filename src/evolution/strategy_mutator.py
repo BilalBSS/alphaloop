@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from pathlib import Path
 
 import numpy as np
 import structlog
@@ -13,6 +14,26 @@ import structlog
 from src.data.llm_client import llm_call
 
 logger = structlog.get_logger(__name__)
+
+_SEQ_RE = re.compile(r"^strategy_(\d+)$")
+
+
+def _next_sequential_id(directory: Path | None = None) -> str:
+    # / scan and increment
+    config_dir = directory or (Path(__file__).parent.parent.parent / "configs" / "strategies")
+    if not config_dir.exists():
+        return f"strategy_{uuid.uuid4().hex[:8]}"
+    max_n = 0
+    for path in config_dir.glob("strategy_*.json"):
+        m = _SEQ_RE.match(path.stem)
+        if m:
+            try:
+                max_n = max(max_n, int(m.group(1)))
+            except ValueError:
+                continue
+    if max_n == 0:
+        return f"strategy_{uuid.uuid4().hex[:8]}"
+    return f"strategy_{max_n + 1:03d}"
 
 _TWEAK_PARAMS = [
     ("entry_conditions.signals[].period", -5, 5, int),
@@ -79,7 +100,7 @@ async def _llm_propose(
             validated = validate_config(config)
             config = validated.model_dump()
 
-            config["id"] = f"strategy_{uuid.uuid4().hex[:8]}"
+            config["id"] = _next_sequential_id()
             config["parent_id"] = killed_config.get("id", "unknown")
             config["created_by"] = "evolution_agent"
             config["version"] = 1
@@ -158,7 +179,7 @@ Output ONLY valid JSON:
             from src.strategies.strategy_loader import validate_config
             validate_config(result["alternative"])
             alt = result["alternative"]
-            alt["id"] = f"strategy_{uuid.uuid4().hex[:8]}"
+            alt["id"] = _next_sequential_id()
             alt["parent_id"] = killed_config.get("id", "unknown")
             alt["created_by"] = "evolution_reasoner"
             alt["version"] = 1
@@ -249,7 +270,7 @@ def _random_tweak(config: dict, rng: np.random.Generator) -> dict:
     new_config = copy.deepcopy(config)
 
     # / assign new identity
-    new_config["id"] = f"strategy_{uuid.uuid4().hex[:8]}"
+    new_config["id"] = _next_sequential_id()
     new_config["parent_id"] = config.get("id", "unknown")
     new_config["created_by"] = "random_mutation"
     new_config["version"] = 1
