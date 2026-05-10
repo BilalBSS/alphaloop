@@ -46,14 +46,16 @@ export default function EvolutionTab({ evolution, loading }) {
           </>
         }
       >
-        <div className="grid c12-8-4">
+        <div className="grid c12-8-4" style={{ alignItems: 'start' }}>
           <MutationLogPanel
             events={evolution || []}
             loading={loading}
             onSelectCycle={setSelectedCycleId}
             selectedCycleId={selectedCycleId}
           />
-          <WikiRetrievalPanel cycleId={selectedCycleId} />
+          <div style={{ position: 'sticky', top: 12 }}>
+            <WikiRetrievalPanel cycleId={selectedCycleId} />
+          </div>
         </div>
       </SectionH>
 

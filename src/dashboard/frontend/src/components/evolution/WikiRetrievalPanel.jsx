@@ -1,8 +1,14 @@
 import Card from '../ui/Card'
 import Pill from '../ui/Pill'
+import { renderMarkdown } from '../ui/markdown'
 import { useApi } from '../../hooks/useApi'
 
 // / wiki neighbors fed to mutator
+
+function fmtTs(ts) {
+  if (!ts) return null
+  return ts.replace('T', ' ').slice(0, 19)
+}
 
 export default function WikiRetrievalPanel({ cycleId }) {
   const url = cycleId
@@ -20,9 +26,7 @@ export default function WikiRetrievalPanel({ cycleId }) {
       }
       p0
     >
-      <div style={{ padding: '11px 14px', borderBottom: '1px solid var(--line)', fontFamily: 'var(--mono)', fontSize: 10.5, color: 'var(--ink-3)', letterSpacing: '0.06em' }}>
-        nearest neighbors fed to mutator
-      </div>
+      <RetrievalHeader data={data} />
       {loading && <div className="empty-state" style={{ padding: '32px 14px' }}>
         <div className="empty-state-title">loading…</div>
       </div>}
@@ -40,6 +44,25 @@ export default function WikiRetrievalPanel({ cycleId }) {
   )
 }
 
+function RetrievalHeader({ data }) {
+  const ts = fmtTs(data?.ts)
+  const parent = data?.parent_id
+  const child = data?.child_id
+  const items = []
+  if (parent) items.push(`parent ${parent}`)
+  if (child) items.push(`child ${child}`)
+  return (
+    <div style={{ padding: '11px 14px', borderBottom: '1px solid var(--line)', fontFamily: 'var(--mono)', fontSize: 10.5, color: 'var(--ink-3)', letterSpacing: '0.06em' }}>
+      <div>nearest neighbors fed to mutator</div>
+      {(items.length > 0 || ts) && (
+        <div style={{ marginTop: 4, color: 'var(--ink-4)' }}>
+          {items.join(' · ')}{items.length > 0 && ts ? ' · ' : ''}{ts || ''}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RetrievalBody({ data }) {
   const retrieved = data?.retrieved
   const ctx = retrieved?.context
@@ -50,12 +73,9 @@ function RetrievalBody({ data }) {
       </div>
     )
   }
-  const lines = ctx.split('\n').filter((l) => l.trim()).slice(0, 12)
   return (
-    <div style={{ padding: '10px 14px', fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--ink-2)', lineHeight: 1.55, maxHeight: 240, overflowY: 'auto' }}>
-      {lines.map((l, i) => (
-        <div key={i} style={{ marginBottom: 4 }}>{l}</div>
-      ))}
+    <div style={{ padding: '12px 16px' }}>
+      {renderMarkdown(ctx)}
     </div>
   )
 }
