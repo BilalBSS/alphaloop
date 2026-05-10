@@ -27,7 +27,7 @@ from src.knowledge.wiki_writer import WikiWriter
 
 logger = structlog.get_logger(__name__)
 
-_POST_MORTEM_SYSTEM_MSG = (
+_LOSS_SYSTEM_MSG = (
     "You are a senior trading post-mortem analyst. A trade just closed at a loss. "
     "Given the trade context, strategy config, and recent history, produce a concise "
     "diagnostic of what likely went wrong and one concrete change the strategy could try.\n"
@@ -37,6 +37,21 @@ _POST_MORTEM_SYSTEM_MSG = (
     "- Do not speculate beyond the data provided\n"
     "- End with a one-sentence prescription for future cycles"
 )
+
+_WIN_SYSTEM_MSG = (
+    "You are a senior trading analyst. A trade just closed at an outsized win. "
+    "Given the trade context, strategy config, and recent history, produce a concise "
+    "explanation of what likely worked and what trait future mutations should preserve.\n"
+    "Rules:\n"
+    "- Keep it under 180 words\n"
+    "- Lead with the single most likely driver of the win\n"
+    "- Do not speculate beyond the data provided\n"
+    "- End with a one-sentence directive for what to keep/amplify"
+)
+
+
+def _system_msg_for(trigger_type: str) -> str:
+    return _WIN_SYSTEM_MSG if trigger_type == "win_threshold" else _LOSS_SYSTEM_MSG
 
 
 def _build_prompt(
@@ -49,8 +64,10 @@ def _build_prompt(
     strategy_config: dict[str, Any] | None,
     recent_trades: list[dict[str, Any]] | None,
 ) -> str:
+    is_win = trigger_type == "win_threshold"
+    direction = "an outsized win" if is_win else "a loss"
     parts: list[str] = [
-        f"Trade closed at a loss for strategy {strategy_id} on {symbol}.",
+        f"Trade closed at {direction} for strategy {strategy_id} on {symbol}.",
         f"Realized PnL: {pnl:.2f}",
         f"Trigger: {trigger_type}",
     ]
@@ -86,16 +103,22 @@ def _build_prompt(
             )
 
     parts.append("\n## Task")
-    parts.append("Diagnose the most likely cause of this loss and propose one change.")
+    if is_win:
+        parts.append("Identify the trait that drove this win and what to preserve in future mutations.")
+    else:
+        parts.append("Diagnose the most likely cause of this loss and propose one change.")
     return "\n".join(parts)
 
 
-async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str | None]:
+async def _generate_narrative(
+    prompt: str, symbol: str, trigger_type: str,
+) -> tuple[str | None, str | None]:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         logger.info("post_mortem_no_groq_key_using_template", symbol=symbol)
         return None, None
 
+    system_msg = _system_msg_for(trigger_type)
     from src.data.llm_client import build_fallback_chain
     attempts: list[tuple[str, str]] = build_fallback_chain(
         groq_fast=DEFAULT_MODEL, cerebras_fast=CEREBRAS_FAST_MODEL,
@@ -106,11 +129,11 @@ async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str
             if provider == "groq":
                 result = await _call_llm(
                     api_key, model, prompt, symbol,
-                    system_message=_POST_MORTEM_SYSTEM_MSG,
+                    system_message=system_msg,
                 )
             else:
                 result = await _call_cerebras(
-                    prompt, symbol, _POST_MORTEM_SYSTEM_MSG, model=model,
+                    prompt, symbol, system_msg, model=model,
                 )
             if result and result.summary:
                 return result.summary, model
@@ -125,10 +148,17 @@ async def _generate_narrative(prompt: str, symbol: str) -> tuple[str | None, str
 def _template_narrative(
     symbol: str, strategy_id: str, pnl: float, trigger_type: str,
 ) -> str:
+    is_win = trigger_type == "win_threshold"
+    direction = "win" if is_win else "loss"
+    suffix = (
+        "review what trait of the entry/exit/regime alignment delivered this result and preserve it."
+        if is_win
+        else "review strategy entry/exit conditions and regime alignment."
+    )
     return (
         f"Trade on {symbol} by {strategy_id} closed at PnL {pnl:.2f} "
-        f"via trigger {trigger_type}. LLM narrative unavailable — "
-        "review strategy entry/exit conditions and regime alignment."
+        f"({direction}) via trigger {trigger_type}. LLM narrative unavailable — "
+        + suffix
     )
 
 
@@ -143,8 +173,10 @@ def _compose_markdown(
     trade: dict[str, Any] | None,
 ) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    is_win = trigger_type == "win_threshold"
+    title_kind = "Post-Analysis (Win)" if is_win else "Post-Mortem (Loss)"
     lines: list[str] = [
-        f"# Post-Mortem: {strategy_id} on {symbol}",
+        f"# {title_kind}: {strategy_id} on {symbol}",
         "",
         f"- **Date (UTC):** {timestamp}",
         f"- **Strategy:** {strategy_id}",
@@ -280,7 +312,7 @@ async def write_post_mortem(
         recent_trades=recent_trades,
     )
 
-    narrative, model_used = await _generate_narrative(prompt, symbol)
+    narrative, model_used = await _generate_narrative(prompt, symbol, trigger_type)
     if not narrative:
         narrative = _template_narrative(symbol, strategy_id, pnl, trigger_type)
 
@@ -297,6 +329,8 @@ async def write_post_mortem(
 
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     slug = f"{strategy_id}_{symbol}_{date_str}"
+    is_win = trigger_type == "win_threshold"
+    title_label = "Post-analysis (win)" if is_win else "Post-mortem (loss)"
     writer = WikiWriter(pool=pool)
 
     wiki_path: str | None = None
@@ -305,7 +339,7 @@ async def write_post_mortem(
             category="post-mortems",
             filename=slug,
             content=content,
-            title=f"Post-mortem: {strategy_id} on {symbol} ({date_str})",
+            title=f"{title_label}: {strategy_id} on {symbol} ({date_str})",
             symbols=[symbol],
             strategy_ids=[strategy_id],
             confidence="emerging",
