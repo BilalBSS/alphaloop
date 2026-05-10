@@ -10,12 +10,147 @@ from fastapi.responses import JSONResponse
 
 from src.dashboard.helpers import db, serializers
 from src.dashboard.state import STATE
+from src.data.symbols import get_sector
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
 STRATEGY_CONFIGS_DIR = (Path(__file__).parent.parent.parent.parent / "configs" / "strategies").resolve()
+_RISK_LIMITS_PATH = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
+
+
+def _enrich_position(p, strategy_map: dict[str, str], opened_map: dict[str, str]) -> dict:
+    return {
+        "symbol": p.symbol,
+        "side": p.side,
+        "qty": p.qty,
+        "market_value": p.market_value,
+        "entry_price": p.avg_entry_price,
+        "unrealized_pl": p.unrealized_pnl,
+        "current_price": p.current_price,
+        "strategy_id": strategy_map.get(p.symbol),
+        "sector": get_sector(p.symbol),
+        "opened_at": opened_map.get(p.symbol),
+    }
+
+
+async def _strategy_map_for_positions(symbols: list[str]) -> dict[str, str]:
+    if not symbols:
+        return {}
+    rows = await db.query(
+        """SELECT DISTINCT ON (symbol) symbol, strategy_id
+        FROM strategy_positions
+        WHERE symbol = ANY($1) AND qty > 0
+          AND strategy_id IS NOT NULL
+          AND lower(strategy_id) <> 'untracked'
+        ORDER BY symbol, updated_at DESC""",
+        symbols,
+    )
+    return {r["symbol"]: r["strategy_id"] for r in rows}
+
+
+async def _opened_at_map(symbols: list[str]) -> dict[str, str]:
+    if not symbols:
+        return {}
+    rows = await db.query(
+        """SELECT symbol, MIN(created_at) AS opened_at
+        FROM trade_log
+        WHERE symbol = ANY($1) AND side = 'buy'
+        GROUP BY symbol""",
+        symbols,
+    )
+    return {
+        r["symbol"]: r["opened_at"].isoformat()
+        for r in rows
+        if r.get("opened_at") is not None
+    }
+
+
+async def _latest_regime() -> tuple[str | None, float | None]:
+    row = await db.query_one(
+        """SELECT regime, confidence FROM regime_history
+        WHERE market = 'equity' ORDER BY date DESC LIMIT 1"""
+    )
+    if not row:
+        return None, None
+    conf = row.get("confidence")
+    try:
+        conf_f = float(conf) if conf is not None else None
+    except (TypeError, ValueError):
+        conf_f = None
+    return row.get("regime"), conf_f
+
+
+async def _next_strategy_cycle_ts() -> str | None:
+    if STATE.pool is None:
+        return None
+    try:
+        from src.data.loop_registry import describe_loops
+        loops = await describe_loops(STATE.pool)
+    except Exception as exc:
+        logger.debug("loops_lookup_failed", error=str(exc))
+        return None
+    target = next(
+        (loop for loop in loops if loop.get("name") in ("strategy_eval", "analyst")),
+        None,
+    )
+    if not target:
+        return None
+    nft = target.get("next_fire_ts")
+    if nft is None:
+        return None
+    return nft.isoformat() if hasattr(nft, "isoformat") else str(nft)
+
+
+def _risk_budget_used(
+    var_95: float | None,
+    drawdown: float | None,
+    gross_exposure_pct: float | None,
+    tail_dep: float | None,
+    cfg: dict,
+) -> float | None:
+    var_limit_pct = 0.03
+    dd_limit = float(cfg.get("max_drawdown_hard_stop", -0.20))
+    gross_cap = 1.0 - float(cfg.get("min_cash_reserve_pct", 0.10))
+    tail_threshold = float(cfg.get("tail_dependence_threshold", 0.30))
+    ratios: list[float] = []
+    if var_95 is not None and var_limit_pct > 0:
+        ratios.append(min(1.0, abs(float(var_95)) / var_limit_pct))
+    if drawdown is not None and dd_limit:
+        ratios.append(min(1.0, abs(float(drawdown)) / abs(dd_limit)))
+    if gross_exposure_pct is not None and gross_cap > 0:
+        ratios.append(min(1.0, float(gross_exposure_pct) / gross_cap))
+    if tail_dep is not None and tail_threshold > 0:
+        ratios.append(min(1.0, float(tail_dep) / tail_threshold))
+    if not ratios:
+        return None
+    return round(max(ratios), 3)
+
+
+async def _drawdown_and_var_pct() -> tuple[float | None, float | None]:
+    if STATE.pool is None:
+        return None, None
+    try:
+        import numpy as np
+
+        from src.quant.risk_metrics import var_historical
+        async with STATE.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT date, equity FROM portfolio_snapshots
+                ORDER BY date DESC LIMIT 60"""
+            )
+        if not rows or len(rows) < 10:
+            return None, None
+        eq = [float(r["equity"]) for r in reversed(rows)]
+        rets = np.diff(eq) / np.array(eq[:-1])
+        var_pct = float(var_historical(rets, confidence=0.95))
+        peak = max(eq)
+        dd = (eq[-1] - peak) / peak if peak > 0 else None
+        return dd, var_pct
+    except Exception as exc:
+        logger.debug("drawdown_var_compute_failed", error=str(exc))
+        return None, None
 
 
 @router.get("/api/portfolio")
@@ -26,10 +161,20 @@ async def get_portfolio():
             broker.get_account_balance(),
             broker.get_positions(),
         )
-        trades_today = serializers.serialize(await db.query(
+        symbols = [p.symbol for p in positions]
+        trades_q = db.query(
             """SELECT * FROM trade_log
             WHERE created_at >= CURRENT_DATE ORDER BY created_at DESC"""
-        ))
+        )
+        regime_q = _latest_regime()
+        cycle_q = _next_strategy_cycle_ts()
+        strat_q = _strategy_map_for_positions(symbols)
+        opened_q = _opened_at_map(symbols)
+        dd_var_q = _drawdown_and_var_pct()
+        trades_today_raw, regime_pair, next_cycle_ts, strategy_map, opened_map, dd_var = await asyncio.gather(
+            trades_q, regime_q, cycle_q, strat_q, opened_q, dd_var_q,
+        )
+        trades_today = serializers.serialize(trades_today_raw)
         unrealized = sum(p.unrealized_pnl for p in positions)
         realized = 0.0
         for t in trades_today:
@@ -40,13 +185,34 @@ async def get_portfolio():
                 realized += float(pnl)
             except (TypeError, ValueError):
                 continue
+        regime, regime_conf = regime_pair
+        drawdown_pct, var_pct = dd_var
+        equity = float(balance.equity or 0)
+        gross = sum(float(p.market_value or 0) for p in positions)
+        gross_exposure_pct = round(gross / equity, 4) if equity > 0 else None
+        cfg: dict = {}
+        try:
+            cfg = json.loads(_RISK_LIMITS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.debug("risk_limits_read_failed", error=str(exc))
+        max_open = int(cfg.get("max_open_positions", 30)) if cfg else 30
         return {
             "equity": balance.equity,
             "cash": balance.cash,
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
+            "max_open_positions": max_open,
             "daily_pnl": unrealized + realized,
-            "positions": [serializers.serialize_position(p) for p in positions],
+            "regime": regime,
+            "regime_confidence": regime_conf,
+            "next_cycle_ts": next_cycle_ts,
+            "drawdown": drawdown_pct,
+            "var_95_pct": var_pct,
+            "gross_exposure_pct": gross_exposure_pct,
+            "risk_budget_used": _risk_budget_used(
+                var_pct, drawdown_pct, gross_exposure_pct, None, cfg or {},
+            ),
+            "positions": [_enrich_position(p, strategy_map, opened_map) for p in positions],
             "trades_today": trades_today,
         }
     except Exception as exc:
@@ -76,15 +242,21 @@ async def get_equity_history(period: str = "1D", timeframe: str = "5Min"):
         timestamps = data.get("timestamp", [])
         equity = data.get("equity", [])
         profit_loss = data.get("profit_loss", [])
+        points = [
+            {"ts": ts, "equity": eq}
+            for ts, eq in zip(timestamps, equity, strict=False)
+            if eq is not None
+        ]
         return {
             "timestamps": timestamps,
             "equity": equity,
             "profit_loss": profit_loss,
+            "points": points,
             "base_value": data.get("base_value", 100000),
         }
     except Exception as exc:
         logger.debug("equity_history_failed", error=str(exc))
-        return {"timestamps": [], "equity": [], "profit_loss": [], "base_value": 100000}
+        return {"timestamps": [], "equity": [], "profit_loss": [], "points": [], "base_value": 100000}
 
 
 @router.get("/api/strategy-positions")
