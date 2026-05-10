@@ -1,0 +1,1 @@
+import{t as e}from"./tab-knowledge-D4AnradZ.js";export{e as default};

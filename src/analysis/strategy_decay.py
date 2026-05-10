@@ -114,7 +114,7 @@ async def check_all_decay(pool) -> list[DecaySignal]:
 
 async def check_all_strategies(pool, strategy_pool) -> list[DecaySignal]:
     signals = []
-    for entry in strategy_pool.list_by_status("live"):
+    for entry in strategy_pool.list_by_status("promoted"):
         signal = await check_strategy_decay(pool, entry.strategy.strategy_id)
         if signal and signal.recommendation != "ok":
             signals.append(signal)

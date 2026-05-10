@@ -12,6 +12,56 @@ logger = structlog.get_logger(__name__)
 
 MIN_TRADES_FOR_KELLY = 30
 
+ACTIVE_STATUSES = frozenset({"promoted", "live", "active", "paper_trading", "paper", "testing"})
+
+
+@dataclass(frozen=True)
+class DynamicCaps:
+    active_count: int
+    per_position_pct: float
+    per_strategy_pct: float
+
+
+def _count_active_from_disk() -> int:
+    from src.strategies.strategy_loader import load_all_configs
+    n = 0
+    try:
+        for strat in load_all_configs():
+            status = strat.config.get("metadata", {}).get("status", "")
+            if status in ACTIVE_STATUSES:
+                n += 1
+    except Exception as exc:
+        logger.debug("active_count_load_failed", error=str(exc)[:120])
+    return n
+
+
+def dynamic_caps(active_count: int, cfg: dict) -> DynamicCaps:
+    # / scale by active count
+    target_gross = max(0.1, 1.0 - float(cfg.get("min_cash_reserve_pct", 0.10)))
+    n = max(1, int(active_count))
+    raw_per_strat = target_gross / n
+    pos_max = float(cfg.get("max_position_pct", 0.05))
+    pos_min = float(cfg.get("min_position_pct", 0.02))
+    strat_max = float(cfg.get("max_exposure_per_strategy_pct", 0.30))
+    strat_min = float(cfg.get("min_exposure_per_strategy_pct", 0.10))
+    if pos_max < pos_min:
+        pos_min = pos_max
+    if strat_max < strat_min:
+        strat_min = strat_max
+    slots = max(1, int(cfg.get("max_positions_per_strategy", 6)))
+    per_strat = max(strat_min, min(strat_max, raw_per_strat))
+    per_pos = max(pos_min, min(pos_max, per_strat / slots))
+    return DynamicCaps(
+        active_count=n,
+        per_position_pct=round(per_pos, 5),
+        per_strategy_pct=round(per_strat, 5),
+    )
+
+
+def get_dynamic_caps(cfg: dict, active_count: int | None = None) -> DynamicCaps:
+    n = active_count if active_count is not None else _count_active_from_disk()
+    return dynamic_caps(n, cfg)
+
 
 @dataclass
 class StrategyAllocation:

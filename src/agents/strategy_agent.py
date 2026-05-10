@@ -100,7 +100,7 @@ class StrategyAgent:
         # / get active strategies
         active = (
             strategy_pool.list_by_status("paper_trading")
-            + strategy_pool.list_by_status("live")
+            + strategy_pool.list_by_status("promoted")
         )
         if not active:
             logger.info("strategy_agent_no_active_strategies")
@@ -666,7 +666,7 @@ class StrategyAgent:
 
         active = (
             strategy_pool.list_by_status("paper_trading")
-            + strategy_pool.list_by_status("live")
+            + strategy_pool.list_by_status("promoted")
         )
 
         for entry in active:

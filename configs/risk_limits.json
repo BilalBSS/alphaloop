@@ -1,5 +1,6 @@
 {
-  "max_position_pct": 0.025,
+  "max_position_pct": 0.08,
+  "min_position_pct": 0.02,
   "max_portfolio_risk": 0.25,
   "max_open_positions": 30,
   "tail_dependence_threshold": 0.30,
@@ -8,7 +9,8 @@
   "max_daily_trades": 50,
   "max_daily_trades_per_strategy": 8,
   "max_positions_per_strategy": 6,
-  "max_exposure_per_strategy_pct": 0.15,
+  "max_exposure_per_strategy_pct": 0.40,
+  "min_exposure_per_strategy_pct": 0.10,
   "activity_scaling_enabled": true,
   "max_single_trade_loss_pct": 0.02,
   "require_stop_loss": true,
@@ -19,9 +21,15 @@
   "evolution": {
     "tier2_spawn_trades": 20,
     "tier2_kill_trades": 10,
-    "tier3_graduate_trades": 100,
+    "tier3_graduate_trades": 30,
     "tier3_sharpe_delta": 0.2,
-    "tier2_param_freedom": 0.20
+    "tier2_param_freedom": 0.20,
+    "spawn_from_paper": true,
+    "spawn_min_composite": 2.0,
+    "tier2_max_per_cycle": 5,
+    "pool_target_size": 60,
+    "min_trades_before_kill": 10,
+    "min_days_before_kill": 7
   },
 
   "consecutive_loss_pause_count": 5,
@@ -38,12 +46,12 @@
 
   "tracks": {
     "fundamental_gated": {
-      "max_position_pct": 0.025,
+      "max_position_pct": 0.08,
       "requires_fundamentals": true,
       "description": "full conviction — fundamental + technical signals"
     },
     "momentum_only": {
-      "max_position_pct": 0.025,
+      "max_position_pct": 0.08,
       "requires_fundamentals": false,
       "stop_loss_multiplier": 0.75,
       "description": "momentum signals only — tighter stops, smaller size"

@@ -126,7 +126,7 @@ class TestOrchestratorInit:
             await orch.start()
 
         m_load.assert_called_once_with(
-            status_filter={"backtest_pending", "paper_trading", "live"},
+            status_filter={"backtest_pending", "paper_trading", "promoted", "live"},
         )
         assert orch.strategy_pool.size == 2
 

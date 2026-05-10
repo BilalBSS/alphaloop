@@ -580,6 +580,7 @@ def _parse_synthesis_json(raw: str) -> dict | None:
     if not raw:
         return None
     text = raw.strip()
+    text = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         text = match.group(1).strip()
@@ -597,10 +598,10 @@ def _parse_synthesis_json(raw: str) -> dict | None:
         return s
 
     candidates: list[str] = [text, _sanitize(text)]
-    brace_start = raw.find("{")
-    brace_end = raw.rfind("}")
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
     if brace_start >= 0 and brace_end > brace_start:
-        sliced = raw[brace_start:brace_end + 1]
+        sliced = text[brace_start:brace_end + 1]
         candidates.append(sliced)
         candidates.append(_sanitize(sliced))
 

@@ -19,12 +19,13 @@ const fmtCycle = (iso) => {
 
 export default function Header({ portfolio, health, macro, version, wsStatus, onRunCycle, onPauseExec, paused }) {
   const nav = portfolio?.equity ?? portfolio?.nav ?? portfolio?.total_value
+  const cash = portfolio?.cash
   const pnl24 = portfolio?.pnl_24h ?? portfolio?.daily_pnl ?? portfolio?.pnl_today
   const positions = portfolio?.positions_count ?? portfolio?.positions?.length
   const positionsCap = portfolio?.max_open_positions ?? health?.risk?.max_open_positions
-  const regime = macro?.regime ?? portfolio?.regime
-  const regimeProb = macro?.regime_probability ?? macro?.p_bull
-  const cycleTs = health?.next_cycle_ts ?? health?.next_cycle
+  const regime = portfolio?.regime ?? macro?.regime
+  const regimeProb = portfolio?.regime_confidence ?? macro?.regime_probability ?? macro?.p_bull
+  const cycleTs = portfolio?.next_cycle_ts ?? health?.next_cycle_ts ?? health?.next_cycle
   const versionLabel = version?.version ? `v${version.version}` : null
   const brokerMode = version?.broker_mode ?? portfolio?.broker_mode
 
@@ -50,6 +51,7 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
 
       <div className="b-c">
         <span><b>NAV</b> {fmtMoney(nav)}</span>
+        <span><b>cash</b> {fmtMoney(cash)}</span>
         <span>
           <b>P/L 24h</b>{' '}
           <span className={pnlClass}>{fmtMoney(pnl24)}</span>

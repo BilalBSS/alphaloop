@@ -17,25 +17,31 @@ const fmtPct = (n, digits = 2) => {
 
 export default function HeadStrip({ portfolio, equityHistory, strategies, macro, risk }) {
   const nav = portfolio?.equity ?? portfolio?.nav ?? portfolio?.total_value
+  const cash = portfolio?.cash
+  const buyingPower = portfolio?.buying_power
+  const cashPct = cash != null && nav > 0 ? Number(cash) / Number(nav) : null
   const pnl24 = portfolio?.pnl_24h ?? portfolio?.daily_pnl ?? portfolio?.pnl_today
   const pnl24Pct = portfolio?.pnl_24h_pct ?? portfolio?.daily_pnl_pct
   const pnl30d = portfolio?.pnl_30d_pct ?? portfolio?.return_30d
   const pnlAllTime = portfolio?.pnl_all_time_pct ?? portfolio?.return_all_time
   const sharpe = portfolio?.sharpe ?? portfolio?.sharpe_ratio
 
-  const equityPoints = equityHistory?.points?.map(p => Number(p.equity ?? p.value)) ?? []
+  const equityPoints =
+    equityHistory?.points?.map(p => Number(p.equity ?? p.value)).filter(v => Number.isFinite(v))
+    ?? equityHistory?.equity?.map(Number).filter(v => Number.isFinite(v))
+    ?? []
 
-  const regime = macro?.regime
-  const regimeProb = macro?.regime_probability ?? macro?.p_bull
+  const regime = macro?.regime ?? portfolio?.regime
+  const regimeProb = macro?.regime_probability ?? macro?.p_bull ?? portfolio?.regime_confidence
   const regimePrev = macro?.regime_probability_prev ?? macro?.p_bull_prev
   const sizing = macro?.sizing_multiplier ?? macro?.regime_size_multiplier
   const breadth = macro?.breadth_above_50d
   const breadthFlip = macro?.breadth_flip_threshold
 
-  const live = strategies?.filter?.(s => s.status === 'live')?.length ?? strategies?.live_count
+  const promoted = strategies?.filter?.(s => s.status === 'promoted' || s.status === 'live')?.length ?? strategies?.promoted_count ?? strategies?.live_count
   const paper = strategies?.filter?.(s => s.status === 'paper_trading')?.length ?? strategies?.paper_count
   const retired = strategies?.filter?.(s => s.status === 'killed' || s.status === 'retired')?.length ?? strategies?.retired_count
-  const total = (live ?? 0) + (paper ?? 0) + (retired ?? 0)
+  const total = (promoted ?? 0) + (paper ?? 0) + (retired ?? 0)
   const generations = strategies?.max_generation ?? strategies?.generations
   const lastMutHours = strategies?.last_mutation_hours_ago
 
@@ -76,6 +82,21 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
       </div>
 
       <div className="col">
+        <div className="lab">cash</div>
+        <div className="big">{fmtMoney(cash)}</div>
+        <div className="sub">
+          {cashPct !== null
+            ? <><b>{(cashPct * 100).toFixed(1)}%</b> of NAV</>
+            : '— of NAV'}
+        </div>
+        {buyingPower !== undefined && buyingPower !== null && (
+          <div className="sub" style={{ marginTop: '8px' }}>
+            buying power <b>{fmtMoney(buyingPower)}</b>
+          </div>
+        )}
+      </div>
+
+      <div className="col">
         <div className="lab">regime classifier</div>
         <div className="big" style={{ color: `var(--${regimeTone})` }}>
           {regime ?? '—'}
@@ -105,7 +126,7 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
         <div className="lab">strategy pool</div>
         <div className="big">{total || '—'}</div>
         <div className="sub">
-          <span className="pos">{live ?? 0} live</span>
+          <span className="pos">{promoted ?? 0} promoted</span>
           {' · '}
           <span className="acc">{paper ?? 0} paper</span>
           {' · '}
