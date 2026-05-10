@@ -12,7 +12,7 @@ logger = structlog.get_logger(__name__)
 
 MIN_TRADES_FOR_KELLY = 30
 
-ACTIVE_STATUSES = frozenset({"live", "active", "paper_trading", "paper", "testing"})
+ACTIVE_STATUSES = frozenset({"promoted", "live", "active", "paper_trading", "paper", "testing"})
 
 
 @dataclass(frozen=True)

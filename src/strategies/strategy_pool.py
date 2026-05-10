@@ -70,7 +70,7 @@ class StrategyPool:
         return False
 
     def update_status(self, strategy_id: str, new_status: str) -> bool:
-        valid_statuses = ("backtest_pending", "backtesting", "paper_trading", "live", "killed")
+        valid_statuses = ("backtest_pending", "backtesting", "paper_trading", "promoted", "live", "killed")
         if new_status not in valid_statuses:
             raise ValueError(f"invalid status: {new_status}, must be one of {valid_statuses}")
 
@@ -109,6 +109,11 @@ class StrategyPool:
         return list(self._strategies.values())
 
     def list_by_status(self, status: str) -> list[StrategyEntry]:
+        # / promoted/live treated as synonyms
+        if status == "promoted":
+            return [e for e in self._strategies.values() if e.status in ("promoted", "live")]
+        if status == "live":
+            return [e for e in self._strategies.values() if e.status in ("promoted", "live")]
         return [e for e in self._strategies.values() if e.status == status]
 
     def ranked(self, status: str | None = None) -> list[StrategyEntry]:
@@ -139,7 +144,7 @@ class StrategyPool:
 
     @property
     def active_count(self) -> int:
-        return sum(1 for e in self._strategies.values() if e.status in ("paper_trading", "live"))
+        return sum(1 for e in self._strategies.values() if e.status in ("paper_trading", "promoted", "live"))
 
     def summary(self) -> dict[str, Any]:
         # / pool summary for logging/reporting

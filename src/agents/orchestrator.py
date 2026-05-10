@@ -201,10 +201,10 @@ class AgentOrchestrator:
 
     def _bootstrap_strategies(self) -> None:
         strategies = load_all_configs(
-            status_filter={"backtest_pending", "paper_trading", "live"},
+            status_filter={"backtest_pending", "paper_trading", "promoted", "live"},
         )
         for strat in strategies:
-            status = "live"
+            status = "promoted"
             if hasattr(strat, "config") and strat.config.get("metadata", {}).get("status"):
                 status = strat.config["metadata"]["status"]
             self._strategy_pool.add(strat, status=status)

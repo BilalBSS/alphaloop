@@ -38,10 +38,10 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
   const breadth = macro?.breadth_above_50d
   const breadthFlip = macro?.breadth_flip_threshold
 
-  const live = strategies?.filter?.(s => s.status === 'live')?.length ?? strategies?.live_count
+  const promoted = strategies?.filter?.(s => s.status === 'promoted' || s.status === 'live')?.length ?? strategies?.promoted_count ?? strategies?.live_count
   const paper = strategies?.filter?.(s => s.status === 'paper_trading')?.length ?? strategies?.paper_count
   const retired = strategies?.filter?.(s => s.status === 'killed' || s.status === 'retired')?.length ?? strategies?.retired_count
-  const total = (live ?? 0) + (paper ?? 0) + (retired ?? 0)
+  const total = (promoted ?? 0) + (paper ?? 0) + (retired ?? 0)
   const generations = strategies?.max_generation ?? strategies?.generations
   const lastMutHours = strategies?.last_mutation_hours_ago
 
@@ -126,7 +126,7 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
         <div className="lab">strategy pool</div>
         <div className="big">{total || '—'}</div>
         <div className="sub">
-          <span className="pos">{live ?? 0} live</span>
+          <span className="pos">{promoted ?? 0} promoted</span>
           {' · '}
           <span className="acc">{paper ?? 0} paper</span>
           {' · '}

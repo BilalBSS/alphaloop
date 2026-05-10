@@ -7,6 +7,7 @@ import Sparkline from './ui/Sparkline'
 // / composite-ranked strategy rows
 
 const STATUS_TO_PILL = {
+  promoted: 'live',
   live: 'live',
   active: 'live',
   paper: 'paper',
@@ -116,7 +117,7 @@ export default function StrategiesTab({ strategies }) {
     return [...strategies].sort((a, b) => Number(b.composite_score ?? 0) - Number(a.composite_score ?? 0))
   }, [strategies])
 
-  const liveCount = ranked.filter((s) => s.status === 'live' || s.status === 'active').length
+  const promotedCount = ranked.filter((s) => s.status === 'promoted' || s.status === 'live' || s.status === 'active').length
   const paperCount = ranked.filter((s) => s.status === 'paper_trading' || s.status === 'paper' || s.status === 'testing').length
 
   return (
@@ -124,7 +125,7 @@ export default function StrategiesTab({ strategies }) {
       num="03"
       title="strategy pool"
       em="composite-ranked"
-      meta={<><code>/api/strategies</code> · {liveCount} live · {paperCount} paper · sorted by composite ↓</>}
+      meta={<><code>/api/strategies</code> · {promotedCount} promoted · {paperCount} paper · sorted by composite ↓</>}
     >
       <p className="p" style={{ marginBottom: 14 }}>
         Composite weights <code>0.55·sharpe + 0.25·win − 0.30·|dd| − 0.20·brier</code>. Promotion gate <code>composite ≥ 60</code> sustained 14 paper days. Below 40 for 4 weeks → kill.

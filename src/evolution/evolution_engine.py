@@ -301,7 +301,7 @@ class EvolutionEngine:
         self, pool: Any, generation: int, strategy_pool: StrategyPool,
         killed_configs: list[dict], summary: dict,
     ) -> None:
-        for entry in strategy_pool.list_by_status("live"):
+        for entry in strategy_pool.list_by_status("promoted"):
             config = entry.strategy.config
             if config.get("tier") != "tweaked":
                 continue
@@ -665,8 +665,8 @@ class EvolutionEngine:
                 and win_rate >= self._promotion_min_win_rate
             ):
                 sid = entry.strategy.strategy_id
-                strategy_pool.update_status(sid, "live")
-                _broadcast_status_change(sid, "paper_trading", "live",
+                strategy_pool.update_status(sid, "promoted")
+                _broadcast_status_change(sid, "paper_trading", "promoted",
                                          reason=f"sharpe={sharpe:.2f}, days={paper_days}")
                 summary["promoted"].append({"id": sid})
                 notify_strategy_promoted(sid, sharpe, paper_days)
@@ -710,8 +710,8 @@ class EvolutionEngine:
             summary["errors"].append(f"report failed: {exc}")
 
     def _eligible_spawn_parents(self, strategy_pool: StrategyPool) -> list:
-        # / live + qualified paper
-        out = list(strategy_pool.list_by_status("live"))
+        # / promoted + qualified paper
+        out = list(strategy_pool.list_by_status("promoted"))
         if not self._spawn_from_paper:
             return out
         for entry in strategy_pool.list_by_status("paper_trading"):
@@ -805,7 +805,7 @@ class EvolutionEngine:
         self, pool: Any, strategy_pool: StrategyPool, generation: int,
     ) -> list[dict]:
         graduated = []
-        for entry in strategy_pool.list_by_status("live"):
+        for entry in strategy_pool.list_by_status("promoted"):
             config = entry.strategy.config
             if config.get("tier") != "tweaked":
                 continue
