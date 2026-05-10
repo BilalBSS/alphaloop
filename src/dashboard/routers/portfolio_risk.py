@@ -103,6 +103,32 @@ async def get_sizing_multipliers():
         return {"multipliers": {}}
 
 
+@router.get("/api/risk/dynamic-caps")
+async def get_dynamic_caps_endpoint():
+    # / live caps endpoint
+    from pathlib import Path
+
+    from src.agents.capital_allocator import get_dynamic_caps
+    cfg_path = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
+    cfg: dict = {}
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.debug("dynamic_caps_cfg_failed", error=str(exc))
+    caps = get_dynamic_caps(cfg)
+    return {
+        "active_count": caps.active_count,
+        "per_position_pct": caps.per_position_pct,
+        "per_strategy_pct": caps.per_strategy_pct,
+        "min_position_pct": float(cfg.get("min_position_pct", 0.02)),
+        "max_position_pct": float(cfg.get("max_position_pct", 0.08)),
+        "min_exposure_per_strategy_pct": float(cfg.get("min_exposure_per_strategy_pct", 0.10)),
+        "max_exposure_per_strategy_pct": float(cfg.get("max_exposure_per_strategy_pct", 0.40)),
+        "min_cash_reserve_pct": float(cfg.get("min_cash_reserve_pct", 0.10)),
+    }
+
+
 @router.get("/api/risk/gauges")
 async def get_risk_gauges():
     # / 4-up + 8-gate snapshot
