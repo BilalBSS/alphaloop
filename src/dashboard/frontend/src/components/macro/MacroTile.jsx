@@ -4,22 +4,32 @@ import Sparkline from '../ui/Sparkline'
 
 const SERIES_META = {
   DGS10:    { label: '10Y yield',     unit: '%',  higherIs: 'neutral', tone: 'acc2',
-              low: 2.0,  high: 4.5,  lowTag: 'low',     highTag: 'high',  midTag: 'normal' },
+              low: 2.0,  high: 4.5,  lowTag: 'low',     highTag: 'high',  midTag: 'normal',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   DGS2:     { label: '2Y yield',      unit: '%',  higherIs: 'neutral', tone: 'acc2',
-              low: 2.0,  high: 4.5,  lowTag: 'low',     highTag: 'high',  midTag: 'normal' },
+              low: 2.0,  high: 4.5,  lowTag: 'low',     highTag: 'high',  midTag: 'normal',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   CPIAUCSL: { label: 'CPI',           unit: '',   higherIs: 'bearish', tone: 'warn',
-              low: 2.0,  high: 3.0,  lowTag: 'target',  highTag: 'hot',   midTag: 'above target' },
+              low: 2.0,  high: 3.0,  lowTag: 'target',  highTag: 'hot',   midTag: 'above target',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   FEDFUNDS: { label: 'Fed funds',     unit: '%',  higherIs: 'bearish', tone: 'acc2',
-              low: 2.0,  high: 4.5,  lowTag: 'easy',    highTag: 'tight', midTag: 'neutral' },
+              low: 2.0,  high: 4.5,  lowTag: 'easy',    highTag: 'tight', midTag: 'neutral',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   UNRATE:   { label: 'Unemployment',  unit: '%',  higherIs: 'bearish', tone: 'warn',
-              low: 4.0,  high: 5.0,  lowTag: 'tight',   highTag: 'slack', midTag: 'neutral' },
+              low: 4.0,  high: 5.0,  lowTag: 'tight',   highTag: 'slack', midTag: 'neutral',
+              signals: { low: 'neutral', mid: 'bullish', high: 'bearish' } },
   VIXCLS:   { label: 'VIX',           unit: '',   higherIs: 'bearish', tone: 'pos',
-              low: 15.0, high: 25.0, lowTag: 'calm',    highTag: 'fear',  midTag: 'normal' },
+              low: 15.0, high: 25.0, lowTag: 'calm',    highTag: 'fear',  midTag: 'normal',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   DTWEXBGS: { label: 'DXY',           unit: '',   higherIs: 'neutral', tone: 'acc2',
-              low: 95.0, high: 105.0, lowTag: 'weak',   highTag: 'strong', midTag: 'normal' },
+              low: 95.0, high: 105.0, lowTag: 'weak',   highTag: 'strong', midTag: 'normal',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   DCOILWTICO: { label: 'WTI',         unit: '$',  higherIs: 'neutral', tone: 'warn',
-              low: 50.0, high: 90.0, lowTag: 'low',     highTag: 'high',  midTag: 'normal' },
+              low: 50.0, high: 90.0, lowTag: 'low',     highTag: 'high',  midTag: 'normal',
+              signals: { low: 'neutral', mid: 'neutral', high: 'bearish' } },
 }
+
+const SIGNAL_TONE = { bullish: 'pos', bearish: 'neg', neutral: 'dim' }
 
 function formatValue(v, unit) {
   if (v == null) return '—'
@@ -70,6 +80,8 @@ export default function MacroTile({ seriesId, latest, history }) {
 
   const zone = zoneFor(value, meta)
   const zTone = zoneTone(zone, meta.higherIs)
+  const signal = (zone && meta.signals) ? meta.signals[zone.pos] : null
+  const signalTone = signal ? SIGNAL_TONE[signal] : 'dim'
 
   let markerPct = null
   if (value != null && meta.low != null && meta.high != null) {
@@ -99,8 +111,15 @@ export default function MacroTile({ seriesId, latest, history }) {
           )}
         </div>
         {zone && (
-          <div className={zTone} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 2 }}>
-            {zone.tag}
+          <div style={{ marginTop: 2, display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+            <span className={zTone} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              {zone.tag}
+            </span>
+            {signal && (
+              <span className={signalTone} style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                · {signal} for stocks
+              </span>
+            )}
           </div>
         )}
         <Sparkline data={points} width={200} height={30} tone={meta.tone} />

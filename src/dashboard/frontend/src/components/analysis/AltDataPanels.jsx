@@ -3,11 +3,17 @@ import TimeSeriesLineChart from '../chart/TimeSeriesLineChart'
 
 // / macro regime tiles
 const MACRO_REF = {
-  fedFunds:   { low: 2.0,  high: 4.5,  lowTag: 'easy',   highTag: 'tight', midTag: 'neutral', higherIs: 'bearish' },
-  cpi:        { low: 2.0,  high: 3.0,  lowTag: 'target', highTag: 'hot',   midTag: 'above',   higherIs: 'bearish' },
-  unrate:     { low: 4.0,  high: 5.0,  lowTag: 'tight',  highTag: 'slack', midTag: 'neutral', higherIs: 'bearish' },
-  spread:     { low: 0.0,  high: 1.0,  lowTag: 'inverted', highTag: 'normal', midTag: 'flat', higherIs: 'bullish' },
+  fedFunds: { low: 2.0,  high: 4.5,  lowTag: 'easy',     highTag: 'tight',  midTag: 'neutral', higherIs: 'bearish',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
+  cpi:      { low: 2.0,  high: 3.0,  lowTag: 'target',   highTag: 'hot',    midTag: 'above',   higherIs: 'bearish',
+              signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
+  unrate:   { low: 4.0,  high: 5.0,  lowTag: 'tight',    highTag: 'slack',  midTag: 'neutral', higherIs: 'bearish',
+              signals: { low: 'neutral', mid: 'bullish', high: 'bearish' } },
+  spread:   { low: 0.0,  high: 1.0,  lowTag: 'inverted', highTag: 'normal', midTag: 'flat',    higherIs: 'bullish',
+              signals: { low: 'bearish', mid: 'neutral', high: 'bullish' } },
 }
+
+const SIGNAL_TONE = { bullish: 'pos', bearish: 'neg', neutral: 'dim' }
 
 function macroZone(value, ref) {
   if (value == null || !Number.isFinite(value) || !ref) return null
@@ -55,6 +61,8 @@ export function MacroRegimeCard() {
           const numericValue = r.value != null ? parseFloat(r.value) : null
           const zone = macroZone(numericValue, ref)
           const tone = macroTone(zone, ref?.higherIs)
+          const signal = (zone && ref?.signals) ? ref.signals[zone.pos] : null
+          const signalTone = signal ? SIGNAL_TONE[signal] : 'dim'
           if (r.value == null) {
             return (
               <div className="tile" key={r.label}>
@@ -68,8 +76,15 @@ export function MacroRegimeCard() {
               <div className="lab">{r.label}</div>
               <div className="v">{r.fmt(r.value)}</div>
               {zone && (
-                <div className={tone} style={{ fontSize: 9, fontFamily: 'var(--mono)', letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 2 }}>
-                  {zone.tag}
+                <div style={{ marginTop: 2, display: 'flex', alignItems: 'baseline', gap: 4, flexWrap: 'wrap' }}>
+                  <span className={tone} style={{ fontSize: 9, fontFamily: 'var(--mono)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                    {zone.tag}
+                  </span>
+                  {signal && (
+                    <span className={signalTone} style={{ fontSize: 8.5, fontFamily: 'var(--mono)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                      · {signal}
+                    </span>
+                  )}
                 </div>
               )}
               {ref && (
