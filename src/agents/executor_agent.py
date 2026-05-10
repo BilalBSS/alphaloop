@@ -53,20 +53,32 @@ def _broadcast_fill(symbol: str, side: str, qty: float, price: float,
         logger.debug("broadcast_fill_failed", error=str(exc)[:120])
 
 
-def _should_trigger_post_mortem(pnl: float | None, entry_notional: float) -> bool:
-    if pnl is None or pnl >= 0:
-        return False
+def _post_mortem_trigger(pnl: float | None, entry_notional: float) -> str | None:
+    if pnl is None:
+        return None
     try:
-        pnl_abs = float(os.environ.get("POST_MORTEM_PNL_ABS", "50"))
+        loss_pct = float(os.environ.get("POST_MORTEM_PNL_PCT", "0.01"))
     except (TypeError, ValueError):
-        pnl_abs = 50.0
+        loss_pct = 0.01
     try:
-        pnl_pct = float(os.environ.get("POST_MORTEM_PNL_PCT", "0.02"))
+        loss_abs = float(os.environ.get("POST_MORTEM_PNL_ABS", "10"))
     except (TypeError, ValueError):
-        pnl_pct = 0.02
-    if abs(pnl) > pnl_abs:
-        return True
-    return entry_notional > 0 and abs(pnl) / entry_notional > pnl_pct
+        loss_abs = 10.0
+    try:
+        win_pct = float(os.environ.get("POST_MORTEM_WIN_PCT", "0.02"))
+    except (TypeError, ValueError):
+        win_pct = 0.02
+    try:
+        win_abs = float(os.environ.get("POST_MORTEM_WIN_ABS", "20"))
+    except (TypeError, ValueError):
+        win_abs = 20.0
+
+    pct_of_notional = abs(pnl) / entry_notional if entry_notional > 0 else 0.0
+    if pnl < 0 and (abs(pnl) > loss_abs or pct_of_notional > loss_pct):
+        return "loss_threshold"
+    if pnl > 0 and (pnl > win_abs or pct_of_notional > win_pct):
+        return "win_threshold"
+    return None
 
 
 def _spawn_post_mortem(
@@ -310,11 +322,12 @@ class ExecutorAgent:
             qty=order.filled_qty, price=order.filled_price,
         )
 
-        # / post-mortem on loss-close
+        # / post-analysis on close
         if side == "sell" and pnl is not None:
             entry_notional = float(entry_price) * float(order.filled_qty) if entry_price else 0.0
-            if _should_trigger_post_mortem(pnl, entry_notional):
-                _spawn_post_mortem(self.tasks, pool, log_id, strategy_id, symbol, pnl, "loss_threshold")
+            trigger = _post_mortem_trigger(pnl, entry_notional)
+            if trigger:
+                _spawn_post_mortem(self.tasks, pool, log_id, strategy_id, symbol, pnl, trigger)
 
         return {
             "status": "filled",

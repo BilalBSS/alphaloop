@@ -71,7 +71,25 @@ class TestBuildPrompt:
             recent_trades=None,
         )
         assert "X" in p
-        assert "Task" in p  # / trailing task section always present
+        assert "Task" in p
+
+    def test_loss_prompt_says_loss_and_diagnose(self):
+        p = _build_prompt(
+            symbol="X", strategy_id="s", pnl=-50.0,
+            trigger_type="loss_threshold", deviation_sigma=None,
+            trade=None, strategy_config=None, recent_trades=None,
+        )
+        assert "loss" in p.lower()
+        assert "Diagnose" in p
+
+    def test_win_prompt_says_win_and_preserve(self):
+        p = _build_prompt(
+            symbol="X", strategy_id="s", pnl=120.0,
+            trigger_type="win_threshold", deviation_sigma=None,
+            trade=None, strategy_config=None, recent_trades=None,
+        )
+        assert "win" in p.lower()
+        assert "preserve" in p.lower()
 
 
 # ──────────────────────────────────────────────────────
@@ -85,11 +103,20 @@ class TestComposeMarkdown:
             trigger_type="loss_threshold", deviation_sigma=None,
             narrative="Body here.", model_used="m_test", trade=None,
         )
-        assert md.startswith("# Post-Mortem: sid on AAPL")
+        assert md.startswith("# Post-Mortem (Loss): sid on AAPL")
         assert "-100.50" in md
         assert "loss_threshold" in md
         assert "m_test" in md
         assert "Body here." in md
+
+    def test_win_header_renders_post_analysis(self):
+        md = _compose_markdown(
+            symbol="AAPL", strategy_id="sid", pnl=200.5,
+            trigger_type="win_threshold", deviation_sigma=None,
+            narrative="Body.", model_used="m", trade=None,
+        )
+        assert md.startswith("# Post-Analysis (Win): sid on AAPL")
+        assert "win_threshold" in md
 
     def test_template_fallback_when_no_model(self):
         md = _compose_markdown(
