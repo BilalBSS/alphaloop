@@ -74,6 +74,10 @@ class EvolutionEngine:
         self._tier3_graduate_trades = evo.get("tier3_graduate_trades", 100)
         self._tier3_sharpe_delta = evo.get("tier3_sharpe_delta", 0.2)
         self._tier2_param_freedom = evo.get("tier2_param_freedom", 0.20)
+        self._spawn_from_paper = bool(evo.get("spawn_from_paper", False))
+        self._spawn_min_composite = float(evo.get("spawn_min_composite", 2.0))
+        self._tier2_max_per_cycle = int(evo.get("tier2_max_per_cycle", 0))
+        self._pool_target_size = int(evo.get("pool_target_size", 0))
         self._paper_trade_min_days = int(rl.get("paper_trade_min_days", 14))
         self._promotion_min_sharpe = float(rl.get("promotion_min_sharpe", 0.8))
         self._promotion_min_win_rate = float(rl.get("promotion_min_win_rate", 0.45))
@@ -705,16 +709,38 @@ class EvolutionEngine:
             logger.error("report_generation_failed", error=str(exc))
             summary["errors"].append(f"report failed: {exc}")
 
+    def _eligible_spawn_parents(self, strategy_pool: StrategyPool) -> list:
+        # / live + qualified paper
+        out = list(strategy_pool.list_by_status("live"))
+        if not self._spawn_from_paper:
+            return out
+        for entry in strategy_pool.list_by_status("paper_trading"):
+            score = entry.score
+            if score is None:
+                continue
+            composite = getattr(score, "composite_score", None)
+            if composite is None or composite < self._spawn_min_composite:
+                continue
+            out.append(entry)
+        return out
+
     async def _spawn_tier2(
         self, pool: Any, strategy_pool: StrategyPool, generation: int,
     ) -> list[dict]:
         from src.data.symbols import FULL_UNIVERSE, get_sector
         spawned = []
 
+        if self._pool_target_size and strategy_pool.size >= self._pool_target_size:
+            logger.info(
+                "tier2_spawn_skipped_pool_full",
+                size=strategy_pool.size, target=self._pool_target_size,
+            )
+            return spawned
+
         candidates: list[tuple[Any, dict, str | None, list[str]]] = []
         all_strat_ids: set[str] = set()
         all_symbols: set[str] = set()
-        for entry in strategy_pool.list_by_status("live"):
+        for entry in self._eligible_spawn_parents(strategy_pool):
             config = entry.strategy.config
             if config.get("tier", "sector") != "sector":
                 continue
@@ -742,8 +768,15 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.warning("tier2_count_batch_failed", error=str(exc))
 
+        cap = self._tier2_max_per_cycle if self._tier2_max_per_cycle > 0 else None
         for _entry, config, sector, symbols_to_check in candidates:
+            if cap is not None and len(spawned) >= cap:
+                break
             for symbol in symbols_to_check:
+                if cap is not None and len(spawned) >= cap:
+                    break
+                if self._pool_target_size and (strategy_pool.size + len(spawned)) >= self._pool_target_size:
+                    break
                 trade_count = counts.get((config["id"], symbol), 0)
                 if trade_count < self._tier2_spawn_trades:
                     continue

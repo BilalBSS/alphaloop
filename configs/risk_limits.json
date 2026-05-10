@@ -23,7 +23,11 @@
     "tier2_kill_trades": 10,
     "tier3_graduate_trades": 30,
     "tier3_sharpe_delta": 0.2,
-    "tier2_param_freedom": 0.20
+    "tier2_param_freedom": 0.20,
+    "spawn_from_paper": true,
+    "spawn_min_composite": 2.0,
+    "tier2_max_per_cycle": 5,
+    "pool_target_size": 60
   },
 
   "consecutive_loss_pause_count": 5,
