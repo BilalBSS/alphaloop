@@ -74,7 +74,7 @@ function RetrievalBody({ data }) {
     )
   }
   return (
-    <div style={{ padding: '12px 16px' }}>
+    <div style={{ padding: '12px 16px', maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
       {renderMarkdown(ctx)}
     </div>
   )
