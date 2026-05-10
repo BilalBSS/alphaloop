@@ -61,6 +61,43 @@ async def get_evolution_mutations(limit: int = 100):
     }
 
 
+@router.get("/api/strategy-lessons/{strategy_id}")
+async def get_strategy_lessons(strategy_id: str, limit: int = 25):
+    limit = max(1, min(int(limit), 200))
+    rows = await db.query(
+        """SELECT id, strategy_id, lesson_type, content, confidence,
+                  trade_count, context, created_at
+        FROM strategy_lessons
+        WHERE strategy_id = $1
+        ORDER BY created_at DESC LIMIT $2""",
+        strategy_id, limit,
+    )
+    return {"strategy_id": strategy_id, "lessons": serializers.serialize(rows)}
+
+
+@router.get("/api/strategy-lessons")
+async def get_recent_lessons(limit: int = 50, lesson_type: str | None = None):
+    limit = max(1, min(int(limit), 500))
+    if lesson_type:
+        rows = await db.query(
+            """SELECT id, strategy_id, lesson_type, content, confidence,
+                      trade_count, context, created_at
+            FROM strategy_lessons
+            WHERE lesson_type = $1
+            ORDER BY created_at DESC LIMIT $2""",
+            lesson_type, limit,
+        )
+    else:
+        rows = await db.query(
+            """SELECT id, strategy_id, lesson_type, content, confidence,
+                      trade_count, context, created_at
+            FROM strategy_lessons
+            ORDER BY created_at DESC LIMIT $1""",
+            limit,
+        )
+    return {"lessons": serializers.serialize(rows)}
+
+
 @router.get("/api/wiki/documents")
 async def get_wiki_documents(
     category: str | None = None,

@@ -20,6 +20,11 @@ from src.data.strategy_metrics import (
 from src.data.symbols import get_sector_symbols
 from src.data.trade_history import count_all_symbol_trades, fetch_recent_trades
 from src.evolution.documentation import update_docs
+from src.evolution.lesson_distiller import (
+    distill_kill,
+    distill_mutation,
+    distill_promotion,
+)
 from src.evolution.report_generator import REPORTS_DIR, generate_report
 from src.evolution.strategy_mutator import mutate_strategy
 from src.knowledge.db_helpers import (
@@ -304,6 +309,29 @@ class EvolutionEngine:
             except Exception as exc:
                 logger.info("evo_mutation_killed_update_failed", error=str(exc)[:120])
 
+            try:
+                sharpe = entry.score.sharpe_ratio if entry.score else None
+                trades = entry.score.total_trades if entry.score else None
+                composite = entry.score.composite_score if entry.score else None
+                days_alive = (now - entry.status_changed_at).days
+                recent = await fetch_recent_trades(pool, strategy_id=sid, limit=8)
+                content = await distill_kill(
+                    strategy_id=sid, config=config, sharpe=sharpe,
+                    trade_count=trades, composite=composite,
+                    days_alive=days_alive, reason=reason, recent_trades=recent,
+                )
+                lessons = StrategyLessons(pool)
+                await lessons.record(
+                    config.get("parent_id") or sid, "killed", content,
+                    context={
+                        "killed_id": sid, "sharpe": sharpe, "composite": composite,
+                        "trades": trades, "days_alive": days_alive, "reason": reason,
+                    },
+                    trade_count=trades,
+                )
+            except Exception as exc:
+                logger.info("kill_lesson_failed", strategy_id=sid, error=str(exc)[:140])
+
         return killed_configs
 
     async def _kill_underperforming_tier2(
@@ -575,17 +603,23 @@ class EvolutionEngine:
             if parent_sid:
                 try:
                     guided = config.get("_evo_wiki_guided", False)
-                    summary_text = (
-                        f"Mutation {config.get('id', '?')} composite={composite:.4f} "
-                        f"sharpe={mutant_sharpe:.3f}"
+                    parent_entry = strategy_pool.get(parent_sid) if hasattr(strategy_pool, "get") else None
+                    parent_config = parent_entry.strategy.config if parent_entry else None
+                    content = await distill_mutation(
+                        parent_id=parent_sid,
+                        mutant_id=config.get("id", "?"),
+                        parent_config=parent_config,
+                        mutant_config=config,
+                        parent_sharpe=parent_sharpe,
+                        mutant_sharpe=mutant_sharpe,
+                        composite=composite,
+                        sharpe_delta=sharpe_delta,
+                        wiki_guided=guided,
                     )
-                    if sharpe_delta is not None:
-                        summary_text += f" delta={sharpe_delta:+.3f}"
-                    summary_text += f" wiki_guided={guided}"
                     await lessons.record(
                         parent_sid,
                         "mutation_result",
-                        summary_text,
+                        content,
                         context={
                             "mutant_id": config.get("id"),
                             "composite": composite,
@@ -699,6 +733,26 @@ class EvolutionEngine:
                     )
                 except Exception as exc:
                     logger.info("evo_mutation_survived_update_failed", error=str(exc)[:120])
+
+                try:
+                    trades = entry.score.total_trades if entry.score else None
+                    recent = await fetch_recent_trades(pool, strategy_id=sid, limit=8)
+                    content = await distill_promotion(
+                        strategy_id=sid, config=entry.strategy.config,
+                        sharpe=sharpe, win_rate=win_rate, paper_days=paper_days,
+                        trade_count=trades, recent_trades=recent,
+                    )
+                    lessons = StrategyLessons(pool)
+                    await lessons.record(
+                        sid, "promotion", content,
+                        context={
+                            "sharpe": sharpe, "win_rate": win_rate,
+                            "paper_days": paper_days, "trades": trades,
+                        },
+                        trade_count=trades,
+                    )
+                except Exception as exc:
+                    logger.info("promotion_lesson_failed", strategy_id=sid, error=str(exc)[:140])
 
     async def _document(
         self, pool: Any, generation: int, strategy_pool: StrategyPool, summary: dict,
