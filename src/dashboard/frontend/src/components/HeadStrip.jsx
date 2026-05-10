@@ -17,16 +17,22 @@ const fmtPct = (n, digits = 2) => {
 
 export default function HeadStrip({ portfolio, equityHistory, strategies, macro, risk }) {
   const nav = portfolio?.equity ?? portfolio?.nav ?? portfolio?.total_value
+  const cash = portfolio?.cash
+  const buyingPower = portfolio?.buying_power
+  const cashPct = cash != null && nav > 0 ? Number(cash) / Number(nav) : null
   const pnl24 = portfolio?.pnl_24h ?? portfolio?.daily_pnl ?? portfolio?.pnl_today
   const pnl24Pct = portfolio?.pnl_24h_pct ?? portfolio?.daily_pnl_pct
   const pnl30d = portfolio?.pnl_30d_pct ?? portfolio?.return_30d
   const pnlAllTime = portfolio?.pnl_all_time_pct ?? portfolio?.return_all_time
   const sharpe = portfolio?.sharpe ?? portfolio?.sharpe_ratio
 
-  const equityPoints = equityHistory?.points?.map(p => Number(p.equity ?? p.value)) ?? []
+  const equityPoints =
+    equityHistory?.points?.map(p => Number(p.equity ?? p.value)).filter(v => Number.isFinite(v))
+    ?? equityHistory?.equity?.map(Number).filter(v => Number.isFinite(v))
+    ?? []
 
-  const regime = macro?.regime
-  const regimeProb = macro?.regime_probability ?? macro?.p_bull
+  const regime = macro?.regime ?? portfolio?.regime
+  const regimeProb = macro?.regime_probability ?? macro?.p_bull ?? portfolio?.regime_confidence
   const regimePrev = macro?.regime_probability_prev ?? macro?.p_bull_prev
   const sizing = macro?.sizing_multiplier ?? macro?.regime_size_multiplier
   const breadth = macro?.breadth_above_50d
@@ -73,6 +79,21 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
           {pnlAllTime !== undefined && pnlAllTime !== null && <><b>{fmtPct(pnlAllTime)}</b> since inception</>}
           {sharpe !== undefined && sharpe !== null && <> · sharpe <b>{Number(sharpe).toFixed(2)}</b></>}
         </div>
+      </div>
+
+      <div className="col">
+        <div className="lab">cash</div>
+        <div className="big">{fmtMoney(cash)}</div>
+        <div className="sub">
+          {cashPct !== null
+            ? <><b>{(cashPct * 100).toFixed(1)}%</b> of NAV</>
+            : '— of NAV'}
+        </div>
+        {buyingPower !== undefined && buyingPower !== null && (
+          <div className="sub" style={{ marginTop: '8px' }}>
+            buying power <b>{fmtMoney(buyingPower)}</b>
+          </div>
+        )}
       </div>
 
       <div className="col">

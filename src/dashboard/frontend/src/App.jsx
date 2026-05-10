@@ -143,11 +143,12 @@ function AppInner() {
   }, [paused, adminToken])
 
   const risk = {
-    tail_dependence: tailDep?.data?.lambda ?? tailDep?.data?.tail_lambda,
+    tail_dependence: tailDep?.data?.lambda_lower ?? tailDep?.data?.lambda ?? tailDep?.data?.tail_lambda,
     risk_budget: portfolio?.data?.risk_budget_used,
     var_95: portfolio?.data?.var_95,
     var_95_pct: portfolio?.data?.var_95_pct,
     current_drawdown: portfolio?.data?.drawdown,
+    gross_exposure_pct: portfolio?.data?.gross_exposure_pct,
     gates_passing: health?.data?.gates_passing,
   }
 

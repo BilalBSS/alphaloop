@@ -51,7 +51,7 @@
 /* / head strip */
 .head {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  grid-template-columns: 1.3fr 1fr 1fr 1fr 1fr;
   gap: 0;
   border-bottom: 1px solid var(--line);
   margin: 0 calc(-1 * var(--pad));
