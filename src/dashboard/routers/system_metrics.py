@@ -183,11 +183,10 @@ async def get_hydration_status():
         cap = 5
 
     hydrated_today = 0
-    last_event_ts = None
     if STATE.pool is not None:
         try:
             row = await db.query_one(
-                """SELECT COUNT(*) as n, MAX(timestamp) as last_ts
+                """SELECT COUNT(*) as n
                 FROM system_events
                 WHERE source='knowledge_hydration'
                 AND level='info'
@@ -195,21 +194,20 @@ async def get_hydration_status():
             )
             if row:
                 hydrated_today = int(row.get("n") or 0)
-                last_event_ts = row.get("last_ts")
         except (asyncpg.PostgresError, KeyError, ValueError):
             pass
 
     loops = await describe_loops(STATE.pool)
     hydration = next((loop for loop in loops if loop["name"] == "knowledge_hydration"), None)
+    last_fire = hydration.get("last_fire_ts") if hydration else None
     raw_status = hydration.get("last_status") if hydration else None
-    last_status = "pending" if last_event_ts is None else raw_status
+    last_status = raw_status if last_fire is not None else "pending"
+    next_fire = hydration.get("next_fire_ts") if hydration else None
     return {
         "daily_cap": cap,
         "hydrated_today": hydrated_today,
-        "last_event_ts": last_event_ts.isoformat() if hasattr(last_event_ts, "isoformat") else last_event_ts,
-        "next_fire_ts": hydration.get("next_fire_ts").isoformat()
-            if hydration and hasattr(hydration.get("next_fire_ts"), "isoformat")
-            else (hydration and hydration.get("next_fire_ts")),
+        "last_event_ts": last_fire.isoformat() if hasattr(last_fire, "isoformat") else last_fire,
+        "next_fire_ts": next_fire.isoformat() if hasattr(next_fire, "isoformat") else next_fire,
         "last_status": last_status,
     }
 
