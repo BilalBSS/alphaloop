@@ -99,6 +99,12 @@ class RiskAgent:
     ):
         rl = risk_limits or self._load_risk_limits()
         self._rl = rl
+        env_override = os.environ.get("MAX_POSITION_PCT")
+        if max_position_pct is None and env_override is not None:
+            try:
+                max_position_pct = float(env_override)
+            except ValueError:
+                max_position_pct = None
         self._explicit_max_position_pct = max_position_pct
         self.max_portfolio_risk = (
             max_portfolio_risk

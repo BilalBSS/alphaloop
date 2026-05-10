@@ -44,6 +44,10 @@ def dynamic_caps(active_count: int, cfg: dict) -> DynamicCaps:
     pos_min = float(cfg.get("min_position_pct", 0.02))
     strat_max = float(cfg.get("max_exposure_per_strategy_pct", 0.30))
     strat_min = float(cfg.get("min_exposure_per_strategy_pct", 0.10))
+    if pos_max < pos_min:
+        pos_min = pos_max
+    if strat_max < strat_min:
+        strat_min = strat_max
     slots = max(1, int(cfg.get("max_positions_per_strategy", 6)))
     per_strat = max(strat_min, min(strat_max, raw_per_strat))
     per_pos = max(pos_min, min(pos_max, per_strat / slots))

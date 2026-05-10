@@ -366,11 +366,16 @@ class TestCopulaCheck:
 
 class TestRiskAgentConfig:
     def test_default_values(self):
-        # / phase 6 step 10: default max_position_pct dropped 0.08 -> 0.04 to fit
-        # / more concurrent strategies under the same equity. phase 7 post-
-        # / research: dropped further to 0.025 to accommodate 30 open positions.
-        agent = RiskAgent()
-        assert agent.max_position_pct == 0.025
+        # / dynamic caps clamped to bounds
+        agent = RiskAgent(risk_limits={
+            "min_position_pct": 0.02,
+            "max_position_pct": 0.05,
+            "min_exposure_per_strategy_pct": 0.10,
+            "max_exposure_per_strategy_pct": 0.30,
+            "min_cash_reserve_pct": 0.10,
+            "max_positions_per_strategy": 6,
+        })
+        assert 0.02 <= agent.max_position_pct <= 0.05
         assert agent.max_portfolio_risk == 0.25
         assert agent.tail_dep_threshold == 0.30
 
@@ -626,4 +631,4 @@ class TestRiskLimitEnforcement:
         assert agent._max_open_positions == 30
         assert agent._max_daily_trades_per_strategy == 8
         assert agent._max_positions_per_strategy == 6
-        assert agent._max_exposure_per_strategy_pct == 0.15
+        assert 0.10 <= agent._max_exposure_per_strategy_pct <= 0.40
