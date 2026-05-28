@@ -7,7 +7,7 @@ EQUITY_UNIVERSE = [
     # /
     "SPY", "QQQ", "SPUS",
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    "AMD", "AVGO", "QCOM", "MRVL", "ARM",
+    "AMD", "AVGO", "QCOM", "MRVL", "ARM", "MU", "WDC",
     "CRM", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB",
     "SHOP", "XYZ", "COIN", "HOOD", "SOFI",
     "HIMS", "RKLB", "ASTS",
@@ -31,7 +31,7 @@ FULL_UNIVERSE = EQUITY_UNIVERSE + CRYPTO_UNIVERSE
 
 SECTORS: dict[str, list[str]] = {
     "mega_tech":     ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA"],
-    "semis":         ["NVDA", "AMD", "AVGO", "QCOM", "MRVL", "ARM"],
+    "semis":         ["NVDA", "AMD", "AVGO", "QCOM", "MRVL", "ARM", "MU", "WDC"],
     "cloud_cyber":   ["CRM", "ADBE", "PLTR", "NET", "CRWD", "SNOW", "DDOG", "MDB", "PANW", "ZS"],
     "fintech":       ["SHOP", "XYZ", "COIN", "HOOD", "SOFI", "AFRM"],
     "consumer":      ["ABNB", "UBER", "DASH", "DUOL"],
