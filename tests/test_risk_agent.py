@@ -51,7 +51,7 @@ def _make_balance(equity: float = 100000.0, cash: float | None = None) -> Accoun
 def _patch_risk_tools():
     # / patch risk agent tool calls that use pool.acquire internally
     with (
-        patch("src.agents.risk_agent.fetch_recent_pnl", new_callable=AsyncMock, return_value=[]),
+        patch("src.agents.risk_agent.fetch_recent_closes", new_callable=AsyncMock, return_value=[]),
         patch("src.agents.risk_agent.fetch_avg_volume", new_callable=AsyncMock, return_value=None),
         patch("src.agents.risk_agent.count_today_approved_trades", new_callable=AsyncMock, return_value=0),
         patch("src.agents.risk_agent.count_today_approved_trades_for_strategy", new_callable=AsyncMock, return_value=0),
