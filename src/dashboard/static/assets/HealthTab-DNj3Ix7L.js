@@ -1,0 +1,1 @@
+import{t as e}from"./tab-health-C3U7QJ07.js";export{e as default};

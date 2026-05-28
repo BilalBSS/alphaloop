@@ -1,0 +1,59 @@
+{
+  "id": "strategy_040",
+  "name": "Value_Oversold_Quality",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Quality value names bought on Bollinger/RSI oversold",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": false,
+    "pe_ratio_max": 30,
+    "fcf_margin_min": 0.08,
+    "revenue_growth_min": 0.05
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "bollinger_bands",
+        "condition": "price_below_lower",
+        "lookback": 20,
+        "std_dev": 2.0
+      },
+      {
+        "indicator": "rsi",
+        "condition": "below",
+        "threshold": 35,
+        "period": 14
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.08
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.06
+    },
+    "time_exit": {
+      "max_holding_days": 10
+    }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.07,
+    "kelly_fraction": 0.25
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}

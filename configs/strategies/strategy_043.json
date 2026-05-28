@@ -1,0 +1,56 @@
+{
+  "id": "strategy_043",
+  "name": "Insider_Momentum",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Recent insider buying paired with MACD momentum",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "fundamental_filters": {
+    "strict_data": false,
+    "insider_buying_recent": true,
+    "pe_ratio_max": 45
+  },
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "macd",
+        "condition": "positive"
+      },
+      {
+        "indicator": "rsi",
+        "condition": "below",
+        "threshold": 55,
+        "period": 14
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.08
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.06
+    },
+    "time_exit": {
+      "max_holding_days": 10
+    }
+  },
+  "position_sizing": {
+    "method": "kelly_fraction",
+    "max_position_pct": 0.06,
+    "kelly_fraction": 0.25
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}

@@ -336,7 +336,7 @@ def _eval_macd_histogram(sig: dict[str, Any], market_data: pd.DataFrame) -> tupl
         return False, 0.0, "macd_histogram: insufficient history"
     last = float(result.iloc[-1])
     condition = sig.get("condition", "")
-    threshold = float(sig.get("threshold", 0))
+    threshold = float(sig.get("threshold") or 0)
     if condition == "above":
         return last > threshold, 0.5 if last > threshold else 0.0, f"macd_hist={last:.4f} > {threshold}"
     if condition == "below":

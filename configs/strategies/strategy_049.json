@@ -1,0 +1,58 @@
+{
+  "id": "strategy_049",
+  "name": "Crypto_Breakout_Vol",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Crypto Bollinger breakout on volume expansion and trend",
+  "asset_class": "crypto",
+  "universe": "all_crypto",
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "bollinger_bands",
+        "condition": "price_above_upper",
+        "lookback": 20,
+        "std_dev": 2.0
+      },
+      {
+        "indicator": "volume",
+        "condition": "above_average",
+        "multiplier": 2.0,
+        "period": 20
+      },
+      {
+        "indicator": "adx",
+        "condition": "above",
+        "threshold": 20,
+        "period": 14
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.15
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.08
+    },
+    "time_exit": {
+      "max_holding_days": 12
+    }
+  },
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}

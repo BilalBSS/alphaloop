@@ -48,7 +48,7 @@ export default function MutationLogPanel({ events, loading, onSelectCycle, selec
   }
 
   return (
-    <Card title={<><b>mutation</b> log</>} meta="deepseek-v3 mutator · click wiki to load retrieval" p0>
+    <Card title={<><b>mutation</b> log</>} meta="deepseek-v4 mutator · click wiki to load retrieval" p0>
       <div className="muts">
         {events.slice(0, 30).map((e, i) => {
           const kind = statusKind(e.action)

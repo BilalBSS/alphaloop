@@ -5,7 +5,7 @@ import { useApi } from '../../hooks/useApi'
 const PROVIDERS = [
   { key: 'groq',     label: 'groq · llama-3.3-70b' },
   { key: 'cerebras', label: 'cerebras · llama-3.3-70b' },
-  { key: 'deepseek', label: 'deepseek · v3' },
+  { key: 'deepseek', label: 'deepseek · v4' },
   { key: 'ollama',   label: 'ollama · nomic-embed' },
 ]
 

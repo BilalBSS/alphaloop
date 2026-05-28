@@ -15,7 +15,7 @@ from src.agents.market_tools import (
     fetch_avg_volume,
     fetch_close_history_batch,
     fetch_latest_regime,
-    fetch_recent_pnl,
+    fetch_recent_closes,
     fetch_symbol_beta,
 )
 from src.agents.position_tools import get_strategy_positions
@@ -335,10 +335,13 @@ class RiskAgent:
                 pool, signal_id, "circuit_breaker_losses",
                 response_reason="circuit_breaker_consecutive_losses",
             )
-        recent_pnl = await fetch_recent_pnl(pool, limit=self._consecutive_loss_pause)
-        if len(recent_pnl) >= self._consecutive_loss_pause and all(p < 0 for p in recent_pnl):
-            self._cb.record_loss_pause()
-            logger.warning("circuit_breaker_consecutive_losses", count=len(recent_pnl))
+        recent = await fetch_recent_closes(pool, limit=self._consecutive_loss_pause)
+        if (
+            len(recent) >= self._consecutive_loss_pause
+            and all(pnl < 0 for pnl, _ in recent)
+            and self._cb.arm_loss_pause(recent[0][1])
+        ):
+            logger.warning("circuit_breaker_consecutive_losses", count=len(recent))
             return await self._reject(
                 pool, signal_id, "circuit_breaker_losses",
                 response_reason="circuit_breaker_consecutive_losses",

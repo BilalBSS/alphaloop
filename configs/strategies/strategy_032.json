@@ -1,0 +1,51 @@
+{
+  "id": "strategy_032",
+  "name": "MACD_ADX_Trend",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "MACD bullish cross filtered by ADX trend strength",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "macd",
+        "condition": "crossover_bullish",
+        "lookback": 3
+      },
+      {
+        "indicator": "adx",
+        "condition": "above",
+        "threshold": 22,
+        "period": 14
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.05
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.05
+    },
+    "time_exit": {
+      "max_holding_days": 6
+    }
+  },
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}

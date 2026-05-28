@@ -107,7 +107,7 @@ class TestMutateWithLLM:
     async def test_mutate_with_valid_llm_response(self):
         # / mock anthropic returning valid json
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("src.evolution.strategy_mutator._call_deepseek_v3", new_callable=AsyncMock) as mock_llm:
+            with patch("src.evolution.strategy_mutator._call_deepseek_v4", new_callable=AsyncMock) as mock_llm:
                 mock_llm.return_value = _valid_llm_response()
                 result = await mutate_strategy(
                     _base_config(), _top_config(), [],
@@ -136,7 +136,7 @@ class TestMutateWithLLM:
             return _valid_llm_response()
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("src.evolution.strategy_mutator._call_deepseek_v3", side_effect=_mock_llm):
+            with patch("src.evolution.strategy_mutator._call_deepseek_v4", side_effect=_mock_llm):
                 result = await mutate_strategy(
                     _base_config(), _top_config(), [],
                     rng=np.random.default_rng(42),
@@ -149,7 +149,7 @@ class TestMutateWithLLM:
     async def test_mutate_all_retries_fail_falls_back(self):
         # / mock anthropic always returning garbage, verify random_tweak used
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            with patch("src.evolution.strategy_mutator._call_deepseek_v3", new_callable=AsyncMock) as mock_llm:
+            with patch("src.evolution.strategy_mutator._call_deepseek_v4", new_callable=AsyncMock) as mock_llm:
                 mock_llm.return_value = "garbage not json"
                 result = await mutate_strategy(
                     _base_config(), _top_config(), [],

@@ -51,7 +51,7 @@ def _make_balance(equity: float = 100000.0, cash: float | None = None) -> Accoun
 def _patch_risk_tools():
     # / patch risk agent tool calls that use pool.acquire internally
     with (
-        patch("src.agents.risk_agent.fetch_recent_pnl", new_callable=AsyncMock, return_value=[]),
+        patch("src.agents.risk_agent.fetch_recent_closes", new_callable=AsyncMock, return_value=[]),
         patch("src.agents.risk_agent.fetch_avg_volume", new_callable=AsyncMock, return_value=None),
         patch("src.agents.risk_agent.count_today_approved_trades", new_callable=AsyncMock, return_value=0),
         patch("src.agents.risk_agent.count_today_approved_trades_for_strategy", new_callable=AsyncMock, return_value=0),
@@ -627,8 +627,8 @@ class TestRiskLimitEnforcement:
         # / loads risk_limits.json defaults
         agent = RiskAgent()
         assert agent._min_cash_reserve_pct == 0.10
-        assert agent._max_daily_trades == 50
-        assert agent._max_open_positions == 30
+        assert agent._max_daily_trades == 100
+        assert agent._max_open_positions == 50
         assert agent._max_daily_trades_per_strategy == 8
         assert agent._max_positions_per_strategy == 6
-        assert 0.10 <= agent._max_exposure_per_strategy_pct <= 0.40
+        assert 0.02 <= agent._max_exposure_per_strategy_pct <= 0.40

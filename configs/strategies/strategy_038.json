@@ -1,0 +1,49 @@
+{
+  "id": "strategy_038",
+  "name": "MACD_Hist_Momentum",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Positive MACD histogram above the 50-day mean",
+  "asset_class": "stocks",
+  "universe": "all_stocks",
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "macd_histogram",
+        "condition": "positive"
+      },
+      {
+        "indicator": "sma",
+        "condition": "price_above",
+        "period": 50
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.06
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.05
+    },
+    "time_exit": {
+      "max_holding_days": 8
+    }
+  },
+  "position_sizing": {
+    "method": "fixed_pct",
+    "max_position_pct": 0.03
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}

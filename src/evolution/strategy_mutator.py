@@ -1,4 +1,4 @@
-# / deepseek v3 strategy mutation
+# / deepseek v4 strategy mutation
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import structlog
 
-from src.data.llm_client import llm_call
+from src.data.llm_client import DEEPSEEK_MODEL, DEEPSEEK_REASONER, llm_call
 
 logger = structlog.get_logger(__name__)
 
@@ -60,7 +60,7 @@ async def mutate_strategy(
         logger.info("no_llm_key_using_random_tweak")
         return [_random_tweak(killed_config, rng)]
 
-    # / 1. deepseek v3 proposes
+    # / 1. deepseek v4 proposes
     mutator_config = await _llm_propose(
         api_key, killed_config, top_config, recent_trades, rng,
         wiki_context=wiki_context,
@@ -93,7 +93,7 @@ async def _llm_propose(
 
     for attempt in range(3):
         try:
-            response_text = await _call_deepseek_v3(prompt)
+            response_text = await _call_deepseek_v4(prompt)
             config = _parse_json_response(response_text)
 
             from src.strategies.strategy_loader import validate_config
@@ -167,7 +167,7 @@ Output ONLY valid JSON:
         data = await llm_call(
             "deepseek",
             messages=[{"role": "user", "content": prompt}],
-            model="deepseek-reasoner",
+            model=DEEPSEEK_REASONER,
             max_tokens=3000,
         )
         text = data["choices"][0]["message"]["content"]
@@ -200,11 +200,11 @@ Output ONLY valid JSON:
         return {"decision": "approve", "reason": f"critique failed: {exc}"}
 
 
-async def _call_deepseek_v3(prompt: str) -> str:
+async def _call_deepseek_v4(prompt: str) -> str:
     data = await llm_call(
         "deepseek",
         messages=[{"role": "user", "content": prompt}],
-        model="deepseek-chat",
+        model=DEEPSEEK_MODEL,
         max_tokens=2000,
         temperature=0.7,
     )

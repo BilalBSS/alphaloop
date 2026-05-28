@@ -73,13 +73,14 @@ async def fetch_latest_regime(pool, market: str = "equity") -> str | None:
         return None
 
 
-async def fetch_recent_pnl(pool, limit: int = 5) -> list[float]:
+async def fetch_recent_closes(pool, limit: int = 5) -> list[tuple[float, float]]:
+    # / newest closes first
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT pnl FROM trade_log
+            """SELECT pnl, created_at FROM trade_log
             WHERE pnl IS NOT NULL
             ORDER BY created_at DESC LIMIT $1""", limit)
-    return [float(r["pnl"]) for r in rows]
+    return [(float(r["pnl"]), r["created_at"].timestamp()) for r in rows]
 
 
 async def fetch_avg_volume(pool, symbol: str, days: int = 20) -> float | None:

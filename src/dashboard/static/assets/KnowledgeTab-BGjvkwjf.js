@@ -1,0 +1,1 @@
+import{t as e}from"./tab-knowledge-ouPZfvvv.js";export{e as default};

@@ -709,6 +709,12 @@ class EvolutionEngine:
             ):
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "promoted")
+                config = entry.strategy.config
+                config.setdefault("metadata", {})["status"] = "promoted"
+                try:
+                    save_config(config)
+                except Exception as exc:
+                    logger.error("promote_save_config_failed", strategy_id=sid, error=str(exc))
                 _broadcast_status_change(sid, "paper_trading", "promoted",
                                          reason=f"sharpe={sharpe:.2f}, days={paper_days}")
                 summary["promoted"].append({"id": sid})

@@ -16,6 +16,7 @@ class CircuitBreakerState:
     def __init__(self, max_drawdown: float, loss_pause_seconds: int) -> None:
         self._peak_equity: float = 0.0
         self._paused_until: float = 0.0
+        self._last_pause_marker: float = 0.0
         self._max_drawdown = max_drawdown
         self._loss_pause_seconds = loss_pause_seconds
         self._initialized = False
@@ -37,8 +38,13 @@ class CircuitBreakerState:
     def is_paused(self, now: float | None = None) -> bool:
         return (now or time.time()) < self._paused_until
 
-    def record_loss_pause(self, now: float | None = None) -> None:
+    def arm_loss_pause(self, marker: float, now: float | None = None) -> bool:
+        # / one pause per streak
+        if marker <= self._last_pause_marker:
+            return False
         self._paused_until = (now or time.time()) + self._loss_pause_seconds
+        self._last_pause_marker = marker
+        return True
 
     async def update_peak(self, pool, equity: float) -> float:
         if equity > self._peak_equity:
@@ -61,4 +67,5 @@ class CircuitBreakerState:
         # / explicit reset for tests
         self._peak_equity = 0.0
         self._paused_until = 0.0
+        self._last_pause_marker = 0.0
         self._initialized = False
