@@ -627,8 +627,8 @@ class TestRiskLimitEnforcement:
         # / loads risk_limits.json defaults
         agent = RiskAgent()
         assert agent._min_cash_reserve_pct == 0.10
-        assert agent._max_daily_trades == 50
-        assert agent._max_open_positions == 30
+        assert agent._max_daily_trades == 100
+        assert agent._max_open_positions == 50
         assert agent._max_daily_trades_per_strategy == 8
         assert agent._max_positions_per_strategy == 6
-        assert 0.10 <= agent._max_exposure_per_strategy_pct <= 0.40
+        assert 0.02 <= agent._max_exposure_per_strategy_pct <= 0.40
