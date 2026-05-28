@@ -10,6 +10,9 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_REASONER = os.environ.get("DEEPSEEK_REASONER", "deepseek-reasoner")
+
 _PROVIDER_CONFIG = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",

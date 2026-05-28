@@ -12,6 +12,8 @@ from typing import Any
 
 import structlog
 
+from src.data.llm_client import DEEPSEEK_MODEL, DEEPSEEK_REASONER
+
 from .dcf_model import DCFResult
 from .earnings_signals import EarningsSignal
 from .insider_activity import InsiderSignal
@@ -21,7 +23,6 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "openai/gpt-oss-120b"
-DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 CEREBRAS_FAST_MODEL = "llama-3.3-70b"  # / same-model swap when groq
 CEREBRAS_MODEL = "gpt-oss-120b"  # / final escalation after groq
@@ -1034,8 +1035,8 @@ Output ONLY valid JSON. No explanation outside the JSON."""
     errors: list[str] = []
 
     for attempt, (provider, model) in enumerate([
-        ("deepseek", "deepseek-reasoner"),
-        ("deepseek", "deepseek-reasoner"),
+        ("deepseek", DEEPSEEK_REASONER),
+        ("deepseek", DEEPSEEK_REASONER),
         ("groq", "llama-3.3-70b-versatile"),
     ]):
         try:
@@ -1055,7 +1056,7 @@ Output ONLY valid JSON. No explanation outside the JSON."""
             fallback_body = raw or "; ".join(errors) or "<no response>"
         with contextlib.suppress(Exception):
             await store_daily_synthesis(
-                pool, today, "deepseek-reasoner",
+                pool, today, DEEPSEEK_REASONER,
                 None, None, None, None,
                 fallback_body[:2000],
             )
@@ -1063,7 +1064,7 @@ Output ONLY valid JSON. No explanation outside the JSON."""
 
     try:
         await store_daily_synthesis(
-            pool, today, "deepseek-reasoner",
+            pool, today, DEEPSEEK_REASONER,
             result.get("top_buys"),
             result.get("top_avoids"),
             result.get("portfolio_risk"),
