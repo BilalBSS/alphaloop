@@ -1,0 +1,51 @@
+{
+  "id": "strategy_046",
+  "name": "Crypto_Donchian_Breakout",
+  "version": 1,
+  "created_by": "human",
+  "parent_id": null,
+  "description": "Crypto Donchian breakout with strong ADX trend",
+  "asset_class": "crypto",
+  "universe": "all_crypto",
+  "entry_conditions": {
+    "operator": "AND",
+    "signals": [
+      {
+        "indicator": "donchian",
+        "condition": "breakout_high",
+        "period": 20
+      },
+      {
+        "indicator": "adx",
+        "condition": "above",
+        "threshold": 25,
+        "period": 14
+      }
+    ]
+  },
+  "exit_conditions": {
+    "take_profit": {
+      "pct": 0.12
+    },
+    "stop_loss": {
+      "type": "fixed_pct",
+      "pct": 0.08
+    },
+    "time_exit": {
+      "max_holding_days": 10
+    }
+  },
+  "position_sizing": {
+    "method": "strength_scaled",
+    "max_position_pct": 0.04
+  },
+  "metadata": {
+    "generation": 1,
+    "status": "paper_trading"
+  },
+  "tier": "sector",
+  "sector": null,
+  "symbol": null,
+  "bypass_consensus": true,
+  "signal_threshold_override": 0.12
+}
