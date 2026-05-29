@@ -515,3 +515,211 @@ class TestExecutorKilledStrategyGate:
             await self.agent.execute_trade(pool, 1, broker)
 
         broker.place_order.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# / broker-enforced protective stops
+# ---------------------------------------------------------------------------
+
+def _stop_pool(trade_row: dict, regime=None) -> MagicMock:
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.side_effect = [trade_row, regime]
+    return _mock_pool(mock_conn)
+
+
+def _strategy_pool_with_stop(stop_loss: dict | None, strategy_id: str = "strat_001") -> MagicMock:
+    entry = MagicMock()
+    entry.status = "live"
+    entry.strategy.config = {"exit_conditions": {"stop_loss": stop_loss}} if stop_loss is not None else {}
+    sp = MagicMock()
+    sp.get.return_value = entry
+    return sp
+
+
+def _stop_order(order_id: str = "stop_111") -> Order:
+    return Order(
+        order_id=order_id, symbol="AAPL", side="sell", qty=10.0,
+        order_type="stop", status="pending", stop_price=142.5,
+    )
+
+
+class TestExecutorProtectiveStop:
+    def setup_method(self):
+        self.agent = ExecutorAgent()
+
+    @pytest.mark.asyncio
+    async def test_buy_fill_places_stop_at_right_price(self):
+        pool = _stop_pool(_make_trade_row(side="buy"), regime={"regime": "bull"})
+        broker = _make_broker(_make_filled_order(filled_price=150.0))
+        broker.place_order.side_effect = [_make_filled_order(filled_price=150.0), _stop_order()]
+        strategy_pool = _strategy_pool_with_stop({"type": "fixed_pct", "pct": 0.05})
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch("src.agents.executor_agent.log_event", new_callable=AsyncMock),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker, strategy_pool=strategy_pool)
+
+        assert result["status"] == "filled"
+        # / stop is second order
+        assert broker.place_order.call_count == 2
+        stop_kwargs = broker.place_order.call_args_list[1].kwargs
+        assert stop_kwargs["order_type"] == "stop"
+        assert stop_kwargs["side"] == "sell"
+        assert stop_kwargs["stop_price"] == 142.5  # / 5pct below 150
+        assert self.agent._protective_stops[("strat_001", "AAPL")] == "stop_111"
+
+    @pytest.mark.asyncio
+    async def test_atr_stop_uses_default_distance(self):
+        pool = _stop_pool(_make_trade_row(side="buy"), regime=None)
+        broker = _make_broker(_make_filled_order(filled_price=100.0))
+        broker.place_order.side_effect = [_make_filled_order(filled_price=100.0), _stop_order()]
+        strategy_pool = _strategy_pool_with_stop({"type": "atr_trailing"})
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch("src.agents.executor_agent.log_event", new_callable=AsyncMock),
+        ):
+            await self.agent.execute_trade(pool, 1, broker, strategy_pool=strategy_pool)
+
+        stop_kwargs = broker.place_order.call_args_list[1].kwargs
+        assert stop_kwargs["stop_price"] == 98.0  # / atr default 2pct
+
+    @pytest.mark.asyncio
+    async def test_no_stop_config_places_no_stop(self):
+        pool = _stop_pool(_make_trade_row(side="buy"), regime=None)
+        broker = _make_broker(_make_filled_order(filled_price=150.0))
+        strategy_pool = _strategy_pool_with_stop(None)
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch("src.agents.executor_agent.log_event", new_callable=AsyncMock),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker, strategy_pool=strategy_pool)
+
+        assert result["status"] == "filled"
+        broker.place_order.assert_called_once()  # / entry only, no stop
+
+    @pytest.mark.asyncio
+    async def test_no_strategy_pool_places_no_stop(self):
+        pool = _stop_pool(_make_trade_row(side="buy"), regime=None)
+        broker = _make_broker(_make_filled_order(filled_price=150.0))
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker)
+
+        assert result["status"] == "filled"
+        broker.place_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_crypto_buy_skips_stop(self):
+        trade = _make_trade_row(side="buy", symbol="BTC-USD")
+        pool = _stop_pool(trade, regime=None)
+        crypto_fill = Order(
+            order_id="ord_btc", symbol="BTC-USD", side="buy", qty=0.5,
+            order_type="market", status="filled",
+            filled_qty=0.5, filled_price=60000.0,
+        )
+        broker = _make_broker(crypto_fill)
+        strategy_pool = _strategy_pool_with_stop({"type": "fixed_pct", "pct": 0.05})
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch("src.agents.executor_agent.log_event", new_callable=AsyncMock),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker, strategy_pool=strategy_pool)
+
+        assert result["status"] == "filled"
+        broker.place_order.assert_called_once()  # / no stop for crypto
+
+    @pytest.mark.asyncio
+    async def test_stop_placement_failure_does_not_break_fill(self):
+        pool = _stop_pool(_make_trade_row(side="buy"), regime=None)
+        broker = _make_broker(_make_filled_order(filled_price=150.0))
+        broker.place_order.side_effect = [
+            _make_filled_order(filled_price=150.0),
+            Exception("stop rejected"),
+        ]
+        strategy_pool = _strategy_pool_with_stop({"type": "fixed_pct", "pct": 0.05})
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch("src.agents.executor_agent.log_event", new_callable=AsyncMock) as mock_log,
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker, strategy_pool=strategy_pool)
+
+        assert result["status"] == "filled"  # / fill survives
+        assert ("strat_001", "AAPL") not in self.agent._protective_stops
+        failure_logs = [c for c in mock_log.call_args_list if c.kwargs.get("message") == "protective_stop_failed"]
+        assert len(failure_logs) == 1
+
+    @pytest.mark.asyncio
+    async def test_sell_close_cancels_stop(self):
+        self.agent._protective_stops[("strat_001", "AAPL")] = "stop_111"
+        sell_fill = Order(
+            order_id="ord_sell", symbol="AAPL", side="sell", qty=10.0,
+            order_type="market", status="filled",
+            filled_qty=10.0, filled_price=160.0,
+        )
+        pool = _stop_pool(_make_trade_row(side="sell"), regime=None)
+        broker = _make_broker(sell_fill)
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch.object(ExecutorAgent, "_update_position_and_pnl", new_callable=AsyncMock, return_value=(40.0, 150.0)),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker)
+
+        assert result["status"] == "filled"
+        broker.cancel_order.assert_awaited_once_with("stop_111")
+        assert ("strat_001", "AAPL") not in self.agent._protective_stops
+
+    @pytest.mark.asyncio
+    async def test_sell_close_without_tracked_stop_no_cancel(self):
+        sell_fill = Order(
+            order_id="ord_sell", symbol="AAPL", side="sell", qty=10.0,
+            order_type="market", status="filled",
+            filled_qty=10.0, filled_price=160.0,
+        )
+        pool = _stop_pool(_make_trade_row(side="sell"), regime=None)
+        broker = _make_broker(sell_fill)
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch.object(ExecutorAgent, "_update_position_and_pnl", new_callable=AsyncMock, return_value=(40.0, 150.0)),
+        ):
+            await self.agent.execute_trade(pool, 1, broker)
+
+        broker.cancel_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sell_close_cancel_failure_does_not_break(self):
+        self.agent._protective_stops[("strat_001", "AAPL")] = "stop_111"
+        sell_fill = Order(
+            order_id="ord_sell", symbol="AAPL", side="sell", qty=10.0,
+            order_type="market", status="filled",
+            filled_qty=10.0, filled_price=160.0,
+        )
+        pool = _stop_pool(_make_trade_row(side="sell"), regime=None)
+        broker = _make_broker(sell_fill)
+        broker.cancel_order.side_effect = Exception("already filled")
+
+        with (
+            patch("src.agents.executor_agent.update_trade_status", new_callable=AsyncMock),
+            patch("src.agents.executor_agent.store_trade_log", new_callable=AsyncMock, return_value=100),
+            patch.object(ExecutorAgent, "_update_position_and_pnl", new_callable=AsyncMock, return_value=(40.0, 150.0)),
+        ):
+            result = await self.agent.execute_trade(pool, 1, broker)
+
+        assert result["status"] == "filled"
+        assert ("strat_001", "AAPL") not in self.agent._protective_stops
