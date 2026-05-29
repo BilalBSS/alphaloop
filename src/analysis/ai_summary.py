@@ -24,7 +24,7 @@ logger = structlog.get_logger(__name__)
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODEL = "openai/gpt-oss-120b"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-CEREBRAS_FAST_MODEL = "llama-3.3-70b"  # / same-model swap when groq
+CEREBRAS_FAST_MODEL = "gpt-oss-120b"  # / llama delisted on cerebras
 CEREBRAS_MODEL = "gpt-oss-120b"  # / final escalation after groq
 MAX_TOKENS = 1200
 
