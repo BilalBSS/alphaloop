@@ -632,3 +632,73 @@ class TestRiskLimitEnforcement:
         assert agent._max_daily_trades_per_strategy == 8
         assert agent._max_positions_per_strategy == 6
         assert 0.02 <= agent._max_exposure_per_strategy_pct <= 0.40
+
+
+# ---------------------------------------------------------------------------
+# / consecutive-loss circuit breaker streak
+# ---------------------------------------------------------------------------
+
+class TestConsecutiveLossStreak:
+    def test_five_material_losses_is_streak(self):
+        recent = [(-200.0, float(i)) for i in range(5)]
+        assert RiskAgent._is_material_loss_streak(recent, 100.0, 5) is True
+
+    def test_scratch_breaks_streak(self):
+        # / a sub-floor scratch among real losses does not count as a loss
+        recent = [(-200.0, 5.0), (-200.0, 4.0), (-0.27, 3.0), (-200.0, 2.0), (-200.0, 1.0)]
+        assert RiskAgent._is_material_loss_streak(recent, 100.0, 5) is False
+
+    def test_too_few_closes_not_streak(self):
+        recent = [(-200.0, 2.0), (-200.0, 1.0)]
+        assert RiskAgent._is_material_loss_streak(recent, 100.0, 5) is False
+
+    def test_win_breaks_streak(self):
+        recent = [(-200.0, float(i)) for i in range(4)] + [(50.0, 9.0)]
+        assert RiskAgent._is_material_loss_streak(recent, 100.0, 5) is False
+
+
+# ---------------------------------------------------------------------------
+# / sizing floor — affordable buys never round to zero
+# ---------------------------------------------------------------------------
+
+class TestSizingFloor:
+    def setup_method(self):
+        self.agent = RiskAgent(max_position_pct=0.08, max_portfolio_risk=0.50)
+
+    def test_round_shares_equity_whole(self):
+        assert self.agent._round_shares("AAPL", 12.9) == 12
+        assert isinstance(self.agent._round_shares("AAPL", 12.9), int)
+
+    def test_round_shares_crypto_fractional(self):
+        assert self.agent._round_shares("BTC-USD", 0.0025) == 0.0025
+
+    def test_affordable_equity_floors_to_one_share(self):
+        # / sub-1-share but 1 share fits the per-position budget -> 1, not 0
+        assert self.agent._size_with_floor("AAPL", 0.4, 200.0, 100000.0) == 1
+
+    def test_unaffordable_equity_stays_zero(self):
+        # / 1 share would blow the per-position cap -> skip
+        assert self.agent._size_with_floor("AAPL", 0.0001, 1_000_000.0, 100000.0) == 0.0
+
+    def test_crypto_sizes_fractional(self):
+        assert self.agent._size_with_floor("BTC-USD", 0.0025, 100000.0, 100000.0) == 0.0025
+
+    def test_crypto_dust_below_min_notional_zero(self):
+        # / 0.000001 * 100000 = $0.10 < $1 min notional -> skip
+        assert self.agent._size_with_floor("BTC-USD", 0.000001, 100000.0, 100000.0) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_crypto_buy_approved_fractional(self):
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = _make_signal_row(symbol="BTC-USD", strength=0.5)
+        pool = _mock_pool(mock_conn)
+        broker = _make_broker(balance=_make_balance(equity=100000.0), price=100000.0)
+
+        with (
+            patch("src.agents.risk_agent.store_approved_trade", new_callable=AsyncMock, return_value=10),
+            patch("src.agents.risk_agent.update_trade_status", new_callable=AsyncMock),
+        ):
+            result = await self.agent.process_signal(pool, 1, broker)
+
+        assert result["status"] == "approved"
+        assert 0 < result["qty"] < 1  # / fractional coin, not floored to 0

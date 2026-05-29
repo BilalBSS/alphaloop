@@ -34,7 +34,10 @@
 
   "consecutive_loss_pause_count": 5,
   "consecutive_loss_pause_seconds": 3600,
+  "consecutive_loss_min_pct": 0.001,
+  "consecutive_loss_min_abs": 10.0,
   "max_liquidity_pct": 0.01,
+  "min_order_notional_usd": 1.0,
   "regime_sizing_multipliers": {
     "bull": 1.0,
     "sideways": 0.75,

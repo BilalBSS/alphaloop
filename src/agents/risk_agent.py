@@ -28,6 +28,7 @@ from src.agents.trade_tools import (
     update_trade_status,
 )
 from src.brokers.base import BrokerInterface
+from src.data.symbols import is_crypto
 from src.quant.copula_models import student_t_copula_fit, tail_dependence_coefficient
 
 logger = structlog.get_logger(__name__)
@@ -126,6 +127,9 @@ class RiskAgent:
         self._consecutive_loss_seconds = rl.get("consecutive_loss_pause_seconds", 3600)
         self._max_liquidity_pct = rl.get("max_liquidity_pct", 0.01)
         self._max_single_trade_loss_pct = float(rl.get("max_single_trade_loss_pct", 0.02))
+        self._consecutive_loss_min_pct = float(rl.get("consecutive_loss_min_pct", 0.001))
+        self._consecutive_loss_min_abs = float(rl.get("consecutive_loss_min_abs", 10.0))
+        self._min_order_notional = float(rl.get("min_order_notional_usd", 1.0))
         self._regime_multipliers = rl.get("regime_sizing_multipliers", {
             "bull": 1.0, "sideways": 0.75, "bear": 0.5, "high_vol": 0.5, "insufficient_data": 0.5,
         })
@@ -267,7 +271,7 @@ class RiskAgent:
 
         # / 13. portfolio exposure cap
         rej, qty = await self._apply_portfolio_cap(
-            pool, signal_id, side, balance, positions, price, qty,
+            pool, signal_id, symbol, side, balance, positions, price, qty,
         )
         if rej is not None:
             return rej
@@ -336,17 +340,51 @@ class RiskAgent:
                 response_reason="circuit_breaker_consecutive_losses",
             )
         recent = await fetch_recent_closes(pool, limit=self._consecutive_loss_pause)
+        loss_floor = max(
+            self._consecutive_loss_min_abs,
+            self._consecutive_loss_min_pct * balance.equity,
+        )
         if (
-            len(recent) >= self._consecutive_loss_pause
-            and all(pnl < 0 for pnl, _ in recent)
+            self._is_material_loss_streak(recent, loss_floor, self._consecutive_loss_pause)
             and self._cb.arm_loss_pause(recent[0][1])
         ):
-            logger.warning("circuit_breaker_consecutive_losses", count=len(recent))
+            logger.warning(
+                "circuit_breaker_consecutive_losses",
+                count=len(recent), loss_floor=round(loss_floor, 2),
+            )
+            self._alert_pause(pool, len(recent), loss_floor)
             return await self._reject(
                 pool, signal_id, "circuit_breaker_losses",
                 response_reason="circuit_breaker_consecutive_losses",
             )
         return None
+
+    @staticmethod
+    def _is_material_loss_streak(
+        recent: list[tuple[float, float]], loss_floor: float, count: int,
+    ) -> bool:
+        # / ignore sub-floor scratches
+        return len(recent) >= count and all(pnl < -loss_floor for pnl, _ in recent)
+
+    def _alert_pause(self, pool, count: int, loss_floor: float) -> None:
+        # / surface breaker pause
+        try:
+            from src.agents.data_tools import fire_and_forget, log_event
+            from src.notifications.notifier import notify_system_error
+            fire_and_forget(log_event(
+                pool, "warning", "risk", "circuit_breaker_paused",
+                details={
+                    "consecutive_losses": count,
+                    "loss_floor": round(loss_floor, 2),
+                    "pause_seconds": int(self._consecutive_loss_seconds),
+                },
+            ))
+            notify_system_error(
+                f"circuit breaker paused: {count} losses over ${loss_floor:.0f}",
+                "circuit_breaker",
+            )
+        except Exception as exc:
+            logger.debug("breaker_alert_failed", error=str(exc)[:100])
 
     async def _check_liquidity(
         self, pool, signal_id: int, symbol: str, balance, strength: float, price: float,
@@ -457,7 +495,7 @@ class RiskAgent:
 
     async def _compute_buy_size(
         self, pool, signal: dict, balance, price: float, strength: float,
-    ) -> int:
+    ) -> float:
         # / kelly-weighted x activity-scaled
         strategy_id = signal.get("strategy_id") or ""
         max_pct = await capital_allocator.get_allocation(
@@ -465,7 +503,30 @@ class RiskAgent:
         )
         activity_scale = await self._get_activity_scale(pool, strategy_id)
         qty_raw = (balance.equity * max_pct * strength * activity_scale) / price
-        return max(0, int(qty_raw))
+        return self._size_with_floor(signal["symbol"], qty_raw, price, balance.equity)
+
+    def _round_shares(self, symbol: str, qty: float) -> float:
+        # / crypto fractional, equity whole
+        if qty <= 0:
+            return 0.0
+        if is_crypto(symbol):
+            return round(float(qty), 6)
+        return int(qty)
+
+    def _size_with_floor(
+        self, symbol: str, qty_raw: float, price: float, equity: float,
+    ) -> float:
+        # / don't zero affordable buys
+        if qty_raw <= 0:
+            return 0.0
+        if is_crypto(symbol):
+            if qty_raw * price < self._min_order_notional:
+                return 0.0
+            return round(qty_raw, 6)
+        shares = int(qty_raw)
+        if shares == 0 and price <= equity * self.max_position_pct:
+            return 1
+        return shares
 
     async def _get_activity_scale(self, pool, strategy_id: str) -> float:
         if not (self._activity_scaling_enabled and strategy_id):
@@ -485,20 +546,22 @@ class RiskAgent:
             )
         return 1.0
 
-    async def _apply_regime_multiplier(self, pool, symbol: str, qty: int) -> int:
+    async def _apply_regime_multiplier(self, pool, symbol: str, qty: float) -> float:
         try:
             regime_label = await fetch_latest_regime(pool) or "insufficient_data"
             regime_mult = self._regime_multipliers.get(regime_label, 0.5)
-            return int(qty * regime_mult)
+            return self._round_shares(symbol, qty * regime_mult)
         except Exception as exc:
             logger.debug("regime_sizing_skipped", symbol=symbol, error=str(exc)[:100])
             return qty
 
-    async def _apply_beta_adjustment(self, pool, symbol: str, qty: int) -> int:
+    async def _apply_beta_adjustment(self, pool, symbol: str, qty: float) -> float:
         try:
             beta = await fetch_symbol_beta(pool, symbol)
             if beta is not None and beta > 1.5:
-                new_qty = max(1, int(qty * (1.0 / beta)))
+                new_qty = self._round_shares(symbol, qty / beta)
+                if not is_crypto(symbol):
+                    new_qty = max(1, new_qty)
                 logger.info("beta_adjusted", symbol=symbol, beta=beta, qty=new_qty)
                 return new_qty
         except Exception as exc:
@@ -507,15 +570,17 @@ class RiskAgent:
 
     async def _apply_single_trade_loss_cap(
         self, pool, signal: dict, signal_id: int, side: str, balance,
-        price: float, qty: int, strategy_pool,
-    ) -> tuple[dict | None, int]:
+        price: float, qty: float, strategy_pool,
+    ) -> tuple[dict | None, float]:
         if side != "buy" or strategy_pool is None or balance.equity <= 0:
             return None, qty
         stop_distance = self._infer_stop_distance(strategy_pool, signal.get("strategy_id"))
         if not (stop_distance and stop_distance > 0):
             return None, qty
         max_loss_value = balance.equity * self._max_single_trade_loss_pct
-        max_qty_by_loss = int(max_loss_value / (price * stop_distance))
+        max_qty_by_loss = self._round_shares(
+            signal["symbol"], max_loss_value / (price * stop_distance),
+        )
         if max_qty_by_loss >= qty:
             return None, qty
         logger.info(
@@ -523,15 +588,14 @@ class RiskAgent:
             symbol=signal["symbol"], stop_distance=round(stop_distance, 4),
             original_qty=qty, capped_qty=max_qty_by_loss,
         )
-        new_qty = max(0, max_qty_by_loss)
-        if new_qty <= 0:
+        if max_qty_by_loss <= 0:
             return await self._reject(pool, signal_id, "single_trade_loss_cap"), 0
-        return None, new_qty
+        return None, max_qty_by_loss
 
     async def _apply_portfolio_cap(
-        self, pool, signal_id: int, side: str, balance, positions: list,
-        price: float, qty: int,
-    ) -> tuple[dict | None, int]:
+        self, pool, signal_id: int, symbol: str, side: str, balance, positions: list,
+        price: float, qty: float,
+    ) -> tuple[dict | None, float]:
         if side != "buy":
             return None, qty
         total_position_value = sum(p.market_value for p in positions)
@@ -543,18 +607,20 @@ class RiskAgent:
         available = (self.max_portfolio_risk * balance.equity) - total_position_value
         if available <= 0:
             return await self._reject(pool, signal_id, "portfolio_risk_exceeded"), 0
-        new_qty = max(0, int(available / price))
+        new_qty = self._round_shares(symbol, available / price)
         if new_qty <= 0:
             return await self._reject(pool, signal_id, "portfolio_risk_exceeded"), 0
         return None, new_qty
 
     async def _apply_tail_dependence_cap(
-        self, pool, symbol: str, positions: list, qty: int,
-    ) -> int:
+        self, pool, symbol: str, positions: list, qty: float,
+    ) -> float:
         try:
             tail_dep = await self._check_tail_dependence(pool, symbol, positions)
             if tail_dep is not None and tail_dep > self.tail_dep_threshold:
-                new_qty = max(1, qty // 2)
+                new_qty = self._round_shares(symbol, qty / 2)
+                if not is_crypto(symbol):
+                    new_qty = max(1, new_qty)
                 logger.warning(
                     "tail_dependence_sizing_down",
                     symbol=symbol, tail_dep=tail_dep, new_qty=new_qty,
