@@ -62,16 +62,16 @@ logger = structlog.get_logger(__name__)
 
 # / schedule intervals in seconds
 # / batched staleness-ordered runs, time-budgeted
-ANALYST_MARKET_HOURS = 1200  # / 20 minutes (3 batches/hour,
-ANALYST_OFF_HOURS = 1800         # / 30 minutes (slower off-hours)
+ANALYST_MARKET_HOURS = 3600  # / 60 min market
+ANALYST_OFF_HOURS = 7200         # / 120 min off-hours
 ANALYST_BUDGET_S = 420.0  # / 7 min wall-clock budget
-ANALYST_MIN_REFRESH_S = 1800.0  # / skip symbols refreshed within
+ANALYST_MIN_REFRESH_S = 7200.0  # / 2h refresh window
 ANALYST_PER_SYMBOL_TIMEOUT_S = 180.0
 STRATEGY_MARKET_HOURS = 300      # / 5 minutes
 STRATEGY_OFF_HOURS = 300  # / 5 minutes (consistent for
-DEEPSEEK_INTERVAL = 1800  # / 30 minutes (dual-llm is
+DEEPSEEK_INTERVAL = 3600  # / 60 min
 DEEPSEEK_BUDGET_S = 480.0  # / 8 min wall-clock budget
-DEEPSEEK_MIN_REFRESH_S = 2700.0  # / skip symbols deepseek'd within
+DEEPSEEK_MIN_REFRESH_S = 10800.0  # / 3h refresh window
 INTRADAY_INTERVAL = 3600         # / 1 hour
 RISK_POLL_INTERVAL = 5           # / 5 seconds
 EXECUTOR_POLL_INTERVAL = 5       # / 5 seconds
