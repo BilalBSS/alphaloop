@@ -129,6 +129,8 @@ class ExecutorAgent:
 
     def __init__(self) -> None:
         self.tasks = ExecutorTaskTracker()
+        # / tracked stop orders
+        self._protective_stops: dict[tuple[str, str], str] = {}
 
     async def execute_trade(
         self, pool, trade_id: int, broker: BrokerInterface, strategy_pool=None,
@@ -171,7 +173,8 @@ class ExecutorAgent:
 
         if order.status == "filled":
             return await self._handle_fill(
-                pool, trade_id, broker, order, trade, strategy_id, polled=False,
+                pool, trade_id, broker, order, trade, strategy_id,
+                polled=False, strategy_pool=strategy_pool,
             )
 
         if order.status in ("rejected", "cancelled"):
@@ -184,7 +187,9 @@ class ExecutorAgent:
             return {"status": "failed", "reason": order.status, "details": order.details}
 
         # / pending: poll for fill
-        return await self._poll_and_handle(pool, trade_id, broker, order, trade, strategy_id)
+        return await self._poll_and_handle(
+            pool, trade_id, broker, order, trade, strategy_id, strategy_pool,
+        )
 
     async def _preflight(
         self, pool, trade_id: int, trade: dict, strategy_pool,
@@ -228,7 +233,7 @@ class ExecutorAgent:
 
     async def _poll_and_handle(
         self, pool, trade_id: int, broker: BrokerInterface,
-        order: Any, trade: dict, strategy_id: str | None,
+        order: Any, trade: dict, strategy_id: str | None, strategy_pool=None,
     ) -> dict:
         for _ in range(10):
             await asyncio.sleep(1)
@@ -246,7 +251,8 @@ class ExecutorAgent:
 
         if order.status == "filled":
             return await self._handle_fill(
-                pool, trade_id, broker, order, trade, strategy_id, polled=True,
+                pool, trade_id, broker, order, trade, strategy_id,
+                polled=True, strategy_pool=strategy_pool,
             )
 
         await update_trade_status(pool, "approved_trades", trade_id, order.status)
@@ -259,7 +265,7 @@ class ExecutorAgent:
     async def _handle_fill(
         self, pool, trade_id: int, broker: BrokerInterface,
         order: Any, trade: dict, strategy_id: str | None,
-        polled: bool,
+        polled: bool, strategy_pool=None,
     ) -> dict:
         symbol = trade["symbol"]
         side = trade["side"]
@@ -287,6 +293,10 @@ class ExecutorAgent:
             return {"status": "failed", "reason": "fill_missing_price"}
 
         regime = await fetch_latest_regime(pool, "equity")
+
+        # / cancel stop on close
+        if side == "sell":
+            await self._cancel_protective_stop(broker, strategy_id, symbol)
 
         pnl, entry_price = await self._update_position_and_pnl(
             pool, side, strategy_id, symbol, order,
@@ -321,6 +331,13 @@ class ExecutorAgent:
             symbol=symbol, side=side,
             qty=order.filled_qty, price=order.filled_price,
         )
+
+        # / protective stop on open
+        if side == "buy" and strategy_id:
+            await self._place_protective_stop(
+                pool, broker, strategy_pool, strategy_id, symbol,
+                order.filled_qty, order.filled_price,
+            )
 
         # / post-analysis on close
         if side == "sell" and pnl is not None:
@@ -362,3 +379,100 @@ class ExecutorAgent:
         if entry_price is not None:
             pnl = (order.filled_price - entry_price) * order.filled_qty
         return pnl, entry_price
+
+    async def _place_protective_stop(
+        self, pool, broker: BrokerInterface, strategy_pool,
+        strategy_id: str, symbol: str, qty: float, fill_price: float,
+    ) -> None:
+        # / never fails the buy
+        if strategy_pool is None or is_crypto(symbol):
+            return
+        stop_distance = self._infer_stop_distance(strategy_pool, strategy_id)
+        if not (stop_distance and stop_distance > 0):
+            return
+        if fill_price is None or fill_price <= 0 or qty is None or qty <= 0:
+            return
+        stop_price = round(float(fill_price) * (1 - stop_distance), 2)
+        try:
+            stop_order = await broker.place_order(
+                symbol=symbol, qty=qty, side="sell",
+                order_type="stop", stop_price=stop_price,
+            )
+        except Exception as exc:
+            logger.error(
+                "protective_stop_failed",
+                strategy_id=strategy_id, symbol=symbol,
+                stop_price=stop_price, error=str(exc)[:160],
+            )
+            await log_event(
+                pool, level="error", source="executor",
+                message="protective_stop_failed", symbol=symbol,
+                details={
+                    "strategy_id": strategy_id, "stop_price": stop_price,
+                    "qty": float(qty), "error": str(exc)[:200],
+                },
+            )
+            return
+        stop_id = getattr(stop_order, "order_id", None)
+        if not stop_id:
+            logger.warning(
+                "protective_stop_no_id",
+                strategy_id=strategy_id, symbol=symbol, stop_price=stop_price,
+            )
+            return
+        self._protective_stops[(strategy_id, symbol)] = stop_id
+        logger.info(
+            "protective_stop_placed",
+            strategy_id=strategy_id, symbol=symbol,
+            stop_price=stop_price, qty=qty, stop_order_id=stop_id,
+        )
+        await log_event(
+            pool, level="info", source="executor",
+            message="protective_stop_placed", symbol=symbol,
+            details={
+                "strategy_id": strategy_id, "stop_price": stop_price,
+                "qty": float(qty), "stop_order_id": stop_id,
+            },
+        )
+
+    async def _cancel_protective_stop(
+        self, broker: BrokerInterface, strategy_id: str | None, symbol: str,
+    ) -> None:
+        # / ignore cancel failures
+        if not strategy_id:
+            return
+        stop_id = self._protective_stops.pop((strategy_id, symbol), None)
+        if not stop_id:
+            return
+        try:
+            await broker.cancel_order(stop_id)
+            logger.info(
+                "protective_stop_cancelled",
+                strategy_id=strategy_id, symbol=symbol, stop_order_id=stop_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "protective_stop_cancel_failed",
+                strategy_id=strategy_id, symbol=symbol,
+                stop_order_id=stop_id, error=str(exc)[:160],
+            )
+
+    def _infer_stop_distance(self, strategy_pool, strategy_id: str | None) -> float | None:
+        # / mirrors risk agent
+        if not strategy_id:
+            return None
+        try:
+            entry = strategy_pool.get(strategy_id)
+            if not entry:
+                return None
+            cfg = entry.strategy.config
+            sl = cfg.get("exit_conditions", {}).get("stop_loss", {}) or {}
+            t = (sl.get("type") or "fixed_pct").lower()
+            if t in ("fixed_pct", "percent", "pct"):
+                pct = sl.get("pct")
+                return float(pct) if pct else None
+            if "atr" in t or t in ("trailing", "chandelier"):
+                return 0.02
+        except Exception as exc:
+            logger.debug("stop_distance_infer_failed", strategy_id=strategy_id, error=str(exc)[:100])
+        return None

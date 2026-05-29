@@ -168,11 +168,11 @@ class TestSectors:
         assert get_sector("") is None
 
     def test_get_sector_symbols_returns_list(self):
-        from src.data.symbols import get_sector_symbols
+        from src.data.symbols import SECTORS, get_sector_symbols
         syms = get_sector_symbols("semis")
         assert "NVDA" in syms
         assert "AMD" in syms
-        assert len(syms) == 6
+        assert syms == SECTORS["semis"]
 
     def test_get_sector_symbols_unknown_returns_empty(self):
         from src.data.symbols import get_sector_symbols
