@@ -1,1 +1,0 @@
-import{t as e}from"./tab-knowledge-CiKd_a-C.js";export{e as default};

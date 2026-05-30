@@ -1,0 +1,1 @@
+import{t as e}from"./tab-health-ojpp-8ZG.js";export{e as default};
