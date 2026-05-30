@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import Card from '../ui/Card'
 import Pill from '../ui/Pill'
 import { renderMarkdown } from '../ui/markdown'
+import { clickableProps } from '../ui/clickable'
 import { useApi } from '../../hooks/useApi'
 
 // / unified .know feed
@@ -229,16 +230,8 @@ export default function KnowledgeFeed() {
               <div key={item._id}>
                 <div
                   className={`it ${open ? 'sel' : ''}`}
-                  role="button"
-                  tabIndex={0}
                   aria-expanded={open}
-                  onClick={() => setExpanded(open ? null : item._id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setExpanded(open ? null : item._id)
-                    }
-                  }}
+                  {...clickableProps(() => setExpanded(open ? null : item._id))}
                 >
                   <Pill variant={item._type}>{item._type}</Pill>
                   <div>

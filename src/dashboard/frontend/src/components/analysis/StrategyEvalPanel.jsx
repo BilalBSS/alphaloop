@@ -1,6 +1,7 @@
 import { useApi } from '../../hooks/useApi'
 import EmptyState from '../EmptyState'
 import { scoreColor } from './formatters'
+import { clickableProps } from '../ui/clickable'
 
 // / latest strategy evaluation cycle
 export default function StrategyEvalPanel({ onSelect }) {
@@ -48,7 +49,7 @@ export default function StrategyEvalPanel({ onSelect }) {
                 return (
                   <tr
                     key={i}
-                    onClick={() => onSelect(nm.symbol)}
+                    {...clickableProps(() => onSelect(nm.symbol))}
                     className={`border-t border-border hover:bg-bg-hover cursor-pointer border-l-2 ${isConsensus ? 'border-l-loss' : 'border-l-warning'}`}
                     style={{ height: 32 }}
                   >

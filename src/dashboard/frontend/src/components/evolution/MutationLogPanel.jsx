@@ -1,4 +1,5 @@
 import Card from '../ui/Card'
+import { clickableProps } from '../ui/clickable'
 
 // / .muts log rows
 
@@ -64,7 +65,7 @@ export default function MutationLogPanel({ events, loading, onSelectCycle, selec
             <div
               key={i}
               className={`row${clickable ? ' click' : ''}${sel ? ' sel' : ''}`}
-              onClick={onClick}
+              {...(onClick ? clickableProps(onClick) : {})}
             >
               <span className="ts">{fmtTs(e.created_at)}</span>
               <span className={`k ${kind}`}>{e.action || '—'}</span>

@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useApi } from '../../hooks/useApi'
 import { SkeletonTable } from '../Skeleton'
 import { scoreColor, consensusBadge, regimeBadge } from './formatters'
+import { clickableProps } from '../ui/clickable'
 
 // / symbol list view
 const SORT_OPTIONS = [
@@ -92,7 +93,7 @@ export default function SymbolList({ symbols, loading, onSelect, positionSymbols
               return (
                 <tr
                   key={s.symbol}
-                  onClick={() => onSelect(s.symbol)}
+                  {...clickableProps(() => onSelect(s.symbol))}
                   className={`hover:bg-bg-hover border-t border-border cursor-pointer ${held ? 'bg-bg-primary/40' : ''}`}
                   style={{ height: 36 }}
                 >
