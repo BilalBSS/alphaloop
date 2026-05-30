@@ -49,9 +49,11 @@ async def store_strategy_score(
 
 
 async def fetch_strategy_scores(pool) -> list[dict]:
+    # / freshest row per strategy
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM strategy_scores ORDER BY created_at DESC"
+            """SELECT DISTINCT ON (strategy_id) * FROM strategy_scores
+            ORDER BY strategy_id, created_at DESC"""
         )
     return [dict(r) for r in rows]
 
