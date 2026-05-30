@@ -16,6 +16,14 @@ export function renderInline(text, keyPrefix = '') {
         continue
       }
     }
+    if (text[i] === '*') {
+      const end = text.indexOf('*', i + 1)
+      if (end > i) {
+        push(<i key={`${keyPrefix}i${n++}`}>{text.slice(i + 1, end)}</i>)
+        i = end + 1
+        continue
+      }
+    }
     if (text[i] === '`') {
       const end = text.indexOf('`', i + 1)
       if (end > i) {
@@ -50,7 +58,7 @@ export function renderMarkdown(src) {
       blocks.push({ kind: 'h', level: h[1].length, text: h[2] })
       i++; continue
     }
-    const bul = /^[\-\*]\s+(.*)$/.exec(line)
+    const bul = /^[-*]\s+(.*)$/.exec(line)
     if (bul) {
       bullets = bullets || []
       bullets.push(bul[1])
@@ -79,7 +87,7 @@ export function renderMarkdown(src) {
     }
     if (b.kind === 'ul') {
       return (
-        <ul key={k} style={{ margin: '4px 0 8px 18px', padding: 0, color: 'var(--ink)', fontSize: 13, lineHeight: 1.6 }}>
+        <ul key={k} style={{ margin: '4px 0 8px', paddingLeft: 20, listStyleType: 'disc', color: 'var(--ink)', fontSize: 13, lineHeight: 1.6 }}>
           {b.items.map((it, j) => <li key={j}>{renderInline(it, `${k}-${j}-`)}</li>)}
         </ul>
       )
