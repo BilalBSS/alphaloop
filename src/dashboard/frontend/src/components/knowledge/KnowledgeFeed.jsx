@@ -151,7 +151,12 @@ export default function KnowledgeFeed() {
         ...p,
       })
     }
+    const seenMutation = new Set()
     for (const lesson of (lessonData?.lessons || [])) {
+      if (lesson.lesson_type === 'mutation_result') {
+        if (seenMutation.has(lesson.strategy_id)) continue
+        seenMutation.add(lesson.strategy_id)
+      }
       out.push({
         _type: 'lesson',
         _kind: 'distilled',
@@ -176,6 +181,13 @@ export default function KnowledgeFeed() {
     return out
   }, [wiki, posts, regimes, lessonData])
 
+  const counts = useMemo(() => {
+    const c = {}
+    for (const i of items) c[i._type] = (c[i._type] || 0) + 1
+    return c
+  }, [items])
+  const visibleTypes = TYPES.filter((t) => t === 'all' || (counts[t] || 0) > 0)
+
   const filtered = type === 'all' ? items : items.filter((i) => i._type === type)
   const loading = lwiki || lposts || lregs || llessons
 
@@ -186,7 +198,7 @@ export default function KnowledgeFeed() {
       p0
     >
       <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: '1px solid var(--line)' }}>
-        {TYPES.map((t) => (
+        {visibleTypes.map((t) => (
           <button
             key={t}
             onClick={() => setType(t)}
@@ -217,7 +229,16 @@ export default function KnowledgeFeed() {
               <div key={item._id}>
                 <div
                   className={`it ${open ? 'sel' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={open}
                   onClick={() => setExpanded(open ? null : item._id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setExpanded(open ? null : item._id)
+                    }
+                  }}
                 >
                   <Pill variant={item._type}>{item._type}</Pill>
                   <div>
