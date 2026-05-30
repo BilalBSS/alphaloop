@@ -1,1 +1,0 @@
-import{t as e}from"./tab-trades-CsNbrJlf.js";export{e as default};

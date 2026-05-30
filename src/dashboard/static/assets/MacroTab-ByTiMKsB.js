@@ -1,0 +1,1 @@
+import{t as e}from"./tab-macro-DmApVItS.js";export{e as default};
