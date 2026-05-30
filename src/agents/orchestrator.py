@@ -55,7 +55,7 @@ from src.evolution.evolution_engine import EvolutionEngine
 from src.knowledge.loops import _embed_backfill_once
 from src.knowledge.wiki_writer import enrich_symbol_doc
 from src.notifications.notifier import notify_system_error
-from src.strategies.strategy_loader import load_all_configs
+from src.strategies.strategy_loader import load_all_configs, save_config
 from src.strategies.strategy_pool import StrategyPool
 
 logger = structlog.get_logger(__name__)
@@ -204,10 +204,24 @@ class AgentOrchestrator:
             status_filter={"backtest_pending", "paper_trading", "promoted", "live"},
         )
         for strat in strategies:
-            status = "promoted"
-            if hasattr(strat, "config") and strat.config.get("metadata", {}).get("status"):
-                status = strat.config["metadata"]["status"]
-            self._strategy_pool.add(strat, status=status)
+            meta = strat.config.get("metadata", {}) if hasattr(strat, "config") else {}
+            status = meta.get("status") or "promoted"
+            changed_at = None
+            raw_changed = meta.get("status_changed_at")
+            if raw_changed:
+                try:
+                    changed_at = datetime.fromisoformat(raw_changed)
+                except (TypeError, ValueError):
+                    changed_at = None
+            if changed_at is None and status in ("paper_trading", "promoted", "live"):
+                changed_at = datetime.now(timezone.utc)
+                meta["status_changed_at"] = changed_at.isoformat()
+                strat.config["metadata"] = meta
+                try:
+                    save_config(strat.config)
+                except Exception as exc:
+                    logger.debug("seed_status_changed_at_failed", id=strat.strategy_id, error=str(exc)[:120])
+            self._strategy_pool.add(strat, status=status, status_changed_at=changed_at)
         logger.info(
             "orchestrator_initialized",
             strategies=self._strategy_pool.size,

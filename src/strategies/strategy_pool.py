@@ -51,15 +51,18 @@ class StrategyPool:
     def __init__(self):
         self._strategies: dict[str, StrategyEntry] = {}
 
-    def add(self, strategy: ConfigDrivenStrategy, status: str = "backtest_pending") -> None:
+    def add(
+        self, strategy: ConfigDrivenStrategy, status: str = "backtest_pending",
+        status_changed_at: datetime | None = None,
+    ) -> None:
         if strategy.strategy_id in self._strategies:
             logger.warning("strategy_already_in_pool", id=strategy.strategy_id)
             return
 
-        self._strategies[strategy.strategy_id] = StrategyEntry(
-            strategy=strategy,
-            status=status,
-        )
+        entry = StrategyEntry(strategy=strategy, status=status)
+        if status_changed_at is not None:
+            entry.status_changed_at = status_changed_at
+        self._strategies[strategy.strategy_id] = entry
         logger.info("strategy_added", id=strategy.strategy_id, name=strategy.name, status=status)
 
     def remove(self, strategy_id: str) -> bool:
