@@ -4,7 +4,7 @@ import { useApi } from '../../hooks/useApi'
 
 const PROVIDERS = [
   { key: 'groq',     label: 'groq · llama-3.3-70b' },
-  { key: 'cerebras', label: 'cerebras · llama-3.3-70b' },
+  { key: 'cerebras', label: 'cerebras · gpt-oss-120b' },
   { key: 'deepseek', label: 'deepseek · v4' },
   { key: 'ollama',   label: 'ollama · nomic-embed' },
 ]
@@ -39,7 +39,7 @@ export default function LLMLatencyTiles({ health }) {
         const src = sources[p.key]
         const errs = src?.errors_24h || 0
         const tone = errs > 5 ? 'neg' : errs > 0 ? 'warn' : 'pos'
-        const subText = errs === 0 ? (calls > 0 ? `${calls} calls 24h` : 'idle') : `${errs} err 24h`
+        const subText = errs === 0 ? (calls > 0 ? `${calls.toLocaleString()} calls total` : 'idle') : `${errs} err 24h`
         return (
           <div key={p.key} className="tile">
             <div className="lab">{p.label}</div>

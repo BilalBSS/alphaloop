@@ -57,7 +57,7 @@ export default function Header({ portfolio, health, macro, version, wsStatus, on
           <span className={pnlClass}>{fmtMoney(pnl24)}</span>
         </span>
         <span>
-          <b>regime</b> {regime ?? '—'}
+          <b>equity regime</b> {regime ?? '—'}
           {regimeProb !== undefined && regimeProb !== null
             ? ` · ${Number(regimeProb).toFixed(2)}`
             : ''}

@@ -1,6 +1,7 @@
 import { useState, Fragment } from 'react'
 import Card from '../ui/Card'
 import { useApi } from '../../hooks/useApi'
+import { clickableProps } from '../ui/clickable'
 
 // / fills + row expand
 
@@ -145,7 +146,7 @@ export default function TradeLedger({ trades, navigate }) {
             }
             return (
               <Fragment key={key}>
-                <tr className="click" onClick={() => setExpandedId(open ? null : key)}>
+                <tr className="click" {...clickableProps(() => setExpandedId(open ? null : key))}>
                   <td className="dim tiny">{fmtTs(t.created_at)}</td>
                   <td className="sym">{t.symbol}</td>
                   <td className={sideTone}>{(t.side || '').toUpperCase()}</td>

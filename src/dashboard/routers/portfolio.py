@@ -20,19 +20,59 @@ STRATEGY_CONFIGS_DIR = (Path(__file__).parent.parent.parent.parent / "configs" /
 _RISK_LIMITS_PATH = Path(__file__).parent.parent.parent.parent / "configs" / "risk_limits.json"
 
 
-def _enrich_position(p, strategy_map: dict[str, str], opened_map: dict[str, str]) -> dict:
+def _sane_entry_pnl(p, ledger_entry_map: dict[str, float]) -> tuple[float, float]:
+    # / guard non-positive entry
+    entry = p.avg_entry_price
+    if entry is not None and entry > 0:
+        return entry, p.unrealized_pnl
+    recovered = ledger_entry_map.get(p.symbol)
+    logger.warning(
+        "position_entry_nonpositive",
+        symbol=p.symbol, broker_entry=entry, recovered=recovered, qty=p.qty,
+    )
+    if recovered and recovered > 0:
+        return recovered, round((p.current_price - recovered) * p.qty, 2)
+    return p.current_price, 0.0
+
+
+def _enrich_position(
+    p, strategy_map: dict[str, str], opened_map: dict[str, str],
+    entry_price: float, unrealized_pl: float,
+) -> dict:
     return {
         "symbol": p.symbol,
         "side": p.side,
         "qty": p.qty,
         "market_value": p.market_value,
-        "entry_price": p.avg_entry_price,
-        "unrealized_pl": p.unrealized_pnl,
+        "entry_price": entry_price,
+        "unrealized_pl": unrealized_pl,
         "current_price": p.current_price,
         "strategy_id": strategy_map.get(p.symbol),
         "sector": get_sector(p.symbol),
         "opened_at": opened_map.get(p.symbol),
     }
+
+
+async def _ledger_entry_map(symbols: list[str]) -> dict[str, float]:
+    if not symbols:
+        return {}
+    rows = await db.query(
+        """SELECT symbol, SUM(qty * avg_entry_price) / NULLIF(SUM(qty), 0) AS entry
+        FROM strategy_positions
+        WHERE symbol = ANY($1) AND qty > 0 AND avg_entry_price > 0
+        GROUP BY symbol""",
+        symbols,
+    )
+    out: dict[str, float] = {}
+    for r in rows:
+        entry = r.get("entry")
+        if entry is None:
+            continue
+        try:
+            out[r["symbol"]] = float(entry)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 async def _strategy_map_for_positions(symbols: list[str]) -> dict[str, str]:
@@ -171,11 +211,13 @@ async def get_portfolio():
         strat_q = _strategy_map_for_positions(symbols)
         opened_q = _opened_at_map(symbols)
         dd_var_q = _drawdown_and_var_pct()
-        trades_today_raw, regime_pair, next_cycle_ts, strategy_map, opened_map, dd_var = await asyncio.gather(
-            trades_q, regime_q, cycle_q, strat_q, opened_q, dd_var_q,
+        ledger_q = _ledger_entry_map(symbols)
+        trades_today_raw, regime_pair, next_cycle_ts, strategy_map, opened_map, dd_var, ledger_entry_map = await asyncio.gather(
+            trades_q, regime_q, cycle_q, strat_q, opened_q, dd_var_q, ledger_q,
         )
         trades_today = serializers.serialize(trades_today_raw)
-        unrealized = sum(p.unrealized_pnl for p in positions)
+        sane = {p.symbol: _sane_entry_pnl(p, ledger_entry_map) for p in positions}
+        unrealized = sum(pnl for _, pnl in sane.values())
         realized = 0.0
         for t in trades_today:
             pnl = t.get("pnl")
@@ -212,7 +254,10 @@ async def get_portfolio():
             "risk_budget_used": _risk_budget_used(
                 var_pct, drawdown_pct, gross_exposure_pct, None, cfg or {},
             ),
-            "positions": [_enrich_position(p, strategy_map, opened_map) for p in positions],
+            "positions": [
+                _enrich_position(p, strategy_map, opened_map, *sane[p.symbol])
+                for p in positions
+            ],
             "trades_today": trades_today,
         }
     except Exception as exc:

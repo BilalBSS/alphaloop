@@ -1,6 +1,7 @@
 import { useState, Fragment } from 'react'
 import { useApi } from '../../hooks/useApi'
 import EmptyState from '../EmptyState'
+import { clickableProps } from '../ui/clickable'
 
 export default function PostMortemList() {
   const { data, loading } = useApi('/api/post-mortems?limit=100', 60000)
@@ -38,7 +39,7 @@ export default function PostMortemList() {
             return (
               <Fragment key={pm.id}>
                 <tr
-                  onClick={() => setExpandedId(open ? null : pm.id)}
+                  {...clickableProps(() => setExpandedId(open ? null : pm.id))}
                   className="border-b border-border/50 hover:bg-bg-primary/50 cursor-pointer"
                 >
                   <td className="px-2 py-1.5 text-text-muted">

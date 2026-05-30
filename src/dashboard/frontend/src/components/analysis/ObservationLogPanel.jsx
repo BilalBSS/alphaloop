@@ -1,4 +1,5 @@
 import { useApi } from '../../hooks/useApi'
+import { clickableProps } from '../ui/clickable'
 
 // / n-1 of n near-misses
 export default function ObservationLogPanel({ onSelect }) {
@@ -60,7 +61,7 @@ export default function ObservationLogPanel({ onSelect }) {
                 return (
                   <tr
                     key={i}
-                    onClick={() => onSelect && onSelect(r.symbol)}
+                    {...(onSelect ? clickableProps(() => onSelect(r.symbol)) : {})}
                     className="border-t border-border hover:bg-bg-hover cursor-pointer"
                     style={{ height: 28 }}
                   >

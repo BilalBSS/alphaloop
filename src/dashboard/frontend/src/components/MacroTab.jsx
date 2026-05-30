@@ -34,6 +34,7 @@ export default function MacroTab() {
   }, [context])
 
   const indicators = context?.indicators || []
+  const cpiYoy = context?.cpi_yoy
   const regime = regimeLabel(indicators, spread)
   const active = activeRegime(regime)
 
@@ -49,14 +50,20 @@ export default function MacroTab() {
           <div className="empty-state"><div className="empty-state-title">loading FRED indicators</div></div>
         ) : (
           <div className="grid c4">
-            {TAPE_SERIES.map((sid) => (
-              <MacroTile
-                key={sid}
-                seriesId={sid}
-                latest={latestBySeries[sid]}
-                history={history?.series || {}}
-              />
-            ))}
+            {TAPE_SERIES.map((sid) => {
+              if (sid === 'CPIAUCSL') {
+                const latest = cpiYoy != null ? { series_id: sid, value: cpiYoy } : null
+                return <MacroTile key={sid} seriesId={sid} latest={latest} history={{}} />
+              }
+              return (
+                <MacroTile
+                  key={sid}
+                  seriesId={sid}
+                  latest={latestBySeries[sid]}
+                  history={history?.series || {}}
+                />
+              )
+            })}
           </div>
         )}
       </SectionH>

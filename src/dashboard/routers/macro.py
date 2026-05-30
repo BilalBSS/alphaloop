@@ -32,10 +32,37 @@ async def get_macro_context():
             }
         except (TypeError, ValueError):
             spread = None
+    cpi_yoy = await _cpi_yoy(by_series.get("CPIAUCSL"))
     return {
         "indicators": serializers.serialize(rows),
         "yield_curve_spread": spread,
+        "cpi_yoy": cpi_yoy,
     }
+
+
+async def _cpi_yoy(latest_cpi) -> float | None:
+    # / cpi index to yoy
+    if not latest_cpi:
+        return None
+    try:
+        current = float(latest_cpi["value"])
+    except (TypeError, ValueError):
+        return None
+    prior = await db.query_one(
+        """SELECT value FROM macro_data
+        WHERE series_id = 'CPIAUCSL' AND date <= ($1::date - INTERVAL '1 year')
+        ORDER BY date DESC LIMIT 1""",
+        latest_cpi["date"],
+    )
+    if not prior or prior.get("value") in (None, 0):
+        return None
+    try:
+        base = float(prior["value"])
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+    return round((current / base - 1.0) * 100.0, 2)
 
 
 @router.get("/api/macro-history")

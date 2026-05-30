@@ -97,7 +97,7 @@ export default function HeadStrip({ portfolio, equityHistory, strategies, macro,
       </div>
 
       <div className="col">
-        <div className="lab">regime classifier</div>
+        <div className="lab">equity regime</div>
         <div className="big" style={{ color: `var(--${regimeTone})` }}>
           {regime ?? '—'}
         </div>

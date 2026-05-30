@@ -8,6 +8,7 @@ import SectorMix from './positions/SectorMix'
 import CorrelationHeatmap from './positions/CorrelationHeatmap'
 import RiskTiles from './positions/RiskTiles'
 import TailDependenceCard from './positions/TailDependenceCard'
+import { clickableProps } from './ui/clickable'
 
 // / strategy attribution rows
 
@@ -66,7 +67,7 @@ function StrategyAttribution() {
                 <Fragment key={key}>
                   <tr
                     className={hasExtras ? 'click' : ''}
-                    onClick={hasExtras ? () => setExpanded({ ...expanded, [key]: !open }) : undefined}
+                    {...(hasExtras ? clickableProps(() => setExpanded({ ...expanded, [key]: !open })) : {})}
                   >
                     <td className="dim tiny">{hasExtras ? (open ? '▾' : '▸') : ''}</td>
                     <td className="sym">{r.symbol}</td>

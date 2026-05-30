@@ -52,6 +52,22 @@ def _pool_with_n(n: int, scored: bool = True) -> StrategyPool:
     return pool
 
 
+def test_add_honors_status_changed_at():
+    from datetime import datetime, timedelta, timezone
+    pool = StrategyPool()
+    ts = datetime.now(timezone.utc) - timedelta(days=20)
+    pool.add(_make_strategy("s1"), status="paper_trading", status_changed_at=ts)
+    assert pool.get("s1").status_changed_at == ts
+
+
+def test_add_defaults_status_changed_at_to_now():
+    from datetime import datetime, timezone
+    before = datetime.now(timezone.utc)
+    pool = StrategyPool()
+    pool.add(_make_strategy("s2"), status="paper_trading")
+    assert pool.get("s2").status_changed_at >= before
+
+
 # ────────────────────────────────────────────────────────────────
 # compute_composite_score
 # ────────────────────────────────────────────────────────────────

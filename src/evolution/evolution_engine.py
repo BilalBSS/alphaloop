@@ -50,6 +50,13 @@ logger = structlog.get_logger(__name__)
 DEFAULT_WIKI_GUIDED_RATIO = 0.80
 
 
+def _stamp_status(config: dict, status: str, ts: datetime) -> None:
+    # / persist status + tenure
+    meta = config.setdefault("metadata", {})
+    meta["status"] = status
+    meta["status_changed_at"] = ts.isoformat()
+
+
 def _broadcast_status_change(strategy_id: str, old: str | None, new: str,
                              reason: str | None = None) -> None:
     try:
@@ -278,7 +285,7 @@ class EvolutionEngine:
 
             prev_status = entry.status
             strategy_pool.update_status(sid, "killed")
-            config.setdefault("metadata", {})["status"] = "killed"
+            _stamp_status(config, "killed", entry.status_changed_at)
             try:
                 save_config(config)
             except Exception as exc:
@@ -351,7 +358,7 @@ class EvolutionEngine:
                 prev_status = entry.status
                 strategy_pool.update_status(sid, "killed")
                 _broadcast_status_change(sid, prev_status, "killed", reason=reason)
-                config.setdefault("metadata", {})["status"] = "killed"
+                _stamp_status(config, "killed", entry.status_changed_at)
                 try:
                     save_config(config)
                 except Exception as exc:
@@ -636,9 +643,10 @@ class EvolutionEngine:
                 config.pop(_k, None)
 
             if composite > median_score:
-                config["metadata"]["status"] = "paper_trading"
+                mutant_ts = datetime.now(timezone.utc)
+                _stamp_status(config, "paper_trading", mutant_ts)
                 strategy = ConfigDrivenStrategy(config)
-                strategy_pool.add(strategy, status="paper_trading")
+                strategy_pool.add(strategy, status="paper_trading", status_changed_at=mutant_ts)
                 _broadcast_status_change(config["id"], None, "paper_trading",
                                          reason=f"mutant composite={composite:.3f}")
 
@@ -710,7 +718,7 @@ class EvolutionEngine:
                 sid = entry.strategy.strategy_id
                 strategy_pool.update_status(sid, "promoted")
                 config = entry.strategy.config
-                config.setdefault("metadata", {})["status"] = "promoted"
+                _stamp_status(config, "promoted", entry.status_changed_at)
                 try:
                     save_config(config)
                 except Exception as exc:

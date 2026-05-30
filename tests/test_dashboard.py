@@ -333,6 +333,29 @@ class TestPortfolioEndpoint:
         dashboard.STATE.broker = None
 
 
+class TestPositionEntryGuard:
+    def _pos(self, entry, pnl=1156.29):
+        from src.brokers.base import Position
+        return Position(
+            symbol="FSLR", qty=1, avg_entry_price=entry,
+            current_price=306.79, market_value=306.79, unrealized_pnl=pnl,
+        )
+
+    def test_positive_entry_passthrough(self):
+        from src.dashboard.routers.portfolio import _sane_entry_pnl
+        assert _sane_entry_pnl(self._pos(200.0, pnl=106.79), {}) == (200.0, 106.79)
+
+    def test_negative_entry_recovered_from_ledger(self):
+        from src.dashboard.routers.portfolio import _sane_entry_pnl
+        entry, pnl = _sane_entry_pnl(self._pos(-849.5), {"FSLR": 200.0})
+        assert entry == 200.0
+        assert pnl == 106.79
+
+    def test_negative_entry_without_ledger_zeroes_pnl(self):
+        from src.dashboard.routers.portfolio import _sane_entry_pnl
+        assert _sane_entry_pnl(self._pos(-849.5), {}) == (306.79, 0.0)
+
+
 class TestEquityHistoryEndpoint:
     @pytest.mark.asyncio
     async def test_equity_history_returns_data(self):

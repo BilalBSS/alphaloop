@@ -128,7 +128,7 @@ export default function StrategiesTab({ strategies }) {
       meta={<><code>/api/strategies</code> · {promotedCount} promoted · {paperCount} paper · sorted by composite ↓</>}
     >
       <p className="p" style={{ marginBottom: 14 }}>
-        Composite weights <code>0.55·sharpe + 0.25·win − 0.30·|dd| − 0.20·brier</code> rank the pool. Promotion gate: <code>Sharpe ≥ 0.8 · win rate ≥ 45% · ≥ 7 days paper</code>. Underperformers killed after ≥ 7 days &amp; ≥ 10 trades.
+        Composite weights <code>0.40·sharpe + 0.30·win − 0.30·|dd|</code> rank the pool. Promotion gate: <code>Sharpe ≥ 0.8 · win rate ≥ 45% · ≥ 7 days paper</code>. Underperformers killed after ≥ 7 days &amp; ≥ 10 trades.
       </p>
 
       <Card>

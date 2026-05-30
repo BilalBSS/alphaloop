@@ -1,3 +1,5 @@
+import { clickableProps } from './clickable'
+
 // / v3 .tbl
 
 export default function DataTable({
@@ -31,7 +33,7 @@ export default function DataTable({
               <tr
                 key={k}
                 className={[sel ? 'sel' : '', click ? 'click' : ''].join(' ').trim()}
-                onClick={click}
+                {...(click ? clickableProps(click) : {})}
               >
                 {columns.map((c) => {
                   const cellVal = c.render ? c.render(row) : row[c.key]
