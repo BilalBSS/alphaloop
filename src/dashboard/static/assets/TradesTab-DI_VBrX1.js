@@ -1,0 +1,1 @@
+import{t as e}from"./tab-trades-klCMVfLr.js";export{e as default};
