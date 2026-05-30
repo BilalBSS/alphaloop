@@ -9,7 +9,7 @@ const SERIES_META = {
   DGS2:     { label: '2Y yield',      unit: '%',  higherIs: 'neutral', tone: 'acc2',
               low: 2.0,  high: 4.5,  lowTag: 'low',     highTag: 'high',  midTag: 'normal',
               signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
-  CPIAUCSL: { label: 'CPI',           unit: '',   higherIs: 'bearish', tone: 'warn',
+  CPIAUCSL: { label: 'CPI YoY',       unit: '%',  higherIs: 'bearish', tone: 'warn',
               low: 2.0,  high: 3.0,  lowTag: 'target',  highTag: 'hot',   midTag: 'above target',
               signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   FEDFUNDS: { label: 'Fed funds',     unit: '%',  higherIs: 'bearish', tone: 'acc2',
@@ -21,8 +21,8 @@ const SERIES_META = {
   VIXCLS:   { label: 'VIX',           unit: '',   higherIs: 'bearish', tone: 'pos',
               low: 15.0, high: 25.0, lowTag: 'calm',    highTag: 'fear',  midTag: 'normal',
               signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
-  DTWEXBGS: { label: 'DXY',           unit: '',   higherIs: 'neutral', tone: 'acc2',
-              low: 95.0, high: 105.0, lowTag: 'weak',   highTag: 'strong', midTag: 'normal',
+  DTWEXBGS: { label: 'broad $',       unit: '',   higherIs: 'neutral', tone: 'acc2',
+              low: 110.0, high: 122.0, lowTag: 'weak',  highTag: 'strong', midTag: 'normal',
               signals: { low: 'bullish', mid: 'neutral', high: 'bearish' } },
   DCOILWTICO: { label: 'WTI',         unit: '$',  higherIs: 'neutral', tone: 'warn',
               low: 50.0, high: 90.0, lowTag: 'low',     highTag: 'high',  midTag: 'normal',
@@ -39,6 +39,7 @@ function formatValue(v, unit) {
   const fixed = abs >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 0 })
               : abs >= 100 ? n.toFixed(1)
               : n.toFixed(2)
+  if (unit === '$') return `$${fixed}`
   return `${fixed}${unit || ''}`
 }
 
@@ -62,6 +63,7 @@ function zoneTone(zone, higherIs) {
 
 function fmtThresh(v, unit) {
   if (v == null) return ''
+  if (unit === '$') return `$${v}`
   return `${v}${unit || ''}`
 }
 
