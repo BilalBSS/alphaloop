@@ -247,29 +247,38 @@ class EvolutionEngine:
 
         bottom_ids = {e.strategy.strategy_id for e in bottom}
         dormant: list = []
+        ranked_entries = strategy_pool.ranked()
         total_closed_trades = sum(
-            (e.score.total_trades if e.score else 0)
-            for e in strategy_pool.ranked()
+            (e.score.total_trades if e.score else 0) for e in ranked_entries
         )
-        clean_slate_enabled = total_closed_trades >= 10
-        if not clean_slate_enabled:
-            logger.info(
-                "evolution_dormancy_gated_clean_slate",
-                total_closed_trades=total_closed_trades,
-                reason="system needs >=10 closed trades before dormancy kills engage",
-            )
-        else:
-            for entry in strategy_pool.ranked():
-                if entry.strategy.strategy_id in bottom_ids or entry.status == "killed":
-                    continue
+        candidates = [
+            e for e in ranked_entries
+            if e.strategy.strategy_id not in bottom_ids and e.status != "killed"
+            and (datetime.now(timezone.utc) - e.status_changed_at).days >= 30
+            and (e.score.total_trades if e.score else 0) == 0
+        ]
+        candidate_ids = {e.strategy.strategy_id for e in candidates}
+        active_survivors = sum(
+            1 for e in ranked_entries
+            if e.status in ("paper_trading", "promoted", "live")
+            and e.strategy.strategy_id not in candidate_ids
+        )
+        # / preserve healthy core
+        if candidates and (total_closed_trades >= 10 or active_survivors >= 10):
+            for entry in candidates:
+                dormant.append(entry)
                 days_alive = (datetime.now(timezone.utc) - entry.status_changed_at).days
-                trade_count = entry.score.total_trades if entry.score else 0
-                if days_alive >= 30 and trade_count == 0:
-                    dormant.append(entry)
-                    logger.info(
-                        "evolution_dormancy_kill_candidate",
-                        strategy_id=entry.strategy.strategy_id, days=days_alive, trades=trade_count,
-                    )
+                logger.info(
+                    "evolution_dormancy_kill_candidate",
+                    strategy_id=entry.strategy.strategy_id, days=days_alive, trades=0,
+                )
+        elif candidates:
+            logger.info(
+                "evolution_dormancy_gated",
+                total_closed_trades=total_closed_trades,
+                active_survivors=active_survivors, dormant_candidates=len(candidates),
+                reason="no healthy core to preserve",
+            )
 
         killed_configs: list[dict] = []
         for entry in list(bottom) + dormant:
