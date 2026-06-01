@@ -27,7 +27,7 @@ SERIES_CONFIG: dict[str, dict[str, float]] = {
 }
 
 
-def _fred_params(series_id: str, days: int = 180) -> dict[str, str]:
+def _fred_params(series_id: str, days: int = 760) -> dict[str, str]:
     key = os.environ.get("FRED_API_KEY", "")
     start = (date.today() - timedelta(days=days)).isoformat()
     return {
@@ -36,7 +36,7 @@ def _fred_params(series_id: str, days: int = 180) -> dict[str, str]:
         "file_type": "json",
         "observation_start": start,
         "sort_order": "desc",
-        "limit": "200",
+        "limit": "800",
     }
 
 
