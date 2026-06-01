@@ -247,11 +247,12 @@ def _mock_broker(balance=None, positions=None, error=None):
     return patch("src.dashboard.state.STATE.get_broker", return_value=broker)
 
 
-def _make_balance(equity=100000.0, cash=50000.0, buying_power=200000.0):
+def _make_balance(equity=100000.0, cash=50000.0, buying_power=200000.0, last_equity=0.0):
     b = MagicMock()
     b.equity = equity
     b.cash = cash
     b.buying_power = buying_power
+    b.last_equity = last_equity
     return b
 
 
@@ -330,6 +331,18 @@ class TestPortfolioEndpoint:
         data = resp.json()
         assert data["daily_pnl"] == 30.0
         assert data["positions_count"] == 2
+        dashboard.STATE.broker = None
+
+    @pytest.mark.asyncio
+    async def test_portfolio_daily_pnl_from_last_equity(self):
+        from src.dashboard import app as dashboard
+        pq, pqo = _patch_query(query_results=[])
+        bal = _make_balance(equity=101000.0, last_equity=100000.0)
+        with _mock_broker(balance=bal, positions=[]), pq, pqo:
+            async with await _client() as c:
+                resp = await c.get("/api/portfolio")
+        data = resp.json()
+        assert data["daily_pnl"] == 1000.0
         dashboard.STATE.broker = None
 
 

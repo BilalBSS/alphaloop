@@ -12,8 +12,8 @@ logger = structlog.get_logger(__name__)
 
 
 LOOP_METADATA: dict[str, dict[str, Any]] = {
-    "analyst":              {"kind": "interval", "cadence_seconds": 1200, "description": "groq analyst pass (batched, staleness-ordered)"},
-    "deepseek":             {"kind": "interval", "cadence_seconds": 1800, "description": "deepseek dual-llm pass (batched, staleness-ordered)"},
+    "analyst":              {"kind": "interval", "cadence_seconds": 3600, "description": "groq analyst pass (batched, staleness-ordered)"},
+    "deepseek":             {"kind": "interval", "cadence_seconds": 3600, "description": "deepseek dual-llm pass (batched, staleness-ordered)"},
     "reasoner":             {"kind": "cron",     "cron_hour_et": 17,     "description": "daily synthesis (deepseek-reasoner)"},
     "strategy":             {"kind": "interval", "cadence_seconds": 300,  "description": "strategy evaluation cycle"},
     "risk":                 {"kind": "interval", "cadence_seconds": 5,    "description": "risk signal poll"},

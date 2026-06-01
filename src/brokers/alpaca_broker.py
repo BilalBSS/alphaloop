@@ -176,6 +176,7 @@ class AlpacaBroker(BrokerInterface):
             buying_power=float(data["buying_power"]),
             portfolio_value=float(data["portfolio_value"]),
             positions_value=float(data["equity"]) - float(data["cash"]),
+            last_equity=float(data.get("last_equity") or 0),
         )
 
     @with_retry(source="alpaca_broker", max_retries=2, base_delay=1.0)

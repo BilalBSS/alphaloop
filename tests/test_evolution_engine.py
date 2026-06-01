@@ -967,6 +967,39 @@ class TestKillPersistence:
         assert strategy_pool.get(killed[0]["id"]).status == "killed"
 
 
+class TestDormancyKill:
+    @pytest.mark.asyncio
+    async def test_dormant_killed_when_healthy_core_survives(self):
+        pool = StrategyPool()
+        now = datetime.now(timezone.utc)
+        for i in range(10):
+            pool.add(_make_strategy(sid=f"h{i}"), status="paper_trading")
+            pool.update_score(f"h{i}", StrategyScore(strategy_id=f"h{i}", total_trades=0))
+        for i in range(2):
+            pool.add(_make_strategy(sid=f"d{i}"), status="paper_trading")
+            pool.get(f"d{i}").status_changed_at = now - timedelta(days=35)
+            pool.update_score(f"d{i}", StrategyScore(strategy_id=f"d{i}", total_trades=0))
+        engine = EvolutionEngine(rng=np.random.default_rng(42))
+        with patch("src.evolution.evolution_engine.save_config", MagicMock()), \
+             patch("src.evolution.evolution_engine.store_evolution_log", new_callable=AsyncMock):
+            killed = await engine._kill_bottom_quartile(_mock_db_pool(), 1, pool, {"killed": []})
+        assert {k["id"] for k in killed} == {"d0", "d1"}
+
+    @pytest.mark.asyncio
+    async def test_dormant_spared_when_no_healthy_core(self):
+        pool = StrategyPool()
+        now = datetime.now(timezone.utc)
+        for i in range(3):
+            pool.add(_make_strategy(sid=f"d{i}"), status="paper_trading")
+            pool.get(f"d{i}").status_changed_at = now - timedelta(days=35)
+            pool.update_score(f"d{i}", StrategyScore(strategy_id=f"d{i}", total_trades=0))
+        engine = EvolutionEngine(rng=np.random.default_rng(42))
+        with patch("src.evolution.evolution_engine.save_config", MagicMock()), \
+             patch("src.evolution.evolution_engine.store_evolution_log", new_callable=AsyncMock):
+            killed = await engine._kill_bottom_quartile(_mock_db_pool(), 1, pool, {"killed": []})
+        assert killed == []
+
+
 # ────────────────────────────────────────────────────────────────
 # helper
 # ────────────────────────────────────────────────────────────────

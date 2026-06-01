@@ -230,6 +230,8 @@ async def get_portfolio():
         regime, regime_conf = regime_pair
         drawdown_pct, var_pct = dd_var
         equity = float(balance.equity or 0)
+        last_eq = float(balance.last_equity or 0)
+        day_pnl = round(equity - last_eq, 2) if last_eq > 0 else round(unrealized + realized, 2)
         gross = sum(float(p.market_value or 0) for p in positions)
         gross_exposure_pct = round(gross / equity, 4) if equity > 0 else None
         cfg: dict = {}
@@ -244,7 +246,7 @@ async def get_portfolio():
             "buying_power": balance.buying_power,
             "positions_count": len(positions),
             "max_open_positions": max_open,
-            "daily_pnl": unrealized + realized,
+            "daily_pnl": day_pnl,
             "regime": regime,
             "regime_confidence": regime_conf,
             "next_cycle_ts": next_cycle_ts,

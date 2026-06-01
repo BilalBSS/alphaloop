@@ -12,6 +12,7 @@ import structlog
 from src.data.strategy_metrics import store_strategy_score
 from src.quant.brier_score import brier_score
 from src.quant.risk_metrics import max_drawdown
+from src.strategies.strategy_pool import compute_composite_score
 
 logger = structlog.get_logger(__name__)
 
@@ -208,9 +209,8 @@ async def _compute_for_strategy(
     except (ValueError, IndexError, ZeroDivisionError):
         max_dd_pct = 0.0
 
-    composite = sharpe * 0.4 + win_rate * 0.3 - max_dd_pct * 0.3
-
     brier = await _compute_brier(pool, strategy_id, period_start, period_end)
+    composite = compute_composite_score(sharpe, win_rate, max_dd_pct, brier)
 
     return {
         "sharpe_ratio": round(sharpe, 4),
