@@ -43,6 +43,7 @@ class AccountBalance:
     buying_power: float
     portfolio_value: float
     positions_value: float
+    last_equity: float = 0.0
 
 
 class BrokerInterface(ABC):
